@@ -1,0 +1,18 @@
+{
+  "name": "Fruit Hockey",
+  "short_name": "FruitHockey",
+  "description": "Juicy air hockey with fruit pucks — singleplayer, local & online multiplayer, ranks and a shop.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0c1322",
+  "theme_color": "#0c1322",
+  "categories": ["games", "sports"],
+  "icons": [
+    { "src": "./assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./assets/icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
