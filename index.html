@@ -12,6 +12,22 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Clean up any leftover service worker from the previous app (Fruit
+         Hockey PWA). Mind Whiteboard registers none; this just self-heals
+         returning browsers. -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then((regs) => {
+          if (regs.length) {
+            Promise.all(regs.map((r) => r.unregister())).then(() => {
+              if (window.caches && caches.keys) {
+                caches.keys().then((ks) => ks.forEach((k) => caches.delete(k)))
+              }
+            })
+          }
+        }).catch(() => {})
+      }
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
