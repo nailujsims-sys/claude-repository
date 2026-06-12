@@ -1,46 +1,17 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>Fruit Hockey 🍉🏒</title>
-  <meta name="description" content="Juicy air hockey with fruit pucks. Singleplayer, local & online multiplayer, ranks and a shop." />
-
-  <meta name="theme-color" content="#0c1322" />
-  <meta name="mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="Fruit Hockey" />
-
-  <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="icon" type="image/svg+xml" href="./assets/icon.svg" />
-  <link rel="apple-touch-icon" href="./assets/icon-192.png" />
-  <link rel="stylesheet" href="./css/styles.css" />
-</head>
-<body>
-  <div id="app">
-    <!-- Persistent top bar (player + coins + rank), hidden during matches -->
-    <header id="topbar" class="topbar hidden"></header>
-
-    <!-- Menu screens render here -->
-    <main id="screen-root" class="screen-root"></main>
-
-    <!-- The match layer: canvas playfield + HUD overlay -->
-    <div id="game-layer" class="game-layer hidden">
-      <canvas id="board"></canvas>
-      <div id="hud" class="hud"></div>
-    </div>
-
-    <div id="toast-host" class="toast-host"></div>
-    <div id="modal-host" class="modal-host"></div>
-  </div>
-
-  <noscript>
-    <div style="padding:2rem;color:#fff;font-family:sans-serif;text-align:center">
-      Fruit Hockey needs JavaScript enabled to play. 🍉
-    </div>
-  </noscript>
-
-  <script type="module" src="./js/main.js"></script>
-</body>
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#080C14" />
+    <meta name="description" content="Mind Whiteboard — persönliche Produktivität für Julian." />
+    <title>Mind Whiteboard</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
 </html>

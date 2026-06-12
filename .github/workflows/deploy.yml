@@ -1,11 +1,17 @@
-name: Deploy Fruit Hockey to GitHub Pages
+name: Deploy Mind Whiteboard to GitHub Pages
 
-# Publishes the static app so you can open it on your phone via a URL.
+# Builds the Vite app and publishes dist/ to GitHub Pages.
 # One-time setup: repo Settings → Pages → Build and deployment → Source: "GitHub Actions".
+#
+# Optional Supabase wiring: set repository variables (Settings → Secrets and
+# variables → Actions → Variables) VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.
+# When unset, the app deploys in local (localStorage) mode. The anon key is
+# safe to expose in a client app (protected by RLS), so a repo *variable* is
+# fine — a secret works too.
 
 on:
   push:
-    branches: [main, master, "claude/zen-mayer-bKTbe"]
+    branches: [main, master, "claude/pensive-einstein-cegoj4"]
   workflow_dispatch:
 
 permissions:
@@ -13,7 +19,6 @@ permissions:
   pages: write
   id-token: write
 
-# Allow one concurrent deployment, cancel in-progress runs.
 concurrency:
   group: pages
   cancel-in-progress: true
@@ -28,14 +33,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+        run: npm run build
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Upload the whole repo (it's a static site served from the root).
-          path: "."
+          path: dist
 
       - name: Deploy to GitHub Pages
         id: deployment
