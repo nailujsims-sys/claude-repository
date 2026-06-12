@@ -11,7 +11,7 @@ name: Deploy Mind Whiteboard to GitHub Pages
 
 on:
   push:
-    branches: [main, master, "claude/pensive-einstein-cegoj4"]
+    branches: [main, master, "claude/zen-mayer-bKTbe", "claude/pensive-einstein-cegoj4"]
   workflow_dispatch:
 
 permissions:
