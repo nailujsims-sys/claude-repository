@@ -1,3 +1,15 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+
+# Build output
+dist/
+
+# Local env (Supabase URL / anon key live here — never commit)
+.env
+.env.local
+.env.*.local
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
@@ -5,9 +17,5 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Node (only if you later add tooling)
-node_modules/
-npm-debug.log*
-
-# Local server logs
+# Logs
 *.log

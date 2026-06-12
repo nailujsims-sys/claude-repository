@@ -1,174 +1,148 @@
-// Headless smoke test: stubs just enough of the browser (DOM, Canvas2D, RAF,
-// localStorage, performance) to boot the real app and drive whole matches
-// through the genuine physics/AI/scoring/reward code. Catches runtime errors
-// and logic crashes without a browser.  Run: node tools/smoke.mjs
-let T = 1000;            // virtual clock (ms)
-let rafCb = null;
+// Runtime smoke test: bundle the app with esbuild and mount it in jsdom so we
+// actually execute React (catching crash-on-mount / bad-hook / import errors
+// that a production build alone won't surface). No network or browser needed.
+import { build } from 'esbuild'
+import { JSDOM } from 'jsdom'
+import { webcrypto } from 'node:crypto'
 
-const gradient = { addColorStop() {} };
-const ctxStub = new Proxy(
-  { createLinearGradient: () => gradient, createRadialGradient: () => gradient },
-  { get(t, p) { return p in t ? t[p] : () => {}; }, set(t, p, v) { t[p] = v; return true; } }
-);
-
-const elCache = new Map();
-function makeEl(id = '', tag = 'div') {
-  const el = {
-    id, tagName: tag, scrollTop: 0, _html: '', _text: '', _attrs: {},
-    classList: {
-      _s: new Set(),
-      add(...c) { c.forEach(x => this._s.add(x)); },
-      remove(...c) { c.forEach(x => this._s.delete(x)); },
-      toggle(c, f) { const has = this._s.has(c); const on = f === undefined ? !has : f; on ? this._s.add(c) : this._s.delete(c); },
-      contains(c) { return this._s.has(c); },
+async function bundle() {
+  const result = await build({
+    entryPoints: ['src/main.jsx'],
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    jsx: 'automatic',
+    loader: { '.css': 'empty' },
+    define: {
+      'import.meta.env': '{"MODE":"test","DEV":false,"PROD":true}',
+      'process.env.NODE_ENV': '"production"',
     },
-    style: {},
-    set innerHTML(v) { this._html = v; }, get innerHTML() { return this._html; },
-    set textContent(v) { this._text = v; }, get textContent() { return this._text; },
-    set value(v) { this._value = v; }, get value() { return this._value ?? ''; },
-    addEventListener() {}, removeEventListener() {},
-    appendChild(c) { return c; }, removeChild() {}, remove() {},
-    setAttribute(k, v) { this._attrs[k] = v; }, getAttribute(k) { return this._attrs[k] ?? null; },
-    querySelector() { return null; }, querySelectorAll() { return []; }, closest() { return null; },
-    getBoundingClientRect() { return { width: 390, height: 780, left: 0, top: 0, right: 390, bottom: 780 }; },
-    setPointerCapture() {}, focus() {},
-  };
-  if (id === 'board') el.getContext = () => ctxStub;
-  return el;
+    write: false,
+    logLevel: 'silent',
+  })
+  return result.outputFiles[0].text
 }
 
-const setGlobal = (name, value) => Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
-
-const raf = (cb) => { rafCb = cb; return 1; };
-const caf = () => { rafCb = null; };
-
-setGlobal('localStorage', (() => { const m = new Map(); return { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: k => m.delete(k) }; })());
-setGlobal('navigator', { vibrate() {} });
-setGlobal('performance', { now: () => T });
-setGlobal('requestAnimationFrame', raf);
-setGlobal('cancelAnimationFrame', caf);
-setGlobal('window', {
-  devicePixelRatio: 2, AudioContext: undefined, webkitAudioContext: undefined,
-  addEventListener() {}, removeEventListener() {},
-  requestAnimationFrame: raf, cancelAnimationFrame: caf,
-});
-setGlobal('document', {
-  readyState: 'complete', hidden: false,
-  addEventListener() {}, removeEventListener() {},
-  getElementById(id) { if (!elCache.has(id)) elCache.set(id, makeEl(id)); return elCache.get(id); },
-  createElement(tag) { return makeEl('', tag); },
-  body: makeEl('body'),
-});
-
-function drive(label, maxFrames = 4000, autoplay = true) {
-  let frames = 0;
-  while (rafCb && frames < maxFrames) {
-    const g = ui.game;
-    if (autoplay && g && g.pucks) {
-      // Simulate a real finger: chase the nearest puck and strike it toward an
-      // alternating top-goal corner (so it gets past a central defender),
-      // approaching from the opposite side of the puck from the aim point.
-      let puck = g.pucks[0];
-      for (const p of g.pucks) {
-        if (Math.hypot(p.x - g.mB.x, p.y - g.mB.y) < Math.hypot(puck.x - g.mB.x, puck.y - g.mB.y)) puck = p;
-      }
-      const aimX = (frames % 220 < 110) ? 370 : 630;
-      const aimY = -60;
-      const dx = puck.x - aimX, dy = puck.y - aimY;
-      const len = Math.hypot(dx, dy) || 1;
-      const off = g.mB.r + puck.r - 4;
-      g.pointers.set(1, { x: puck.x + (dx / len) * off, y: puck.y + (dy / len) * off, side: 'bottom' });
-      g.controls.bottom = 1;
+function makeDom(hash, storage) {
+  const dom = new JSDOM(
+    `<!DOCTYPE html><html><body><div id="root"></div></body></html>`,
+    { url: `http://localhost/${hash}`, pretendToBeVisual: true, runScripts: 'outside-only' }
+  )
+  const { window } = dom
+  try {
+    Object.defineProperty(window, 'crypto', { value: webcrypto, configurable: true, writable: true })
+  } catch {
+    if (window.crypto && !window.crypto.randomUUID) {
+      window.crypto.randomUUID = () => webcrypto.randomUUID()
     }
-    const cb = rafCb; rafCb = null;
-    T += 16.7;
-    cb(T);
-    frames++;
-    if (ui.game && ui.game.state === 'over') break;
   }
-  const g = ui.game;
-  console.log(`  ${label}: ${frames} frames, state=${g ? g.state : 'n/a'}, score ${g ? g.scores.bottom + '-' + g.scores.top : '?'}`);
-  return frames;
+  window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
+  window.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} takeRecords() { return [] } }
+  window.scrollTo = () => {}
+  if (storage) {
+    for (const [k, v] of Object.entries(storage)) window.localStorage.setItem(k, v)
+  }
+  return window
 }
 
-let ui, store, mm;
-let pass = 0, fail = 0;
-const check = (name, cond) => { cond ? (pass++, console.log(`  ✓ ${name}`)) : (fail++, console.log(`  ✗ ${name}`)); };
-
-try {
-  ({ ui } = await import('../js/ui.js'));
-  ({ store } = await import('../js/storage.js'));
-  mm = await import('../js/matchmaking.js');
-  await import('../js/main.js'); // boots ui.init()
-
-  console.log('\n[1] Boot + menu navigation');
-  check('home rendered', !!document.getElementById('screen-root').innerHTML.includes('Fruit Hockey'));
-  for (const s of ['play', 'shop', 'ranks', 'profile', 'settings', 'howto', 'home']) ui.show(s);
-  check('navigated all menus without error', true);
-
-  console.log('\n[2] Shop purchase + equip');
-  const coins0 = store.state.coins;
-  ui.shopTab = 'mallet'; ui.show('shop');
-  ui.buy('mallet', 'lime');
-  check('coins deducted', store.state.coins === coins0 - 200);
-  check('item owned', store.isOwned('mallet', 'lime'));
-  check('item equipped', store.state.equipped.mallet === 'lime');
-
-  console.log('\n[3] Single-player match — engine runs stably under physics');
-  ui.startSingle('amateur');
-  check('game created', !!ui.game);
-  drive('singleplayer', 3000);
-  check('engine in a valid state (no crash)', ['play', 'goal', 'countdown', 'over'].includes(ui.game.state));
-  check('scores are sane numbers', ui.game.scores.bottom >= 0 && ui.game.scores.top >= 0);
-
-  console.log('\n[4] Arcade: multi-fruit runs a FULL physics match to completion');
-  ui.startArcade('multifruit');
-  check('three pucks spawned', ui.game.pucks.length === 3);
-  drive('multifruit', 8000);
-  check('full-physics match reached "over"', ui.game && ui.game.state === 'over');
-  check('goals were scored via real play', (ui.game.scores.bottom + ui.game.scores.top) >= 5);
-
-  console.log('\n[5] Time attack timer + local 2-player wiring');
-  ui.startArcade('timeattack');
-  const t0 = ui.game.timeLeft;
-  drive('timeattack', 600);
-  check('time attack timer counts down', ui.game.timeLeft < t0);
-  ui.startLocal();
-  check('AI disabled in local mode', ui.game.ai === null && ui.game.config.topHuman === true);
-  drive('local', 1500);
-  ui._quitToMenu();
-  check('quit to menu works', ui.game === null);
-
-  console.log('\n[6] Ranked: scoring → end → reward pipeline (deterministic)');
-  const opp = mm.generateOpponent({ ranked: true, myRp: store.state.rp });
-  check('opponent matched near rank', Math.abs(opp.rp - store.state.rp) < 400);
-  const rpBefore = store.state.rp, xpBefore = store.state.totalXp, coinsBefore = store.state.coins, playedBefore = store.state.stats.played;
-  ui.show('vs', { opponent: opp, ranked: true, mode: 'ranked', label: 'Ranked' });
-  ui._startVsNow();
-  check('ranked game created', !!ui.game && ui.game.config.ranked === true);
-  // Drive scoring through the genuine goal code path until the win condition.
-  const target = ui.game.config.target;
-  let guard = 0;
-  while (ui.game.state !== 'over' && ui.game.scores.bottom < target && guard++ < 60) {
-    ui.game._onGoal('bottom', ui.game.pucks[0]);
+const errors = []
+function mount(window, code, name) {
+  window.addEventListener('error', (e) => errors.push(`[${name}] ${e.message}`))
+  const orig = console.error
+  console.error = (...a) => errors.push(`[${name}] console.error: ${a.join(' ').slice(0, 200)}`)
+  try {
+    window.eval(code)
+  } finally {
+    // keep capturing console.error during effects; restore later
+    window.__restoreConsole = () => (console.error = orig)
   }
-  check('ranked match ended on win condition', ui.game && ui.game.state === 'over');
-  check('RP increased on win', store.state.rp > rpBefore);
-  check('XP awarded', store.state.totalXp > xpBefore);
-  check('coins awarded', store.state.coins > coinsBefore);
-  check('match recorded in stats', store.state.stats.played === playedBefore + 1);
-
-  console.log('\n[7] Rank + level math sanity');
-  const { rankForRp, levelFromXp } = await import('../js/data.js');
-  check('rp 0 → Bronze III', rankForRp(0).label === 'Bronze III');
-  check('rp 600 → Gold III', rankForRp(600).label === 'Gold III');
-  check('rp 1850 → Grandmaster', rankForRp(1850).label === 'Grandmaster');
-  check('xp 0 → level 1', levelFromXp(0).level === 1);
-  check('xp 100 → level 2', levelFromXp(100).level === 2);
-
-  console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
-  process.exit(fail ? 1 : 0);
-} catch (e) {
-  console.error('\n💥 Uncaught error during smoke test:\n', e);
-  process.exit(2);
 }
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+const txt = (window) =>
+  (window.document.getElementById('root').textContent || '').replace(/\s+/g, ' ').trim()
+
+function click(window, predicate) {
+  const els = [...window.document.querySelectorAll('button, [role="button"]')]
+  const el = els.find(predicate)
+  if (!el) return false
+  el.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+  return true
+}
+
+async function run() {
+  const code = await bundle()
+
+  // 1) Each route mounts and renders.
+  for (const [name, hash] of [
+    ['Home (/)', '#/'],
+    ['Aufgaben (/aufgaben)', '#/aufgaben'],
+    ['Mehr (/mehr)', '#/mehr'],
+    ['Kalender (/kalender)', '#/kalender'],
+  ]) {
+    const window = makeDom(hash)
+    mount(window, code, name)
+    await wait(250)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== ${name} ===\n  len=${text.length} :: ${text.slice(0, 150)}`)
+    if (text.length < 20) errors.push(`[${name}] rendered almost nothing`)
+  }
+
+  // 2) Detail view for a known, pre-seeded task (exercises formatDueLabel etc.).
+  {
+    const now = new Date().toISOString()
+    const task = {
+      id: 'seed-1', user_id: 'local-julian', title: 'Testaufgabe Detail',
+      category: 'Uni', subcategory: 'Test', details: 'Ein Detailtext.',
+      due_date: '2026-06-08', due_time: null, due_type: 'week',
+      is_favorite: true, is_completed: false, is_deleted: false,
+      completed_at: null, deleted_at: null, sort_order: 0, created_at: now, updated_at: now,
+    }
+    const window = makeDom('#/aufgaben/seed-1', {
+      'mw.tasks.local-julian': JSON.stringify([task]),
+    })
+    mount(window, code, 'Detail')
+    await wait(250)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== Detail (/aufgaben/seed-1) ===\n  ${text.slice(0, 170)}`)
+    for (const needle of ['Testaufgabe Detail', 'Bearbeiten', 'Löschen', 'KW 24']) {
+      if (!text.includes(needle)) errors.push(`[Detail] missing "${needle}"`)
+    }
+  }
+
+  // 3) Open the Neue Aufgabe form via the Plus button → mounts the calendar.
+  {
+    const window = makeDom('#/aufgaben')
+    mount(window, code, 'Form')
+    await wait(250)
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Neu erstellen'))
+      errors.push('[Form] Plus button not found')
+    await wait(120)
+    if (!click(window, (el) => el.textContent.trim() === 'Neue Aufgabe'))
+      errors.push('[Form] "Neue Aufgabe" action not found')
+    await wait(150)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== Form (Neue Aufgabe) ===\n  ${text.slice(0, 170)}`)
+    const hasTitle = !!window.document.querySelector('input[placeholder="Titel der Aufgabe"]')
+    if (!hasTitle) errors.push('[Form] title input not rendered')
+    for (const needle of ['Kategorie', 'Fällig', 'Mo', 'KW']) {
+      if (!text.includes(needle)) errors.push(`[Form] missing "${needle}"`)
+    }
+  }
+
+  console.log('\n--- result ---')
+  if (errors.length) {
+    console.log('FAILURES:')
+    for (const e of errors) console.log('  -', e)
+    process.exit(1)
+  }
+  console.log('OK: all routes + detail + form mounted and rendered without errors.')
+}
+
+run().catch((e) => {
+  console.error('smoke harness error:', e)
+  process.exit(1)
+})

@@ -1,123 +1,154 @@
-# 🍉🏒 Fruit Hockey
+# 🧠 Mind Whiteboard
 
-A juicy take on air hockey where the puck is a **fruit**. Built as a fast,
-installable **Progressive Web App** — pure HTML5 Canvas + vanilla JavaScript,
-**no build step, no backend, fully offline-capable**. Open it on your phone and
-play.
+A premium, dark, mobile-first personal productivity app for **Julian**. Version 1
+ships two fully functional modules — the **Startseite** (home dashboard) and the
+**Aufgaben** task manager — on top of a navigation architecture (bottom bar,
+sidebar, action sheet) built to be extended module by module.
 
-> Status: **Front-end complete.** Online multiplayer is fully playable against
-> locally-simulated opponents (matchmaking, ranks, VS screen and all). Swapping
-> in a real server later is a contained change — see [Roadmap](#-roadmap).
-
----
-
-## ✨ Features
-
-**Game modes**
-- 🤖 **Single Player** — 5 AI difficulties (Rookie → Legend)
-- 👬 **Local 2-Player** — two players, one device, simultaneous multi-touch
-- 🏆 **Ranked** — ELO-style Rank Points, climb Bronze → Grandmaster
-- 🌐 **Quick Match** — casual online play for coins
-- ⏱️ **Time Attack** — most goals in 90 seconds
-- ❤️ **Survival** — endless, ramping CPU; how long can you last?
-- ⚡ **Sudden Death** — first goal wins
-- 🍒 **Multi-Fruit Madness** — three pucks at once
-
-**Systems**
-- 🍓 **Fruit physics** — every puck (watermelon, lemon, grapes, coconut, dragon
-  fruit…) has its own size, glide, bounce and weight, so it genuinely plays
-  differently
-- 🛒 **Shop** — unlock fruit pucks, mallet skins, table themes and avatars with
-  earned coins; rarities from Common to Legendary
-- 📈 **Progression** — XP, levels, coins, level-up rewards
-- 🏅 **Ranks & leaderboard** — tiers, divisions, RP gains/losses, peak RP
-- 👤 **Profile & stats** — wins, losses, win-rate, goals, streaks, loadout
-- 🔊 **Procedurally synthesised** sound effects + optional music (zero audio
-  files), 📳 haptics, goal celebrations, particles, screen shake
-- 💾 Everything persists locally (localStorage); works **100% offline**
+Built with **React + Vite + Tailwind CSS**, with a data layer that talks to
+**Supabase** when configured and otherwise falls back to **localStorage**, so the
+app is fully usable the moment it loads.
 
 ---
 
-## ▶️ Run it
+## ✨ What's in V1
 
-It's static files — no install, no compiler. You just need to serve the folder
-over HTTP (ES modules don't load from `file://`).
+- **Startseite** — time-aware greeting, static Morning Briefing & schedule cards,
+  and a live Aufgaben preview (Heute / Diese Woche).
+- **Aufgaben** — sectioned task list (HEUTE · MORGEN · DIESE WOCHE · DIESEN MONAT ·
+  SPÄTER), category tabs, search, filters (favorites / completed / deleted),
+  complete & favorite with animations, and **drag-and-drop** reordering — including
+  dragging a task into another section to reschedule it.
+- **Aufgabe-Detail** — full task view with edit & soft-delete (Papierkorb).
+- **Neue Aufgabe / Bearbeiten** — slide-up form with a custom inline calendar that
+  supports **day / week (KW) / month** due dates plus an optional time.
+- **Kalender** and **Mehr** placeholder routes, with a preview of upcoming modules.
+
+Everything else (Morning Briefing, schedule, greeting quote) is intentionally
+static per the spec.
+
+---
+
+## ▶️ Quick start
 
 ```bash
-# from the repo root
-python3 -m http.server 8000
-# then open http://localhost:8000
+npm install
+npm run dev          # http://localhost:5173
 ```
 
-Any static server works (`npx serve`, `php -S localhost:8000`, the VS Code
-"Live Server" extension, etc.).
+By default the app runs in **local mode** (no login) and seeds a set of demo
+tasks in your browser's localStorage, so it looks and behaves exactly like the
+design out of the box.
 
-### 📱 Play on your phone
-
-**Easiest — GitHub Pages (a public URL you can open anywhere):**
-1. Push this repo to GitHub.
-2. Repo **Settings → Pages → Build and deployment → Source: “GitHub Actions”**.
-3. The included workflow (`.github/workflows/deploy.yml`) publishes the site on
-   every push and prints the live URL.
-4. Open that URL on your phone → tap the browser menu → **Add to Home Screen**
-   for the full standalone-app experience.
-
-**On your local network:** run the server above and visit
-`http://<your-computer-ip>:8000` from your phone (same Wi-Fi).
+```bash
+npm run build        # production build → dist/
+npm run preview      # preview the production build
+npm run smoke        # headless runtime smoke test (jsdom) across all routes
+```
 
 ---
 
-## 🎮 Controls
+## 🔌 Connect Supabase (optional)
 
-- **Drag** your finger on **your half** of the table to move your mallet.
-- **Flick** into the puck to smash — faster swipe = harder shot.
-- **Local 2-player** uses both ends at once; the top player's HUD is flipped so
-  it reads correctly from across the table.
+The app becomes a real, synced, single-user app the moment you provide Supabase
+credentials. Three steps:
+
+**1. Create the table + RLS.** In your Supabase project open the SQL Editor and
+run [`supabase/migrations/0001_create_tasks.sql`](supabase/migrations/0001_create_tasks.sql).
+It creates the `tasks` table, indexes, an `updated_at` trigger, and Row Level
+Security policies so each user only sees their own rows.
+
+**2. Create Julian's user.** Supabase Dashboard → Authentication → Users → *Add
+user* → set his email + password. (There is no registration screen — Julian is
+the only user.)
+
+**3. Point the app at the project.** Copy `.env.example` to `.env` and fill in:
+
+```bash
+VITE_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-key
+```
+
+Restart `npm run dev`. When both vars are set the app shows the login screen and
+reads/writes the `tasks` table; when either is missing it stays in local mode.
+
+> The anon key is meant to be shipped in client code — it's protected by RLS — so
+> committing it as a build-time variable is safe.
+
+---
+
+## 🚀 Deploy (GitHub Pages)
+
+The included workflow (`.github/workflows/deploy.yml`) builds the app and
+publishes `dist/` on every push to `main`, `master`, or this feature branch.
+
+1. Repo **Settings → Pages → Build and deployment → Source: "GitHub Actions"**.
+2. *(Optional, to use Supabase in production)* Repo **Settings → Secrets and
+   variables → Actions → Variables**: add `VITE_SUPABASE_URL` and
+   `VITE_SUPABASE_ANON_KEY`. Without them the deployed app runs in local mode.
+3. Push — the workflow prints the live URL.
+
+The site is served from `/claude-repository/` (set as Vite's `base`), and routing
+uses a hash router so deep links work on Pages without server rewrites.
 
 ---
 
 ## 🗂️ Project structure
 
 ```
-index.html              App shell (canvas + HUD + screen containers)
-manifest.webmanifest    PWA manifest (installable, portrait)
-service-worker.js       Offline app-shell cache
-css/styles.css          Entire design system + game HUD
-assets/icon.svg         App icon (vector)
-js/
-  data.js               Fruits, mallets, tables, avatars, ranks, AI tuning
-  storage.js            Versioned localStorage save + economy/stats mutators
-  audio.js              Web Audio procedural SFX, music, haptics
-  ai.js                 AI opponent (predict / defend / attack)
-  matchmaking.js        Simulated online opponent generation
-  game.js               Engine: fixed-timestep physics, input, render, FX
-  ui.js                 Screens, navigation, shop, HUD, match flow, rewards
-  main.js               Bootstrap + service-worker registration
-.github/workflows/deploy.yml   Auto-deploy to GitHub Pages
+index.html                  Vite entry
+vite.config.js              base path + React plugin
+tailwind.config.js          design tokens (colors, radii, animations)
+supabase/migrations/        SQL: tasks table + RLS
+tools/smoke.mjs             jsdom runtime smoke test
+src/
+  main.jsx                  bootstrap (HashRouter)
+  App.jsx                   providers, auth gate, routes, app shell
+  index.css                 Tailwind + base styles + keyframes
+  config/navigation.js      bottom nav / sidebar / action-sheet / modules (config arrays)
+  lib/
+    config.js               env detection (Supabase vs local)
+    supabase.js             Supabase client (or null)
+    date.js                 dates, ISO weeks, section grouping, formatting
+    taskSelectors.js        derive grouped/filtered views from the task list
+    seed.js                 demo tasks for local mode
+  data/
+    taskRepository.js       factory: picks Supabase or local impl
+    supabaseTaskRepository.js
+    localTaskRepository.js
+    taskDefaults.js         shared task shape + writable-field whitelist
+  context/                  Auth · Tasks · UI (overlays) · Toast
+  components/               BottomNav, Sidebar, ActionSheet, BottomSheet, TaskForm,
+                            InlineCalendar, FilterSheet, TaskRow, StarButton, …
+  screens/                  Home, TasksList, TaskDetail, Kalender, Mehr, Login
 ```
 
-### Tuning the feel
-Almost everything is data-driven. Want a faster game or a beefier puck? Edit the
-fruit stats in **`js/data.js`** (`glide`, `bounce`, `push`, `maxSpeed`, `r`) or
-the global constants at the top of **`js/game.js`** (`PUCK_MAX`, `HUMAN_MAX`,
-`AI_MAX`, `GOAL_W`). AI behaviour lives in `DIFFICULTIES` in `data.js`.
+### Extending the navigation
+Adding a nav item, sidebar link, action-sheet entry, or "coming soon" module is a
+one-line edit to the arrays in **`src/config/navigation.js`** — no component
+changes required. Build a new module by adding its `<Route>` in `App.jsx` and
+flipping it from `futureModules` into the active nav lists.
 
 ---
 
-## 🛣️ Roadmap
+## 🎨 Design system
 
-The front end is intentionally decoupled from any server. To go truly online:
+All tokens live in `tailwind.config.js` and are used as Tailwind classes
+(`bg-bg-card`, `text-text-secondary`, `text-accent`, …).
 
-- Replace `generateOpponent()` in **`js/matchmaking.js`** with a real
-  matchmaking/WebSocket call.
-- Add lightweight net-sync to the `Game` loop (the engine already runs a
-  deterministic fixed timestep, which helps).
-- Move the save blob in **`js/storage.js`** behind an account/cloud sync.
-- Server-authoritative ranks/economy to prevent tampering.
+| Token | Value | Use |
+|---|---|---|
+| `bg-base` | `#080C14` | deepest background |
+| `bg-card` | `#0F1629` | cards / sections |
+| `bg-elevated` | `#141E35` | modals / sheets |
+| `bg-input` | `#1A2340` | inputs |
+| `accent` | `#4A80FF` | primary action / active |
+| `accent-dim` | `#1E3A6E` | blue-tinted card backgrounds |
+| `text-primary` | `#FFFFFF` | titles / task names |
+| `text-secondary` | `#8891A4` | subtext / timestamps |
+| `text-muted` | `#4A5268` | placeholders / disabled |
+| `danger` | `#EF4444` | destructive |
+| `success` | `#34D399` | completion |
 
-Other nice-to-haves: tournaments, daily challenges, friend matches, more
-fruit/table content, power-ups.
-
----
-
-🍉 Made for fun. Have a juicy match!
+Mobile-first (~390px). On desktop the app is capped to `max-width: 430px` and
+centered so it keeps reading like a phone.
