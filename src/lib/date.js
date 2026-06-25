@@ -164,18 +164,79 @@ export function formatWeekRange(monday) {
   }`
 }
 
-// The "Fällig" label shown in lists and detail view, based on due_type.
-export function formatDueLabel(task) {
+// ---------------------------------------------------------------------------
+// Relative, user-friendly "Fällig" label (German), chosen by due_type.
+//
+//   'day'   → Heute / Morgen / Übermorgen / "3"–"6 Tage" / "25. November"
+//             (+ year when the date is in another year)
+//   'week'  → Diese Woche / Nächste Woche / "2 Wochen", "3 Wochen", …
+//   'month' → Diesen Monat / Nächsten Monat / "März" (+ year in another year)
+//
+// Only the *presentation* changes — the stored due_date/due_type are untouched.
+// All math is plain calendar arithmetic, so it stays correct across month and
+// year boundaries. Past dues (overdue) fall back to a sensible mirror.
+// ---------------------------------------------------------------------------
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000
+
+// Whole calendar days from `ref` to `due` (both snapped to local midnight).
+// Positive = future, 0 = today, negative = past. Rounding absorbs DST shifts.
+function dayDelta(due, ref) {
+  return Math.round((startOfDay(due) - startOfDay(ref)) / MS_PER_DAY)
+}
+
+// "25. November", with the year appended only when it differs from `ref`.
+function concreteDay(due, ref) {
+  const base = `${due.getDate()}. ${MONTHS_DE[due.getMonth()]}`
+  return due.getFullYear() === ref.getFullYear()
+    ? base
+    : `${base} ${due.getFullYear()}`
+}
+
+function formatDayDue(due, ref) {
+  const delta = dayDelta(due, ref)
+  if (delta === 0) return 'Heute'
+  if (delta === 1) return 'Morgen'
+  if (delta === 2) return 'Übermorgen'
+  if (delta >= 3 && delta <= 6) return `${delta} Tage`
+  // 7+ days ahead, or any date in the past → show the concrete date.
+  return concreteDay(due, ref)
+}
+
+function formatWeekDue(due, ref) {
+  // Both ends snap to their Monday, so the gap is always a whole number of weeks.
+  const weeks = Math.round(
+    (startOfISOWeek(due) - startOfISOWeek(ref)) / (7 * MS_PER_DAY)
+  )
+  if (weeks === 0) return 'Diese Woche'
+  if (weeks === 1) return 'Nächste Woche'
+  if (weeks >= 2) return `${weeks} Wochen`
+  // Past weeks (not in the forward spec; mirrored for a graceful overdue look).
+  if (weeks === -1) return 'Letzte Woche'
+  return `vor ${Math.abs(weeks)} Wochen`
+}
+
+function formatMonthDue(due, ref) {
+  const months =
+    (due.getFullYear() - ref.getFullYear()) * 12 +
+    (due.getMonth() - ref.getMonth())
+  const name = MONTHS_DE[due.getMonth()]
+  if (months === 0) return 'Diesen Monat'
+  if (months === 1) return 'Nächsten Monat'
+  if (months === -1) return 'Letzten Monat'
+  // Same calendar year → month name only; otherwise append the year.
+  if (months >= 2 && due.getFullYear() === ref.getFullYear()) return name
+  return `${name} ${due.getFullYear()}`
+}
+
+// The "Fällig" label shown in the detail view, based on due_type.
+export function formatDueLabel(task, ref = new Date()) {
   if (!task?.due_date) return 'Kein Datum'
-  const date = parseISODate(task.due_date)
-  if (task.due_type === 'month') {
-    return `${MONTHS_DE[date.getMonth()]} ${date.getFullYear()}`
-  }
-  if (task.due_type === 'week') {
-    const monday = startOfISOWeek(date)
-    return `KW ${getISOWeek(monday)} (${formatWeekRange(monday)})`
-  }
-  return formatLongDate(date)
+  const due = parseISODate(task.due_date)
+  if (!due) return 'Kein Datum'
+  if (task.due_type === 'month') return formatMonthDue(due, ref)
+  if (task.due_type === 'week') return formatWeekDue(due, ref)
+  return formatDayDue(due, ref)
 }
 
 // "14:00" from a 'HH:MM[:SS]' time string.

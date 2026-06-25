@@ -92,10 +92,16 @@ async function run() {
   // 2) Detail view for a known, pre-seeded task (exercises formatDueLabel etc.).
   {
     const now = new Date().toISOString()
+    // Monday of the current week, so the week-type due label is deterministically
+    // "Diese Woche" regardless of when the test runs.
+    const monday = new Date()
+    monday.setHours(0, 0, 0, 0)
+    monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7))
+    const mondayIso = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`
     const task = {
       id: 'seed-1', user_id: 'local-julian', title: 'Testaufgabe Detail',
       category: 'Uni', subcategory: 'Test', details: 'Ein Detailtext.',
-      due_date: '2026-06-08', due_time: null, due_type: 'week',
+      due_date: mondayIso, due_time: null, due_type: 'week',
       is_favorite: true, is_completed: false, is_deleted: false,
       completed_at: null, deleted_at: null, sort_order: 0, created_at: now, updated_at: now,
     }
@@ -107,7 +113,7 @@ async function run() {
     window.__restoreConsole?.()
     const text = txt(window)
     console.log(`\n=== Detail (/aufgaben/seed-1) ===\n  ${text.slice(0, 170)}`)
-    for (const needle of ['Testaufgabe Detail', 'Bearbeiten', 'Löschen', 'KW 24']) {
+    for (const needle of ['Testaufgabe Detail', 'Bearbeiten', 'Löschen', 'Diese Woche']) {
       if (!text.includes(needle)) errors.push(`[Detail] missing "${needle}"`)
     }
   }
