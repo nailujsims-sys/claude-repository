@@ -4,7 +4,7 @@ import { Menu, Search, SlidersHorizontal, X } from 'lucide-react'
 import {
   DndContext,
   DragOverlay,
-  PointerSensor,
+  MouseSensor,
   TouchSensor,
   useSensor,
   useSensors,
@@ -28,6 +28,10 @@ import FilterSheet, { FILTER_DEFAULTS } from '../components/FilterSheet'
 import { SkeletonTaskList } from '../components/Skeleton'
 
 const TABS = ['Alle', ...CATEGORIES]
+
+// The list is a vertical stack of sections — lock dragging to the Y axis so it
+// can't drift sideways.
+const restrictToVerticalAxis = ({ transform }) => ({ ...transform, x: 0 })
 
 // New due date when a task is dragged into a given section.
 function dueForSection(key) {
@@ -78,9 +82,14 @@ export default function TasksList() {
   const [dndContainers, setDndContainers] = useState(null)
   const startContainers = useRef(null)
 
+  // Mouse: a small drag threshold, so a plain click still opens the task.
+  // Touch: a long-press starts the drag — this is the key fix. The old
+  // PointerSensor treated any >8px touch move as a drag, so simply scrolling
+  // the list hijacked into a drag and flung rows around. With TouchSensor +
+  // delay, a normal scroll swipe never starts a drag; you press-and-hold to drag.
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 8 } })
+    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 6 } })
   )
 
   const findContainer = (id) => {
@@ -187,65 +196,69 @@ export default function TasksList() {
 
   return (
     <div className="pb-28">
-      {/* Header */}
-      <header className="flex items-center gap-2 px-5 pt-5">
-        <button onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 p-1 text-text-primary">
-          <Menu size={26} />
-        </button>
-        <h1 className="flex-1 text-[28px] font-bold text-text-primary">Aufgaben</h1>
-        <button
-          onClick={() => {
-            setSearchOpen((v) => !v)
-            if (searchOpen) setSearch('')
-          }}
-          aria-label="Suche"
-          className="p-1 text-text-primary"
-        >
-          <Search size={22} />
-        </button>
-        <button onClick={() => setFilterOpen(true)} aria-label="Filter" className="p-1 text-text-primary">
-          <SlidersHorizontal size={22} />
-        </button>
-      </header>
-
-      {/* Search bar */}
-      {searchOpen && (
-        <div className="px-5 pt-3">
-          <div className="flex items-center gap-2 rounded-input bg-bg-input px-3 py-2">
-            <Search size={16} className="text-text-muted" />
-            <input
-              autoFocus
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Aufgaben durchsuchen"
-              className="flex-1 bg-transparent text-[15px] text-text-primary placeholder:text-text-muted outline-none"
-            />
-            {search && (
-              <button onClick={() => setSearch('')} aria-label="Suche leeren">
-                <X size={16} className="text-text-muted" />
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Category tabs */}
-      <div className="no-scrollbar mt-3 flex gap-2 overflow-x-auto px-5">
-        {TABS.map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setCategory(tab)}
-            className={`shrink-0 rounded-chip px-4 py-1.5 text-[14px] font-medium transition-colors ${
-              category === tab ? 'bg-accent text-white' : 'text-text-secondary'
-            }`}
-          >
-            {tab}
+      {/* Sticky top — header + search + category tabs stay visible while the
+          task list scrolls underneath. */}
+      <div className="sticky top-0 z-30 border-b border-subtle bg-bg-base">
+        {/* Header */}
+        <header className="flex items-center gap-2 px-5 pt-5">
+          <button onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 p-1 text-text-primary">
+            <Menu size={26} />
           </button>
-        ))}
+          <h1 className="flex-1 text-[28px] font-bold text-text-primary">Aufgaben</h1>
+          <button
+            onClick={() => {
+              setSearchOpen((v) => !v)
+              if (searchOpen) setSearch('')
+            }}
+            aria-label="Suche"
+            className="p-1 text-text-primary"
+          >
+            <Search size={22} />
+          </button>
+          <button onClick={() => setFilterOpen(true)} aria-label="Filter" className="p-1 text-text-primary">
+            <SlidersHorizontal size={22} />
+          </button>
+        </header>
+
+        {/* Search bar */}
+        {searchOpen && (
+          <div className="px-5 pt-3">
+            <div className="flex items-center gap-2 rounded-input bg-bg-input px-3 py-2">
+              <Search size={16} className="text-text-muted" />
+              <input
+                autoFocus
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Aufgaben durchsuchen"
+                className="flex-1 bg-transparent text-[15px] text-text-primary placeholder:text-text-muted outline-none"
+              />
+              {search && (
+                <button onClick={() => setSearch('')} aria-label="Suche leeren">
+                  <X size={16} className="text-text-muted" />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Category tabs */}
+        <div className="no-scrollbar mt-3 flex gap-2 overflow-x-auto px-5 pb-3">
+          {TABS.map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setCategory(tab)}
+              className={`shrink-0 rounded-chip px-4 py-1.5 text-[14px] font-medium transition-colors ${
+                category === tab ? 'bg-accent text-white' : 'text-text-secondary'
+              }`}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* List */}
-      <div className="px-5 pt-4">
+      <div className="px-5 pt-3">
         {loading ? (
           <SkeletonTaskList />
         ) : isEmpty ? (
@@ -253,6 +266,7 @@ export default function TasksList() {
         ) : (
           <DndContext
             sensors={sensors}
+            modifiers={[restrictToVerticalAxis]}
             collisionDetection={closestCorners}
             onDragStart={handleDragStart}
             onDragOver={handleDragOver}
