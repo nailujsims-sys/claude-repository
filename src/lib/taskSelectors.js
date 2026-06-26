@@ -1,4 +1,11 @@
-import { SECTION_ORDER, SECTIONS, sectionForDueDate, isToday, isInCurrentWeek } from './date'
+import {
+  SECTION_ORDER,
+  SECTIONS,
+  sectionForDueDate,
+  isToday,
+  isInCurrentWeek,
+  isOverdue,
+} from './date'
 
 // Pure functions that derive the various task views from the full task list.
 // Keeping them here keeps screens declarative and easy to test.
@@ -8,6 +15,12 @@ export const CATEGORIES = ['Privat', 'Uni', 'Arbeit']
 // Active = not completed, not deleted.
 export function isActive(task) {
   return !task.is_completed && !task.is_deleted
+}
+
+// A task belongs under "Heute" when it's due today or overdue. Overdue tasks
+// roll forward into today (without touching their stored due_date) until done.
+export function isDueToday(task, ref = new Date()) {
+  return isToday(task.due_date, ref) || isOverdue(task, ref)
 }
 
 // Build the grouped, filtered list for the Aufgaben screen.
@@ -47,7 +60,9 @@ export function buildSections(tasks, filters, ref = new Date()) {
     } else if (task.is_completed) {
       if (showCompleted) buckets[section].completed.push(task)
     } else {
-      buckets[section].active.push(task)
+      // Active overdue tasks roll forward into HEUTE; the rest stay in their
+      // natural section. due_date itself is never changed.
+      buckets[isOverdue(task, ref) ? 'TODAY' : section].active.push(task)
     }
   }
 
@@ -68,11 +83,11 @@ export function homePreview(tasks, scope, ref = new Date()) {
   const inScope =
     scope === 'week'
       ? active.filter((t) => isInCurrentWeek(t.due_date, ref))
-      : active.filter((t) => isToday(t.due_date, ref))
+      : active.filter((t) => isDueToday(t, ref))
   return inScope.sort((a, b) => a.sort_order - b.sort_order)
 }
 
-// Count of open (active) tasks due today — shown in the home card header.
+// Count of open (active) tasks due today (incl. overdue) — shown on the home card.
 export function openTodayCount(tasks, ref = new Date()) {
-  return tasks.filter((t) => isActive(t) && isToday(t.due_date, ref)).length
+  return tasks.filter((t) => isActive(t) && isDueToday(t, ref)).length
 }

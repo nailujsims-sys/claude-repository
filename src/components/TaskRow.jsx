@@ -18,10 +18,14 @@ export default function TaskRow({
   showBorder = true,
   dragHandleProps,
   isDragging = false,
+  isOverdue = false,
 }) {
   const [completing, setCompleting] = useState(false)
   const completed = variant === 'completed'
   const deleted = variant === 'deleted'
+  // Overdue styling only applies to open tasks (not completed/deleted) and
+  // never while the completion animation is playing.
+  const overdue = isOverdue && variant === 'active' && !completing
 
   const handleCircle = (e) => {
     e.stopPropagation()
@@ -48,6 +52,11 @@ export default function TaskRow({
       onClick={() => onOpen?.(task)}
       {...dragHandleProps}
     >
+      {/* Thin red accent on the card's left edge for overdue tasks */}
+      {overdue && (
+        <span className="pointer-events-none absolute inset-y-0 left-0 w-[3px] bg-danger" />
+      )}
+
       {/* Complete circle */}
       <button
         onClick={handleCircle}
@@ -60,7 +69,9 @@ export default function TaskRow({
               ? 'border-success bg-success'
               : deleted
                 ? 'border-text-muted/50'
-                : 'border-text-muted'
+                : overdue
+                  ? 'border-danger'
+                  : 'border-text-muted'
           }`}
         >
           {showCheck && <Check size={14} className="text-bg-base" strokeWidth={3} />}
@@ -80,8 +91,18 @@ export default function TaskRow({
         >
           {task.title}
         </p>
-        {subtitle && (
-          <p className="truncate text-[12px] text-text-secondary">{subtitle}</p>
+        {(subtitle || overdue) && (
+          <p
+            className={`truncate text-[12px] ${
+              overdue ? 'text-danger' : 'text-text-secondary'
+            }`}
+          >
+            {overdue
+              ? subtitle
+                ? `Überfällig · ${subtitle}`
+                : 'Überfällig'
+              : subtitle}
+          </p>
         )}
       </div>
 

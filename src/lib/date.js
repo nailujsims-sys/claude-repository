@@ -140,6 +140,23 @@ export function isInCurrentWeek(dueDateStr, ref = new Date()) {
   return due >= weekStart && due <= weekEnd
 }
 
+// Is an active task overdue? True when its whole due period (day / week / month)
+// has fully elapsed before today and the task is still open. Completed, deleted,
+// or dateless tasks are never overdue.
+//
+// Overdue is *derived* from the current day — the stored due_date is never
+// mutated, so it always stays the original due date (fully traceable) and an
+// overdue task keeps rolling into "Heute" every new day until it's completed.
+export function isOverdue(task, ref = new Date()) {
+  if (!task || !task.due_date || task.is_completed || task.is_deleted) return false
+  const due = parseISODate(task.due_date)
+  if (!due) return false
+  let periodEnd = due // 'day' (and default)
+  if (task.due_type === 'week') periodEnd = addDays(startOfISOWeek(due), 6)
+  else if (task.due_type === 'month') periodEnd = endOfMonth(due)
+  return periodEnd < startOfDay(ref)
+}
+
 // ---------------------------------------------------------------------------
 // Human-readable formatting (German).
 // ---------------------------------------------------------------------------

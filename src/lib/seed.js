@@ -14,6 +14,7 @@ export function seedTasks() {
   const tm = toISODate(tomorrow)
   const we = toISODate(weekEnd)
   const mo = toISODate(thisMonth)
+  const past = toISODate(addDays(today, -2)) // 2 days ago → overdue, rolls to HEUTE
 
   const rows = [
     // HEUTE
@@ -36,6 +37,9 @@ export function seedTasks() {
       is_favorite: true,
     },
     { title: 'Sport machen', category: 'Privat', due_date: t },
+
+    // ÜBERFÄLLIG (Demo) — vor 2 Tagen fällig, erscheint automatisch unter HEUTE
+    { title: 'Rechnung bezahlen', category: 'Arbeit', due_date: past },
 
     // MORGEN
     { title: 'Wäsche waschen', category: 'Privat', due_date: tm },

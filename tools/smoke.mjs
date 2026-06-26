@@ -87,6 +87,10 @@ async function run() {
     const text = txt(window)
     console.log(`\n=== ${name} ===\n  len=${text.length} :: ${text.slice(0, 150)}`)
     if (text.length < 20) errors.push(`[${name}] rendered almost nothing`)
+    // The seed has a 2-days-overdue task, so the list must render the overdue label.
+    if (name.startsWith('Aufgaben') && !text.includes('Überfällig')) {
+      errors.push(`[${name}] overdue task label "Überfällig" not rendered`)
+    }
   }
 
   // 2) Detail view for a known, pre-seeded task (exercises formatDueLabel etc.).

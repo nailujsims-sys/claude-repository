@@ -22,7 +22,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { useUI } from '../context/UIContext'
 import { useTasks } from '../context/TasksContext'
 import { buildSections, CATEGORIES } from '../lib/taskSelectors'
-import { addDays, endOfMonth, startOfDay, startOfISOWeek, toISODate } from '../lib/date'
+import { addDays, endOfMonth, isOverdue, startOfDay, startOfISOWeek, toISODate } from '../lib/date'
 import TaskRow from '../components/TaskRow'
 import FilterSheet, { FILTER_DEFAULTS } from '../components/FilterSheet'
 import { SkeletonTaskList } from '../components/Skeleton'
@@ -285,7 +285,7 @@ export default function TasksList() {
                   className="rounded-card bg-bg-elevated shadow-xl shadow-black/50"
                   style={{ transform: 'scale(1.03)' }}
                 >
-                  <TaskRow task={activeTask} showBorder={false} />
+                  <TaskRow task={activeTask} isOverdue={isOverdue(activeTask)} showBorder={false} />
                 </div>
               ) : null}
             </DragOverlay>
@@ -319,6 +319,7 @@ function Section({ section, rowHandlers }) {
             <SortableTaskRow
               key={task.id}
               task={task}
+              isOverdue={isOverdue(task)}
               showBorder={
                 i < section.active.length - 1 ||
                 section.completed.length > 0 ||
