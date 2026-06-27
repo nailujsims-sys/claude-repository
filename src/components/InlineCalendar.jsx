@@ -131,7 +131,9 @@ export default function InlineCalendar({ value, onChange }) {
                 if (state === 'day') cls += 'bg-accent text-white font-semibold'
                 else if (state === 'week') cls += 'bg-accent/30 text-white'
                 else if (state === 'month') cls += 'bg-accent/20 text-white'
-                else if (isToday) cls += 'bg-white/10 ' + (day.inMonth ? 'text-text-primary' : 'text-text-muted')
+                // Today: blue, bold number (no background). A selection above
+                // overrides it — so picking today replaces this highlight.
+                else if (isToday) cls += 'text-accent font-bold'
                 else cls += day.inMonth ? 'text-text-primary' : 'text-text-muted'
 
                 return (
