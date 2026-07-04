@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from './context/AuthContext'
 import { ToastProvider } from './context/ToastContext'
 import { UIProvider } from './context/UIContext'
 import { TasksProvider } from './context/TasksContext'
+import { EventsProvider } from './context/EventsContext'
 
 import BottomNav from './components/BottomNav'
 import Sidebar from './components/Sidebar'
@@ -52,7 +53,9 @@ function Gate() {
   return (
     <UIProvider>
       <TasksProvider>
-        <AppShell />
+        <EventsProvider>
+          <AppShell />
+        </EventsProvider>
       </TasksProvider>
     </UIProvider>
   )
