@@ -9,6 +9,7 @@ import BottomNav from './components/BottomNav'
 import Sidebar from './components/Sidebar'
 import ActionSheet from './components/ActionSheet'
 import TaskForm from './components/TaskForm'
+import EventForm from './components/EventForm'
 import ToastHost from './components/ToastHost'
 import ErrorBanner from './components/ErrorBanner'
 
@@ -85,6 +86,7 @@ function AppShell() {
       <Sidebar />
       <ActionSheet />
       <TaskForm />
+      <EventForm />
       <ToastHost />
     </div>
   )

@@ -168,6 +168,45 @@ async function run() {
     if (!text.includes('Mo')) errors.push('[Kalender] Monat weekday header missing')
   }
 
+  // 5) Neuer Termin form: open it via the Plus action sheet and check the key
+  //    fields render (title input, Terminart, Zeit block, Wiederholen/Erinnerung).
+  {
+    const window = makeDom('#/kalender')
+    mount(window, code, 'EventForm')
+    await wait(300)
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Neu erstellen'))
+      errors.push('[EventForm] Plus button not found')
+    await wait(120)
+    if (!click(window, (el) => el.textContent.trim() === 'Neuer Termin'))
+      errors.push('[EventForm] "Neuer Termin" action not found')
+    await wait(150)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== EventForm (Neuer Termin) ===\n  ${text.slice(0, 170)}`)
+    if (!window.document.querySelector('input[placeholder="Titel des Termins"]'))
+      errors.push('[EventForm] title input not rendered')
+    for (const needle of ['Terminart', 'Geburtstag', 'Ganztägig', 'Start', 'Ende', 'Wiederholen', 'Erinnerung']) {
+      if (!text.includes(needle)) errors.push(`[EventForm] missing "${needle}"`)
+    }
+  }
+
+  // 6) Event detail: tap a seeded multi-day event in the day view and confirm
+  //    the read-only sheet with the task-identical actions renders.
+  {
+    const window = makeDom('#/kalender')
+    mount(window, code, 'EventDetail')
+    await wait(300)
+    if (!click(window, (el) => el.textContent.trim() === 'Familientreffen'))
+      errors.push('[EventDetail] event bar "Familientreffen" not found')
+    await wait(150)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== EventDetail ===\n  ${text.slice(0, 170)}`)
+    for (const needle of ['Datum', 'Wiederholung', 'Erinnerung', 'Bearbeiten', 'Löschen']) {
+      if (!text.includes(needle)) errors.push(`[EventDetail] missing "${needle}"`)
+    }
+  }
+
   console.log('\n--- result ---')
   if (errors.length) {
     console.log('FAILURES:')

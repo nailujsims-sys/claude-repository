@@ -34,8 +34,9 @@ export function seedEvents() {
     { title: 'Familientreffen', all_day: true, start_at: day(today), end_at: day(addDays(today, 2)) },
     { title: 'Workshop', all_day: true, start_at: day(d(8)), end_at: day(d(9)) },
 
-    // All-day birthday (recurs yearly)
-    { title: 'Geburtstag Mama', is_birthday: true, all_day: true, recurrence: 'FREQ=YEARLY', start_at: day(mDay(17)), end_at: day(mDay(17)) },
+    // All-day birthday (recurs yearly). Stored as just the name — the calendar
+    // renders it as "🎂 Mama" via eventDisplayTitle.
+    { title: 'Mama', is_birthday: true, all_day: true, recurrence: 'FREQ=YEARLY', start_at: day(mDay(17)), end_at: day(mDay(17)) },
 
     // A couple more across the month
     { title: 'Präsentation', location: 'Raum C3', start_at: at(d(8), '14:00'), end_at: at(d(8), '15:00') },

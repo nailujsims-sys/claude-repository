@@ -9,6 +9,8 @@ export function UIProvider({ children }) {
   const [actionSheetOpen, setActionSheetOpen] = useState(false)
   // taskForm: null | { mode: 'create' | 'edit', taskId?: string }
   const [taskForm, setTaskForm] = useState(null)
+  // eventForm: null | { mode: 'create' | 'edit', eventId?: string }
+  const [eventForm, setEventForm] = useState(null)
 
   const value = useMemo(
     () => ({
@@ -23,8 +25,12 @@ export function UIProvider({ children }) {
       taskForm,
       openTaskForm: (opts = { mode: 'create' }) => setTaskForm(opts),
       closeTaskForm: () => setTaskForm(null),
+
+      eventForm,
+      openEventForm: (opts = { mode: 'create' }) => setEventForm(opts),
+      closeEventForm: () => setEventForm(null),
     }),
-    [sidebarOpen, actionSheetOpen, taskForm]
+    [sidebarOpen, actionSheetOpen, taskForm, eventForm]
   )
 
   return <UIContext.Provider value={value}>{children}</UIContext.Provider>

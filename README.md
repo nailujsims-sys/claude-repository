@@ -29,6 +29,12 @@ app is fully usable the moment it loads.
   It **reuses the existing task data** (day list, per-day counts, month dots) — no
   duplicate storage — on a scalable event model (title, description, location,
   start/end, all-day, recurrence, reminder, birthday, timezone). Search is stubbed.
+- **Termine** — create, edit and delete calendar events through a compact
+  **Neuer Termin** sheet (title, Termin/Geburtstag, all-day toggle, multi-day
+  start/end with times, recurrence, reminder, location, notes) and a read-only
+  detail sheet with the same Bearbeiten / Löschen actions as tasks. Birthdays are
+  all-day + yearly and render as **🎂 Name**. The event model maps 1:1 to Google
+  Calendar (RRULE recurrence, minute-based reminders) for a future sync.
 - **Mehr** placeholder route, with a preview of upcoming modules.
 
 Everything else (Morning Briefing, schedule, greeting quote) is intentionally
@@ -119,6 +125,7 @@ src/
     supabase.js             Supabase client (or null)
     date.js                 dates, ISO weeks, section grouping, formatting
     calendar.js             event geometry: parsing, overlap layout, bar packing
+    eventOptions.js         recurrence + reminder option lists and labels
     useNow.js               ticking clock hook for the live time indicator
     taskSelectors.js        derive grouped/filtered views (incl. tasksForDay)
     seed.js / eventSeed.js  demo tasks / events for local mode
@@ -129,7 +136,8 @@ src/
     supabaseEventRepository.js · localEventRepository.js · eventDefaults.js
   context/                  Auth · Tasks · Events · UI (overlays) · Toast
   components/               BottomNav, Sidebar, ActionSheet, BottomSheet, TaskForm,
-                            InlineCalendar, FilterSheet, TaskRow, EventDetailSheet, …
+                            EventForm, InlineCalendar, MiniCalendar, FilterSheet,
+                            TaskRow, EventDetailSheet, ConfirmDialog, …
   screens/                  Home, TasksList, TaskDetail, Kalender, Mehr, Login
     calendar/               DayView, WeekView, MonthView, parts (shared grid pieces)
 ```

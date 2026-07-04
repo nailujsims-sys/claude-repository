@@ -5,7 +5,11 @@ import { seedEvents } from '../lib/eventSeed'
 // stored shape matches the Supabase `events` table, so the two are drop-in
 // interchangeable. Used whenever Supabase is not configured.
 
-const keyFor = (userId) => `mw.events.${userId}`
+// `v2`: one-time seed bump. Event create/edit/delete did not exist before, so
+// any previously stored events are pure demo seed — re-seeding loses no real
+// data and refreshes the demo (incl. the corrected "Mama" birthday name)
+// relative to the current day. Do NOT bump this again now that events persist.
+const keyFor = (userId) => `mw.events.v2.${userId}`
 
 function read(userId) {
   try {

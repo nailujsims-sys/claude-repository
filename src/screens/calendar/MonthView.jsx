@@ -1,5 +1,11 @@
 import { buildMonthGrid, isToday, toISODate, WEEKDAYS_DE } from '../../lib/date'
-import { eventsInRange, isBarEvent, splitDayEvents, packBars } from '../../lib/calendar'
+import {
+  eventsInRange,
+  isBarEvent,
+  splitDayEvents,
+  packBars,
+  eventDisplayTitle,
+} from '../../lib/calendar'
 import { tasksForDay } from '../../lib/taskSelectors'
 import { BarsArea } from './parts'
 
@@ -89,7 +95,7 @@ function WeekRow({ week, events, tasks, onSelectDay, onSelectEvent }) {
                   }}
                   className="block w-full truncate rounded bg-accent-dim px-1 text-left text-[9px] leading-[14px] text-text-primary"
                 >
-                  {ev.title}
+                  {eventDisplayTitle(ev)}
                 </button>
               ))}
               {hidden > 0 && (

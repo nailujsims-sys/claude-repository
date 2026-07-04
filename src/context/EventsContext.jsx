@@ -50,6 +50,8 @@ export function EventsProvider({ children }) {
       return next
     })
 
+  const getEvent = useCallback((id) => events.find((e) => e.id === id) || null, [events])
+
   const createEvent = useCallback(
     async (data) => {
       const row = await repo.createEvent(user.id, data)
@@ -98,11 +100,12 @@ export function EventsProvider({ children }) {
       loading,
       error,
       reload: load,
+      getEvent,
       createEvent,
       updateEvent,
       deleteEvent,
     }),
-    [events, loading, error, load, createEvent, updateEvent, deleteEvent]
+    [events, loading, error, load, getEvent, createEvent, updateEvent, deleteEvent]
   )
 
   return <EventsContext.Provider value={value}>{children}</EventsContext.Provider>

@@ -1,4 +1,11 @@
-import { HOUR_HEIGHT, HOURS, GRID_HEIGHT, nowTop, eventTimeLabel } from '../../lib/calendar'
+import {
+  HOUR_HEIGHT,
+  HOURS,
+  GRID_HEIGHT,
+  nowTop,
+  eventTimeLabel,
+  eventDisplayTitle,
+} from '../../lib/calendar'
 
 // Shared presentational primitives for the Tag / Woche grids. Kept dumb and
 // pixel-driven so both views compose them the same way.
@@ -73,7 +80,7 @@ export function TimedBlock({ item, onClick, compact = false }) {
       }}
     >
       <p className="truncate text-[11px] font-medium leading-tight text-text-primary">
-        {ev.title}
+        {eventDisplayTitle(ev)}
       </p>
       {showTime && (
         <p className="truncate text-[10px] leading-tight text-text-secondary">
@@ -103,7 +110,7 @@ export function BarsArea({ lanes, laneCount, columns, onSelect, laneHeight = 22 
           }}
         >
           <span className="block truncate text-[12px] leading-[18px] text-text-primary">
-            {ev.title}
+            {eventDisplayTitle(ev)}
           </span>
         </button>
       ))}
