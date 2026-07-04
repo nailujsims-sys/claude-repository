@@ -16,6 +16,7 @@ import { useTasks } from '../context/TasksContext'
 import { useUI } from '../context/UIContext'
 import { useToast } from '../context/ToastContext'
 import StarButton from '../components/StarButton'
+import ConfirmDialog from '../components/ConfirmDialog'
 import { formatDueLabel, formatLongDate, formatTime } from '../lib/date'
 
 export default function TaskDetail() {
@@ -178,6 +179,8 @@ export default function TaskDetail() {
 
       {confirmOpen && (
         <ConfirmDialog
+          title="Aufgabe löschen?"
+          message="Diese Aufgabe wird in den Papierkorb verschoben."
           onCancel={() => setConfirmOpen(false)}
           onConfirm={handleDelete}
         />
@@ -202,33 +205,5 @@ function InfoRow({ icon: Icon, label, value, onClick, muted, chevron = true, bor
       </span>
       {chevron && onClick && <ChevronRight size={18} className="text-text-muted" />}
     </Wrapper>
-  )
-}
-
-function ConfirmDialog({ onCancel, onConfirm }) {
-  return (
-    <div className="fixed inset-0 z-[55] flex items-center justify-center px-8">
-      <div className="absolute inset-0 bg-black/60 animate-fade-in" onClick={onCancel} />
-      <div className="relative w-full max-w-[320px] animate-fade-in rounded-card border border-subtle bg-bg-elevated p-5">
-        <h3 className="text-[17px] font-bold text-text-primary">Aufgabe löschen?</h3>
-        <p className="mt-2 text-[14px] leading-snug text-text-secondary">
-          Diese Aufgabe wird in den Papierkorb verschoben.
-        </p>
-        <div className="mt-5 flex gap-3">
-          <button
-            onClick={onCancel}
-            className="flex-1 rounded-btn border border-subtle py-2.5 text-[15px] font-semibold text-text-secondary"
-          >
-            Abbrechen
-          </button>
-          <button
-            onClick={onConfirm}
-            className="flex-1 rounded-btn bg-danger py-2.5 text-[15px] font-semibold text-white"
-          >
-            Löschen
-          </button>
-        </div>
-      </div>
-    </div>
   )
 }

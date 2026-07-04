@@ -33,6 +33,14 @@ export function formatDateTime(date) {
 export const eventStart = (ev) => parseDateTime(ev.start_at)
 export const eventEnd = (ev) => parseDateTime(ev.end_at) || parseDateTime(ev.start_at)
 
+// A birthday renders as "🎂 <Name>" everywhere it appears (bars, chips, detail);
+// every other event uses its plain title. The stored title is always just the
+// name, so this stays the single place the cake prefix is applied.
+export function eventDisplayTitle(ev) {
+  if (!ev) return ''
+  return ev.is_birthday ? `🎂 ${ev.title}` : ev.title
+}
+
 // A "bar" event renders in the all-day strip above the hour grid: either
 // explicitly all-day (incl. birthdays) or spanning more than one calendar day.
 export function isBarEvent(ev) {

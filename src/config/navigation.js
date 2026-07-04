@@ -13,6 +13,7 @@ import {
   Brain,
   LineChart,
   ClipboardList,
+  CalendarPlus,
 } from 'lucide-react'
 
 // ── Bottom navigation ──────────────────────────────────────────────────────
@@ -55,4 +56,5 @@ export const futureModules = [
 // creation flows arrive (Neuer Termin, Neue Notiz, …).
 export const actionSheetItems = [
   { id: 'new-task', label: 'Neue Aufgabe', icon: ClipboardList, action: 'task' },
+  { id: 'new-event', label: 'Neuer Termin', icon: CalendarPlus, action: 'event' },
 ]
