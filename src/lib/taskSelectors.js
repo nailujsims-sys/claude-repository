@@ -23,6 +23,16 @@ export function isDueToday(task, ref = new Date()) {
   return isToday(task.due_date, ref) || isOverdue(task, ref)
 }
 
+// Active tasks due on EXACTLY the given ISO day (day-type only). Single source
+// of truth for the calendar's day list, week counts and month dots — week- and
+// month-type tasks deliberately never appear here (per the calendar spec).
+export function tasksForDay(tasks, dayISO) {
+  if (!dayISO) return []
+  return tasks.filter(
+    (t) => isActive(t) && t.due_type === 'day' && t.due_date === dayISO
+  )
+}
+
 // Build the grouped, filtered list for the Aufgaben screen.
 //
 // filters: {

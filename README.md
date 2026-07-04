@@ -1,9 +1,10 @@
 # 🧠 Mind Whiteboard
 
 A premium, dark, mobile-first personal productivity app for **Julian**. Version 1
-ships two fully functional modules — the **Startseite** (home dashboard) and the
-**Aufgaben** task manager — on top of a navigation architecture (bottom bar,
-sidebar, action sheet) built to be extended module by module.
+ships three fully functional modules — the **Startseite** (home dashboard), the
+**Aufgaben** task manager and the **Kalender** — on top of a navigation
+architecture (bottom bar, sidebar, action sheet) built to be extended module by
+module.
 
 Built with **React + Vite + Tailwind CSS**, with a data layer that talks to
 **Supabase** when configured and otherwise falls back to **localStorage**, so the
@@ -22,7 +23,13 @@ app is fully usable the moment it loads.
 - **Aufgabe-Detail** — full task view with edit & soft-delete (Papierkorb).
 - **Neue Aufgabe / Bearbeiten** — slide-up form with a custom inline calendar that
   supports **day / week (KW) / month** due dates plus an optional time.
-- **Kalender** and **Mehr** placeholder routes, with a preview of upcoming modules.
+- **Kalender** — a full calendar module with **Tag / Woche / Monat** views, a live
+  red time indicator that auto-scrolls to now, stacked multi-day event bars, an
+  overlap-aware day/week grid, and a Google-style month grid with "+X weitere".
+  It **reuses the existing task data** (day list, per-day counts, month dots) — no
+  duplicate storage — on a scalable event model (title, description, location,
+  start/end, all-day, recurrence, reminder, birthday, timezone). Search is stubbed.
+- **Mehr** placeholder route, with a preview of upcoming modules.
 
 Everything else (Morning Briefing, schedule, greeting quote) is intentionally
 static per the spec.
@@ -53,10 +60,11 @@ npm run smoke        # headless runtime smoke test (jsdom) across all routes
 The app becomes a real, synced, single-user app the moment you provide Supabase
 credentials. Three steps:
 
-**1. Create the table + RLS.** In your Supabase project open the SQL Editor and
-run [`supabase/migrations/0001_create_tasks.sql`](supabase/migrations/0001_create_tasks.sql).
-It creates the `tasks` table, indexes, an `updated_at` trigger, and Row Level
-Security policies so each user only sees their own rows.
+**1. Create the tables + RLS.** In your Supabase project open the SQL Editor and
+run [`supabase/migrations/0001_create_tasks.sql`](supabase/migrations/0001_create_tasks.sql)
+and then [`supabase/migrations/0002_create_events.sql`](supabase/migrations/0002_create_events.sql).
+They create the `tasks` and `events` tables, indexes, an `updated_at` trigger, and
+Row Level Security policies so each user only sees their own rows.
 
 **2. Create Julian's user.** Supabase Dashboard → Authentication → Users → *Add
 user* → set his email + password. (There is no registration screen — Julian is
@@ -99,8 +107,8 @@ uses a hash router so deep links work on Pages without server rewrites.
 index.html                  Vite entry
 vite.config.js              base path + React plugin
 tailwind.config.js          design tokens (colors, radii, animations)
-supabase/migrations/        SQL: tasks table + RLS
-tools/smoke.mjs             jsdom runtime smoke test
+supabase/migrations/        SQL: tasks + events tables + RLS
+tools/smoke.mjs             jsdom runtime smoke test (incl. calendar views)
 src/
   main.jsx                  bootstrap (HashRouter)
   App.jsx                   providers, auth gate, routes, app shell
@@ -110,17 +118,20 @@ src/
     config.js               env detection (Supabase vs local)
     supabase.js             Supabase client (or null)
     date.js                 dates, ISO weeks, section grouping, formatting
-    taskSelectors.js        derive grouped/filtered views from the task list
-    seed.js                 demo tasks for local mode
+    calendar.js             event geometry: parsing, overlap layout, bar packing
+    useNow.js               ticking clock hook for the live time indicator
+    taskSelectors.js        derive grouped/filtered views (incl. tasksForDay)
+    seed.js / eventSeed.js  demo tasks / events for local mode
   data/
     taskRepository.js       factory: picks Supabase or local impl
-    supabaseTaskRepository.js
-    localTaskRepository.js
-    taskDefaults.js         shared task shape + writable-field whitelist
-  context/                  Auth · Tasks · UI (overlays) · Toast
+    supabaseTaskRepository.js · localTaskRepository.js · taskDefaults.js
+    eventRepository.js      factory for calendar events (Supabase or local)
+    supabaseEventRepository.js · localEventRepository.js · eventDefaults.js
+  context/                  Auth · Tasks · Events · UI (overlays) · Toast
   components/               BottomNav, Sidebar, ActionSheet, BottomSheet, TaskForm,
-                            InlineCalendar, FilterSheet, TaskRow, StarButton, …
+                            InlineCalendar, FilterSheet, TaskRow, EventDetailSheet, …
   screens/                  Home, TasksList, TaskDetail, Kalender, Mehr, Login
+    calendar/               DayView, WeekView, MonthView, parts (shared grid pieces)
 ```
 
 ### Extending the navigation

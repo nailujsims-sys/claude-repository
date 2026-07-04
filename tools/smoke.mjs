@@ -143,6 +143,31 @@ async function run() {
     }
   }
 
+  // 4) Calendar module: mount the day view, then switch Tag → Woche → Monat so
+  //    all three render paths (overlap layout, multi-day bars, month grid) run.
+  {
+    const window = makeDom('#/kalender')
+    mount(window, code, 'Kalender')
+    await wait(300)
+    let text = txt(window)
+    console.log(`\n=== Kalender/Tag ===\n  ${text.slice(0, 170)}`)
+    for (const needle of ['Tag', 'Woche', 'Monat', 'Aufgaben (']) {
+      if (!text.includes(needle)) errors.push(`[Kalender] Tag missing "${needle}"`)
+    }
+    if (!click(window, (el) => el.textContent.trim() === 'Woche'))
+      errors.push('[Kalender] "Woche" switch not found')
+    await wait(150)
+    text = txt(window)
+    if (!text.includes('KW')) errors.push('[Kalender] Woche missing "KW"')
+    if (!click(window, (el) => el.textContent.trim() === 'Monat'))
+      errors.push('[Kalender] "Monat" switch not found')
+    await wait(150)
+    window.__restoreConsole?.()
+    text = txt(window)
+    console.log(`\n=== Kalender/Monat ===\n  ${text.slice(0, 170)}`)
+    if (!text.includes('Mo')) errors.push('[Kalender] Monat weekday header missing')
+  }
+
   console.log('\n--- result ---')
   if (errors.length) {
     console.log('FAILURES:')
@@ -150,6 +175,9 @@ async function run() {
     process.exit(1)
   }
   console.log('OK: all routes + detail + form mounted and rendered without errors.')
+  // Mounted components keep timers alive (e.g. the calendar's live clock), which
+  // would otherwise stop node from exiting — finish deterministically.
+  process.exit(0)
 }
 
 run().catch((e) => {

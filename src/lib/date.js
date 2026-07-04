@@ -20,6 +20,22 @@ export const MONTHS_DE = [
 // Monday-first weekday labels for the calendar header.
 export const WEEKDAYS_DE = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So']
 
+// Full Monday-first weekday names (day-view subtitle).
+export const WEEKDAYS_DE_LONG = [
+  'Montag',
+  'Dienstag',
+  'Mittwoch',
+  'Donnerstag',
+  'Freitag',
+  'Samstag',
+  'Sonntag',
+]
+
+// Monday index (Mon=0 … Sun=6) for a date.
+export function weekdayMon(date) {
+  return (date.getDay() + 6) % 7
+}
+
 export function startOfDay(date) {
   const d = new Date(date)
   d.setHours(0, 0, 0, 0)
@@ -179,6 +195,21 @@ export function formatWeekRange(monday) {
   return `${start.getDate()}. ${MONTHS_DE[start.getMonth()]} – ${end.getDate()}. ${
     MONTHS_DE[end.getMonth()]
   }`
+}
+
+// Week range with year, for the calendar header: "22. – 28. Juni 2026".
+// Collapses the shared month/year and handles cross-month / cross-year weeks.
+export function formatWeekRangeWithYear(monday) {
+  const start = startOfDay(monday)
+  const end = addDays(start, 6)
+  const endStr = `${end.getDate()}. ${MONTHS_DE[end.getMonth()]} ${end.getFullYear()}`
+  if (start.getFullYear() !== end.getFullYear()) {
+    return `${start.getDate()}. ${MONTHS_DE[start.getMonth()]} ${start.getFullYear()} – ${endStr}`
+  }
+  if (start.getMonth() !== end.getMonth()) {
+    return `${start.getDate()}. ${MONTHS_DE[start.getMonth()]} – ${endStr}`
+  }
+  return `${start.getDate()}. – ${endStr}`
 }
 
 // ---------------------------------------------------------------------------
