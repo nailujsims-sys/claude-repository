@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronDown } from 'lucide-react'
 import { isToday, toISODate, isOverdue } from '../../lib/date'
@@ -12,18 +12,40 @@ import {
 } from '../../lib/calendar'
 import { tasksForDay } from '../../lib/taskSelectors'
 import { useTasks } from '../../context/TasksContext'
+import { useEvents } from '../../context/EventsContext'
+import { useToast } from '../../context/ToastContext'
 import TaskRow from '../../components/TaskRow'
-import { HourGutter, HourLines, NowLine, TimedBlock, BarsArea } from './parts'
+import { HourGutter, HourLines, NowLine, TimedBlock, BarsArea, CalendarEmpty } from './parts'
+import { useTimedGesture } from './useTimedGesture'
 
-export default function DayView({ date, events, tasks, now, onSelectEvent }) {
+function DayView({ date, events, tasks, onSelectEvent }) {
   const scrollRef = useRef(null)
+  const gridRef = useRef(null)
   const dayISO = toISODate(date)
   const today = isToday(dayISO)
+  const { updateEvent } = useEvents()
+  const { showToast } = useToast()
 
   const { bars, timed } = splitDayEvents(events, date)
   const layout = layoutTimedEvents(timed)
   const { lanes, laneCount } = packBars(bars, date, date)
   const dayTasks = tasksForDay(tasks, dayISO)
+  const isEmpty = bars.length === 0 && timed.length === 0
+
+  const { editId, draft, clearEdit, handlers } = useTimedGesture({
+    gridRef,
+    columns: 1,
+    resolveEvent: (id) => timed.find((e) => e.id === id) || null,
+    onOpen: onSelectEvent,
+    onCommit: async (id, patch, mode) => {
+      try {
+        await updateEvent(id, patch)
+        showToast(mode === 'move' ? 'Termin verschoben' : 'Dauer geändert')
+      } catch {
+        /* error surfaces via the global banner */
+      }
+    },
+  })
 
   // Jump to roughly "now" on today, else to the morning — when the day changes.
   useEffect(() => {
@@ -42,24 +64,39 @@ export default function DayView({ date, events, tasks, now, onSelectEvent }) {
         </div>
       )}
 
-      {/* Scrollable hour grid */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="relative flex" style={{ height: GRID_HEIGHT }}>
-          <HourGutter />
-          <div className="relative flex-1 border-l border-subtle">
-            <HourLines />
-            {layout.map((item) => (
-              <TimedBlock key={item.ev.id} item={item} onClick={onSelectEvent} />
-            ))}
-            {today && <NowLine now={now} showLabel />}
+      {/* Scrollable hour grid (+ empty state centered over its viewport) */}
+      <div className="relative min-h-0 flex-1">
+        <div ref={scrollRef} onScroll={clearEdit} className="absolute inset-0 overflow-y-auto">
+          <div className="relative flex" style={{ height: GRID_HEIGHT }}>
+            <HourGutter />
+            <div ref={gridRef} className="relative flex-1 border-l border-subtle" {...handlers}>
+              <HourLines />
+              {layout.map((item) => (
+                <TimedBlock
+                  key={item.ev.id}
+                  item={item}
+                  editing={editId === item.ev.id}
+                  draft={draft && draft.id === item.ev.id ? draft : null}
+                />
+              ))}
+              {today && <NowLine showLabel />}
+            </div>
           </div>
         </div>
+        {isEmpty && (
+          <CalendarEmpty
+            title="Keine Termine an diesem Tag"
+            hint="Tippe auf + für einen neuen Termin"
+          />
+        )}
       </div>
 
       <TasksCollapsible tasks={dayTasks} />
     </div>
   )
 }
+
+export default memo(DayView)
 
 function TasksCollapsible({ tasks }) {
   const [open, setOpen] = useState(true)

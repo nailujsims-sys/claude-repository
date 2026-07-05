@@ -1,4 +1,4 @@
-import { startOfDay, addDays, isSameDay } from './date'
+import { startOfDay, addDays, isSameDay, toISODate } from './date'
 
 // ---------------------------------------------------------------------------
 // Calendar geometry + event layout. Pure, framework-free helpers so the three
@@ -191,3 +191,68 @@ export function packBars(bars, rangeStart, rangeEnd) {
   }
   return { lanes: placed, laneCount: laneEnds.length }
 }
+
+// ── Direct manipulation: move / resize a timed event on the grid ─────────────
+// All pure math so the pointer layer (useTimedGesture) stays thin and the tricky
+// snapping/clamping is unit-tested. Times stay in local wall-clock strings.
+
+export const SNAP_MIN = 15 // events snap to a 15-minute grid while dragging
+const MIN_DURATION = 15 // a timed event can never be shorter than this
+const DAY_MINUTES = 24 * 60
+
+const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi)
+const snap = (min) => Math.round(min / SNAP_MIN) * SNAP_MIN
+
+// Convert a vertical pixel delta on the hour grid into minutes.
+export const pxToMin = (px) => (px / HOUR_HEIGHT) * 60
+
+// Pixel top/height for a timed event, from its wall-clock strings. Used to draw
+// the live drag preview (which pops to full width) without re-running layout.
+export function eventTopHeight(startAt, endAt) {
+  const s = parseDateTime(startAt)
+  const e = parseDateTime(endAt) || s
+  if (!s) return { top: 0, height: HOUR_HEIGHT }
+  const startMin = minutesOfDay(s)
+  let endMin = minutesOfDay(e)
+  if (endMin <= startMin) endMin = startMin + 30
+  return { top: (startMin / 60) * HOUR_HEIGHT, height: ((endMin - startMin) / 60) * HOUR_HEIGHT }
+}
+
+// Given an event and a drag, return the new { start_at, end_at } strings.
+//   mode 'move'  → shift the whole block (keep duration); dayShift moves it
+//                  across columns in the week view.
+//   mode 'start' → drag the top handle (change start, keep end)
+//   mode 'end'   → drag the bottom handle (change end, keep start)
+// deltaMin is the raw (unsnapped) minute delta; the result snaps to SNAP_MIN,
+// stays inside the day (00:00–24:00) and keeps at least MIN_DURATION.
+export function draggedTimes(ev, mode, deltaMin, dayShift = 0) {
+  const s = eventStart(ev)
+  const e = eventEnd(ev) || new Date(s.getTime() + 30 * 60000)
+  const startMin = minutesOfDay(s)
+  const endMin = Math.max(startMin + MIN_DURATION, minutesOfDay(e))
+  const duration = endMin - startMin
+
+  let ns = startMin
+  let ne = endMin
+  if (mode === 'move') {
+    ns = clamp(snap(startMin + deltaMin), 0, DAY_MINUTES - duration)
+    ne = ns + duration
+  } else if (mode === 'start') {
+    ns = clamp(snap(startMin + deltaMin), 0, endMin - MIN_DURATION)
+    ne = endMin
+  } else if (mode === 'end') {
+    ne = clamp(snap(endMin + deltaMin), startMin + MIN_DURATION, DAY_MINUTES)
+    ns = startMin
+  }
+
+  const baseDay = mode === 'move' ? addDays(startOfDay(s), dayShift) : startOfDay(s)
+  // Never emit 24:00 — parseDateTime would roll it into the next day and the
+  // event would flip to a multi-day bar. Cap at 23:59 so it stays single-day.
+  const mk = (min) => {
+    const m = Math.min(min, DAY_MINUTES - 1)
+    return `${toISODate(baseDay)}T${p2(Math.floor(m / 60))}:${p2(m % 60)}`
+  }
+  return { start_at: mk(ns), end_at: mk(ne) }
+}
+
+const p2 = (n) => String(n).padStart(2, '0')

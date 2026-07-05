@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { memo, useEffect, useRef } from 'react'
 import { addDays, isToday, toISODate, WEEKDAYS_DE } from '../../lib/date'
 import {
   eventsInRange,
@@ -11,16 +11,39 @@ import {
   nowTop,
 } from '../../lib/calendar'
 import { tasksForDay } from '../../lib/taskSelectors'
-import { HourGutter, HourLines, NowLine, TimedBlock, BarsArea } from './parts'
+import { useEvents } from '../../context/EventsContext'
+import { useToast } from '../../context/ToastContext'
+import { HourGutter, HourLines, NowLine, TimedBlock, BarsArea, CalendarEmpty } from './parts'
+import { useTimedGesture } from './useTimedGesture'
 
-export default function WeekView({ weekMonday, events, tasks, now, onSelectEvent, onSelectDay }) {
+function WeekView({ weekMonday, events, tasks, onSelectEvent, onSelectDay }) {
   const scrollRef = useRef(null)
+  const gridRef = useRef(null)
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekMonday, i))
   const weekEnd = days[6]
   const weekISO = toISODate(weekMonday)
+  const { updateEvent } = useEvents()
+  const { showToast } = useToast()
 
   const bars = eventsInRange(events, weekMonday, weekEnd).filter(isBarEvent)
   const packed = packBars(bars, weekMonday, weekEnd)
+  const timedByDay = days.map((day) => splitDayEvents(events, day).timed)
+  const isEmpty = bars.length === 0 && timedByDay.every((t) => t.length === 0)
+
+  const { editId, draft, clearEdit, handlers } = useTimedGesture({
+    gridRef,
+    columns: 7,
+    resolveEvent: (id) => events.find((e) => e.id === id) || null,
+    onOpen: onSelectEvent,
+    onCommit: async (id, patch, mode) => {
+      try {
+        await updateEvent(id, patch)
+        showToast(mode === 'move' ? 'Termin verschoben' : 'Dauer geändert')
+      } catch {
+        /* error surfaces via the global banner */
+      }
+    },
+  })
 
   useEffect(() => {
     const el = scrollRef.current
@@ -93,31 +116,42 @@ export default function WeekView({ weekMonday, events, tasks, now, onSelectEvent
         )}
       </div>
 
-      {/* Scrollable grid */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="relative flex" style={{ height: GRID_HEIGHT }}>
-          <HourGutter />
-          <div className="relative flex flex-1">
-            <HourLines />
-            {days.map((day) => {
-              const iso = toISODate(day)
-              const t = isToday(iso)
-              const layout = layoutTimedEvents(splitDayEvents(events, day).timed)
-              return (
-                <div
-                  key={iso}
-                  className={`relative flex-1 border-l border-subtle ${t ? 'bg-white/[0.03]' : ''}`}
-                >
-                  {layout.map((item) => (
-                    <TimedBlock key={item.ev.id} item={item} onClick={onSelectEvent} compact />
-                  ))}
-                  {t && <NowLine now={now} />}
-                </div>
-              )
-            })}
+      {/* Scrollable grid (+ empty state centered over its viewport) */}
+      <div className="relative min-h-0 flex-1">
+        <div ref={scrollRef} onScroll={clearEdit} className="absolute inset-0 overflow-y-auto">
+          <div className="relative flex" style={{ height: GRID_HEIGHT }}>
+            <HourGutter />
+            <div ref={gridRef} className="relative flex flex-1" {...handlers}>
+              <HourLines />
+              {days.map((day, i) => {
+                const iso = toISODate(day)
+                const t = isToday(iso)
+                const layout = layoutTimedEvents(timedByDay[i])
+                return (
+                  <div
+                    key={iso}
+                    className={`relative flex-1 border-l border-subtle ${t ? 'bg-white/[0.03]' : ''}`}
+                  >
+                    {layout.map((item) => (
+                      <TimedBlock
+                        key={item.ev.id}
+                        item={item}
+                        compact
+                        editing={editId === item.ev.id}
+                        draft={draft && draft.id === item.ev.id ? draft : null}
+                      />
+                    ))}
+                    {t && <NowLine />}
+                  </div>
+                )
+              })}
+            </div>
           </div>
         </div>
+        {isEmpty && <CalendarEmpty title="Keine Termine in dieser Woche" />}
       </div>
     </div>
   )
 }
+
+export default memo(WeekView)

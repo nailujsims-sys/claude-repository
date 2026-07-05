@@ -70,6 +70,17 @@ function click(window, predicate) {
   return true
 }
 
+// Type into a React-controlled input (uses the native value setter so React's
+// onChange fires), then dispatch an 'input' event.
+function typeInto(window, selector, text) {
+  const el = window.document.querySelector(selector)
+  if (!el) return false
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+  setter.call(el, text)
+  el.dispatchEvent(new window.Event('input', { bubbles: true }))
+  return true
+}
+
 async function run() {
   const code = await bundle()
 
@@ -204,6 +215,34 @@ async function run() {
     console.log(`\n=== EventDetail ===\n  ${text.slice(0, 170)}`)
     for (const needle of ['Datum', 'Wiederholung', 'Erinnerung', 'Bearbeiten', 'Löschen']) {
       if (!text.includes(needle)) errors.push(`[EventDetail] missing "${needle}"`)
+    }
+  }
+
+  // 7) Calendar search: open it, confirm the empty hint, type a query that only
+  //    matches a non-today seed event ("Zahnarzt"), then open that hit → detail.
+  {
+    const window = makeDom('#/kalender')
+    mount(window, code, 'Search')
+    await wait(300)
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Suche'))
+      errors.push('[Search] Suche button not found')
+    await wait(120)
+    let text = txt(window)
+    if (!text.includes('Suche in Titel, Ort und Notizen'))
+      errors.push('[Search] empty-state hint not rendered')
+    if (!typeInto(window, 'input[placeholder="Termine durchsuchen"]', 'Zahnarzt'))
+      errors.push('[Search] search input not found')
+    await wait(150)
+    text = txt(window)
+    console.log(`\n=== Search (Zahnarzt) ===\n  ${text.slice(0, 170)}`)
+    if (!text.includes('Zahnarzt')) errors.push('[Search] result "Zahnarzt" not rendered')
+    if (!click(window, (el) => el.textContent.includes('Zahnarzt')))
+      errors.push('[Search] result row not clickable')
+    await wait(150)
+    window.__restoreConsole?.()
+    text = txt(window)
+    for (const needle of ['Zahnarzt', 'Praxis', 'Bearbeiten', 'Löschen']) {
+      if (!text.includes(needle)) errors.push(`[Search] opened detail missing "${needle}"`)
     }
   }
 
