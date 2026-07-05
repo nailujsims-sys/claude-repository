@@ -24,11 +24,15 @@ app is fully usable the moment it loads.
 - **Neue Aufgabe / Bearbeiten** — slide-up form with a custom inline calendar that
   supports **day / week (KW) / month** due dates plus an optional time.
 - **Kalender** — a full calendar module with **Tag / Woche / Monat** views, a live
-  red time indicator that auto-scrolls to now, stacked multi-day event bars, an
+  red time indicator that keeps ticking on its own, stacked multi-day event bars, an
   overlap-aware day/week grid, and a Google-style month grid with "+X weitere".
   It **reuses the existing task data** (day list, per-day counts, month dots) — no
   duplicate storage — on a scalable event model (title, description, location,
-  start/end, all-day, recurrence, reminder, birthday, timezone). Search is stubbed.
+  start/end, all-day, recurrence, reminder, birthday, timezone). **Swipe** left/right
+  to change day/week/month, **search** across title, location and notes with live
+  results, **long-press** a timed event to move it and **drag its handles** to
+  reschedule start/end (saved instantly), plus friendly empty states — all using the
+  same animations, dialogs and toasts as the Aufgaben app.
 - **Termine** — create, edit and delete calendar events through a compact
   **Neuer Termin** sheet (title, Termin/Geburtstag, all-day toggle, multi-day
   start/end with times, recurrence, reminder, location, notes) and a read-only
@@ -57,6 +61,7 @@ design out of the box.
 npm run build        # production build → dist/
 npm run preview      # preview the production build
 npm run smoke        # headless runtime smoke test (jsdom) across all routes
+npm run test:logic   # pure-logic tests: drag/resize math, search, timezone-safety
 ```
 
 ---
@@ -124,8 +129,9 @@ src/
     config.js               env detection (Supabase vs local)
     supabase.js             Supabase client (or null)
     date.js                 dates, ISO weeks, section grouping, formatting
-    calendar.js             event geometry: parsing, overlap layout, bar packing
+    calendar.js             event geometry: parsing, overlap layout, bar packing, drag/resize math
     eventOptions.js         recurrence + reminder option lists and labels
+    eventSearch.js          calendar search (title / location / notes, upcoming-first)
     useNow.js               ticking clock hook for the live time indicator
     taskSelectors.js        derive grouped/filtered views (incl. tasksForDay)
     seed.js / eventSeed.js  demo tasks / events for local mode
@@ -139,7 +145,8 @@ src/
                             EventForm, InlineCalendar, MiniCalendar, FilterSheet,
                             TaskRow, EventDetailSheet, ConfirmDialog, …
   screens/                  Home, TasksList, TaskDetail, Kalender, Mehr, Login
-    calendar/               DayView, WeekView, MonthView, parts (shared grid pieces)
+    calendar/               DayView, WeekView, MonthView, parts (shared grid pieces),
+                            useSwipe (period navigation), useTimedGesture (move/resize)
 ```
 
 ### Extending the navigation

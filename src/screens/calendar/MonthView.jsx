@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react'
 import { buildMonthGrid, isToday, toISODate, WEEKDAYS_DE } from '../../lib/date'
 import {
   eventsInRange,
@@ -13,8 +14,13 @@ const NUMBER_BLOCK_H = 34 // px reserved for the day number + task dot
 const BAR_H = 16 // px per multi-day lane
 const MAX_TIMED = 2 // single-day chips shown before "+X weitere"
 
-export default function MonthView({ monthDate, events, tasks, onSelectDay, onSelectEvent }) {
-  const weeks = buildMonthGrid(monthDate.getFullYear(), monthDate.getMonth())
+function MonthView({ monthDate, events, tasks, onSelectDay, onSelectEvent }) {
+  // The grid only depends on which month is shown — memoize so scrolling / clock
+  // ticks / unrelated state never rebuild six weeks of cells.
+  const weeks = useMemo(
+    () => buildMonthGrid(monthDate.getFullYear(), monthDate.getMonth()),
+    [monthDate]
+  )
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -44,7 +50,9 @@ export default function MonthView({ monthDate, events, tasks, onSelectDay, onSel
   )
 }
 
-function WeekRow({ week, events, tasks, onSelectDay, onSelectEvent }) {
+export default memo(MonthView)
+
+const WeekRow = memo(function WeekRow({ week, events, tasks, onSelectDay, onSelectEvent }) {
   const weekStart = week.days[0].date
   const weekEnd = week.days[6].date
   const bars = eventsInRange(events, weekStart, weekEnd).filter(isBarEvent)
@@ -130,4 +138,4 @@ function WeekRow({ week, events, tasks, onSelectDay, onSelectEvent }) {
       )}
     </div>
   )
-}
+})
