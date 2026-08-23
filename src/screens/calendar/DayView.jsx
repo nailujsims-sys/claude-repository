@@ -15,19 +15,37 @@ import { useTasks } from '../../context/TasksContext'
 import { useEvents } from '../../context/EventsContext'
 import { useToast } from '../../context/ToastContext'
 import TaskRow from '../../components/TaskRow'
-import { HourGutter, HourLines, NowLine, TimedBlock, BarsArea, CalendarEmpty } from './parts'
+import {
+  HourGutter,
+  HourLines,
+  NowLine,
+  TimedBlock,
+  MoreEventsChip,
+  BarsArea,
+  CalendarEmpty,
+} from './parts'
 import { useTimedGesture } from './useTimedGesture'
+import { useElementWidth } from './useElementWidth'
+
+// The Tag view is the detailed one: an event card may stay this wide before the
+// extras collapse into "+X weitere" (tapping that chip expands them anyway).
+const MIN_EVENT_WIDTH = 96
 
 function DayView({ date, events, tasks, onSelectEvent }) {
   const scrollRef = useRef(null)
   const gridRef = useRef(null)
+  const gridWidth = useElementWidth(gridRef)
+  const [expanded, setExpanded] = useState(false)
   const dayISO = toISODate(date)
   const today = isToday(dayISO)
   const { updateEvent } = useEvents()
   const { showToast } = useToast()
 
   const { bars, timed } = splitDayEvents(events, date)
-  const layout = layoutTimedEvents(timed)
+  const { items, overflows } = layoutTimedEvents(timed, {
+    columnWidth: gridWidth || Infinity,
+    minEventWidth: expanded ? 0 : MIN_EVENT_WIDTH,
+  })
   const { lanes, laneCount } = packBars(bars, date, date)
   const dayTasks = tasksForDay(tasks, dayISO)
   const isEmpty = bars.length === 0 && timed.length === 0
@@ -37,6 +55,7 @@ function DayView({ date, events, tasks, onSelectEvent }) {
     columns: 1,
     resolveEvent: (id) => timed.find((e) => e.id === id) || null,
     onOpen: onSelectEvent,
+    onBackgroundTap: () => setExpanded(false),
     onCommit: async (id, patch, mode) => {
       try {
         await updateEvent(id, patch)
@@ -46,6 +65,9 @@ function DayView({ date, events, tasks, onSelectEvent }) {
       }
     },
   })
+
+  // Collapse an expanded overlap cluster when the day changes.
+  useEffect(() => setExpanded(false), [dayISO])
 
   // Jump to roughly "now" on today, else to the morning — when the day changes.
   useEffect(() => {
@@ -71,12 +93,21 @@ function DayView({ date, events, tasks, onSelectEvent }) {
             <HourGutter />
             <div ref={gridRef} className="relative flex-1 border-l border-subtle" {...handlers}>
               <HourLines />
-              {layout.map((item) => (
+              {items.map((item) => (
                 <TimedBlock
                   key={item.ev.id}
                   item={item}
+                  columnWidth={gridWidth}
                   editing={editId === item.ev.id}
                   draft={draft && draft.id === item.ev.id ? draft : null}
+                />
+              ))}
+              {overflows.map((item) => (
+                <MoreEventsChip
+                  key={item.id}
+                  item={item}
+                  columnWidth={gridWidth}
+                  onSelect={() => setExpanded(true)}
                 />
               ))}
               {today && <NowLine showLabel />}

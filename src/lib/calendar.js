@@ -108,10 +108,35 @@ export function eventRangeLabel(ev) {
 }
 
 // ── Overlapping timed-event layout (interval partition into columns) ────────
-// Returns each event with pixel top/height and its column position so that
-// mutually overlapping events share the width side by side (like Google/Apple).
-export function layoutTimedEvents(timed) {
-  const items = timed.map((ev) => {
+// Google-Calendar-style packing for the Tag / Woche grids:
+//   1. mutually overlapping events are split into columns and placed side by
+//      side, in start order,
+//   2. every block is then widened into the columns its neighbours leave free,
+//      so a partial overlap doesn't shrink the whole cluster,
+//   3. when a column would fall below `minEventWidth`, the extra events are
+//      collapsed into one "+X weitere" chip instead of becoming unreadable
+//      slivers.
+//
+// Positions come back as fractions (0…1) of the day column so the views stay
+// resolution independent; the measured `columnWidth` (px) only decides how many
+// events still fit next to each other.
+//
+// Returns { items, overflows } — `items` carry pixel top/height plus left/width
+// fractions, `overflows` are the "+X weitere" chips (one per cluster).
+export const OVERFLOW_CHIP_PX = 84 // width the "+X weitere" chip would like
+
+export function layoutTimedEvents(timed, options = {}) {
+  const { columnWidth = Infinity, minEventWidth = 0 } = options
+  const measured = Number.isFinite(columnWidth) && columnWidth > 0
+  const maxColumns =
+    measured && minEventWidth > 0
+      ? Math.max(1, Math.floor(columnWidth / minEventWidth))
+      : Infinity
+  const chipWidth = measured
+    ? Math.min(0.45, Math.max(0.2, OVERFLOW_CHIP_PX / columnWidth))
+    : 0.25
+
+  const entries = timed.map((ev) => {
     const s = eventStart(ev)
     const e = eventEnd(ev) || s
     const startMin = minutesOfDay(s)
@@ -119,14 +144,19 @@ export function layoutTimedEvents(timed) {
     if (endMin <= startMin) endMin = startMin + 30 // enforce a minimum block
     return { ev, startMin, endMin }
   })
-  items.sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin)
+  entries.sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin)
 
-  const out = []
+  const items = []
+  const overflows = []
   let cluster = []
   let clusterEnd = -1
 
+  const px = (min) => (min / 60) * HOUR_HEIGHT
+  const overlaps = (a, b) => a.startMin < b.endMin && a.endMin > b.startMin
+
   const flush = () => {
-    const colEnds = [] // running end-minute per column
+    // 1. columns: reuse the first column that is free at this event's start.
+    const colEnds = []
     for (const it of cluster) {
       let col = colEnds.findIndex((end) => it.startMin >= end)
       if (col === -1) {
@@ -138,25 +168,62 @@ export function layoutTimedEvents(timed) {
       it.colIndex = col
     }
     const colCount = colEnds.length
-    for (const it of cluster) {
-      out.push({
-        ...it,
-        colCount,
-        top: (it.startMin / 60) * HOUR_HEIGHT,
-        height: ((it.endMin - it.startMin) / 60) * HOUR_HEIGHT,
+
+    // 2. too many parallel events for the available width → keep the earliest
+    //    columns and collect the rest behind a chip.
+    const overflowing = colCount > maxColumns
+    const visibleCols = overflowing ? Math.max(1, maxColumns - 1) : colCount
+    const visible = cluster.filter((it) => it.colIndex < visibleCols)
+    const hidden = overflowing ? cluster.filter((it) => it.colIndex >= visibleCols) : []
+    const usable = hidden.length ? 1 - chipWidth : 1
+
+    // 3. widen each block over the free columns to its right.
+    for (const it of visible) {
+      let span = 1
+      while (
+        it.colIndex + span < visibleCols &&
+        !visible.some((o) => o !== it && o.colIndex === it.colIndex + span && overlaps(o, it))
+      ) {
+        span++
+      }
+      items.push({
+        ev: it.ev,
+        startMin: it.startMin,
+        endMin: it.endMin,
+        top: px(it.startMin),
+        height: px(it.endMin - it.startMin),
+        colIndex: it.colIndex,
+        colCount: visibleCols,
+        left: (it.colIndex / visibleCols) * usable,
+        width: (span / visibleCols) * usable,
       })
     }
+
+    if (hidden.length) {
+      const from = Math.min(...hidden.map((h) => h.startMin))
+      const to = Math.max(...hidden.map((h) => h.endMin))
+      overflows.push({
+        id: `more-${hidden[0].ev.id}`,
+        count: hidden.length,
+        events: hidden.map((h) => h.ev),
+        top: px(from),
+        height: px(to - from),
+        left: usable,
+        width: chipWidth,
+      })
+    }
+
     cluster = []
     clusterEnd = -1
   }
 
-  for (const it of items) {
+  for (const it of entries) {
     if (cluster.length && it.startMin >= clusterEnd) flush()
     cluster.push(it)
     clusterEnd = Math.max(clusterEnd, it.endMin)
   }
   if (cluster.length) flush()
-  return out
+  return { items, overflows }
 }
 
 // ── Multi-day bar packing into stacked lanes ────────────────────────────────

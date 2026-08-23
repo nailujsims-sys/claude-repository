@@ -24,8 +24,14 @@ app is fully usable the moment it loads.
 - **Neue Aufgabe / Bearbeiten** — slide-up form with a custom inline calendar that
   supports **day / week (KW) / month** due dates plus an optional time.
 - **Kalender** — a full calendar module with **Tag / Woche / Monat** views, a live
-  red time indicator that keeps ticking on its own, stacked multi-day event bars, an
-  overlap-aware day/week grid, and a Google-style month grid with "+X weitere".
+  red time indicator that keeps ticking on its own, stacked multi-day event bars and
+  a Google-style month grid.
+  Parallel events are packed like Google Calendar — placed side by side, widened
+  into the space their neighbours leave free, and collapsed into a **"+X weitere"**
+  chip once a column would get too narrow to read — while event titles wrap over
+  several lines and are only ever cut off when the card truly runs out of room.
+  The header keeps the same structure and position in all three views, so
+  switching Tag / Woche / Monat never makes the top of the screen jump.
   It **reuses the existing task data** (day list, per-day counts, month dots) — no
   duplicate storage — on a scalable event model (title, description, location,
   start/end, all-day, recurrence, reminder, birthday, timezone). **Swipe** left/right
@@ -146,7 +152,8 @@ src/
                             TaskRow, EventDetailSheet, ConfirmDialog, …
   screens/                  Home, TasksList, TaskDetail, Kalender, Mehr, Login
     calendar/               DayView, WeekView, MonthView, parts (shared grid pieces),
-                            useSwipe (period navigation), useTimedGesture (move/resize)
+                            useSwipe (period navigation), useTimedGesture (move/resize),
+                            useElementWidth (measured column width for the layout)
 ```
 
 ### Extending the navigation

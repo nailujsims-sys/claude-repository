@@ -13,12 +13,27 @@ import {
 import { tasksForDay } from '../../lib/taskSelectors'
 import { useEvents } from '../../context/EventsContext'
 import { useToast } from '../../context/ToastContext'
-import { HourGutter, HourLines, NowLine, TimedBlock, BarsArea, CalendarEmpty } from './parts'
+import {
+  HourGutter,
+  HourLines,
+  NowLine,
+  TimedBlock,
+  MoreEventsChip,
+  BarsArea,
+  CalendarEmpty,
+} from './parts'
 import { useTimedGesture } from './useTimedGesture'
+import { useElementWidth } from './useElementWidth'
+
+// A week column is narrow, so two parallel events are the most that still read
+// as cards — beyond that the extras collapse into "+X", which opens the day.
+const MIN_EVENT_WIDTH = 22
 
 function WeekView({ weekMonday, events, tasks, onSelectEvent, onSelectDay }) {
   const scrollRef = useRef(null)
   const gridRef = useRef(null)
+  const gridWidth = useElementWidth(gridRef)
+  const columnWidth = gridWidth ? gridWidth / 7 : Infinity
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekMonday, i))
   const weekEnd = days[6]
   const weekISO = toISODate(weekMonday)
@@ -110,6 +125,7 @@ function WeekView({ weekMonday, events, tasks, onSelectEvent, onSelectDay }) {
                 columns={7}
                 onSelect={onSelectEvent}
                 laneHeight={20}
+                containerWidth={gridWidth ? gridWidth - 8 : 0}
               />
             </div>
           </div>
@@ -126,19 +142,32 @@ function WeekView({ weekMonday, events, tasks, onSelectEvent, onSelectDay }) {
               {days.map((day, i) => {
                 const iso = toISODate(day)
                 const t = isToday(iso)
-                const layout = layoutTimedEvents(timedByDay[i])
+                const { items, overflows } = layoutTimedEvents(timedByDay[i], {
+                  columnWidth,
+                  minEventWidth: MIN_EVENT_WIDTH,
+                })
                 return (
                   <div
                     key={iso}
                     className={`relative flex-1 border-l border-subtle ${t ? 'bg-white/[0.03]' : ''}`}
                   >
-                    {layout.map((item) => (
+                    {items.map((item) => (
                       <TimedBlock
                         key={item.ev.id}
                         item={item}
+                        columnWidth={columnWidth}
                         compact
                         editing={editId === item.ev.id}
                         draft={draft && draft.id === item.ev.id ? draft : null}
+                      />
+                    ))}
+                    {overflows.map((item) => (
+                      <MoreEventsChip
+                        key={item.id}
+                        item={item}
+                        columnWidth={columnWidth}
+                        compact
+                        onSelect={() => onSelectDay?.(day)}
                       />
                     ))}
                     {t && <NowLine />}

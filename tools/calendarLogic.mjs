@@ -8,7 +8,7 @@ import { writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
 const TEST = `
-import { pxToMin, eventTopHeight, draggedTimes, parseDateTime, formatDateTime } from './src/lib/calendar.js'
+import { pxToMin, eventTopHeight, draggedTimes, parseDateTime, formatDateTime, layoutTimedEvents } from './src/lib/calendar.js'
 import { toISODate } from './src/lib/date.js'
 import { searchEvents } from './src/lib/eventSearch.js'
 import { tasksForDay } from './src/lib/taskSelectors.js'
@@ -53,6 +53,76 @@ const r3 = draggedTimes(ev, 'end', 30, 0)
 ok('resize end +30', r3.end_at === '2026-07-04T10:30' && r3.start_at === '2026-07-04T09:00')
 const r4 = draggedTimes(ev, 'end', -120, 0)
 ok('resize end clamped to start+15', r4.end_at === '2026-07-04T09:15' && r4.start_at === '2026-07-04T09:00')
+
+// ── overlap layout: columns, widening, "+X weitere" ─────────────────────────
+const ev2 = (id, from, to) => ({ id, title: id, start_at: '2026-07-04T' + from, end_at: '2026-07-04T' + to })
+const near = (a, b) => Math.abs(a - b) < 1e-9
+
+{
+  const { items, overflows } = layoutTimedEvents([ev2('a', '09:00', '10:00')])
+  ok('single event fills the column', items.length === 1 && near(items[0].left, 0) && near(items[0].width, 1))
+  ok('single event geometry', items[0].top === 9 * 56 && items[0].height === 56)
+  ok('single event needs no chip', overflows.length === 0)
+}
+
+{
+  const { items } = layoutTimedEvents([ev2('a', '09:00', '10:00'), ev2('b', '09:30', '10:30')])
+  const a = items.find((i) => i.ev.id === 'a')
+  const b = items.find((i) => i.ev.id === 'b')
+  ok('two overlapping events share the width', near(a.width, 0.5) && near(b.width, 0.5))
+  ok('second event sits in the right half', near(a.left, 0) && near(b.left, 0.5))
+}
+
+{
+  // Sequential events never overlap → each one keeps the full width.
+  const { items } = layoutTimedEvents([ev2('a', '09:00', '10:00'), ev2('b', '10:00', '11:00')])
+  ok('back-to-back events stay full width', items.every((i) => near(i.width, 1) && near(i.left, 0)))
+}
+
+{
+  // 'd' only competes with 'a' (col 0) — the free third column is added to it.
+  const { items } = layoutTimedEvents([
+    ev2('a', '09:00', '11:00'),
+    ev2('b', '09:15', '09:45'),
+    ev2('c', '09:20', '09:40'),
+    ev2('d', '10:00', '10:30'),
+  ])
+  const d = items.find((i) => i.ev.id === 'd')
+  ok('a block widens into the columns its neighbours leave free', near(d.width, 2 / 3))
+  ok('the widened block keeps its own column', near(d.left, 1 / 3))
+}
+
+{
+  // Four parallel events in a 100px column with a 40px minimum → one event plus
+  // a chip for the other three.
+  const dense = [
+    ev2('a', '09:00', '10:00'),
+    ev2('b', '09:15', '10:00'),
+    ev2('c', '09:30', '10:00'),
+    ev2('d', '09:45', '10:00'),
+  ]
+  const { items, overflows } = layoutTimedEvents(dense, { columnWidth: 100, minEventWidth: 40 })
+  ok('too many parallel events collapse into one chip', items.length === 1 && overflows.length === 1)
+  ok('the chip counts the hidden events', overflows[0].count === 3)
+  ok('the visible event keeps the rest of the width', near(items[0].width, 0.55))
+  ok('the chip spans the hidden events', overflows[0].top === (555 / 60) * 56 && overflows[0].height === (45 / 60) * 56)
+  ok('the chip carries the hidden events', overflows[0].events.map((e) => e.id).join() === 'b,c,d')
+
+  // Same events, unmeasured width → nothing is hidden.
+  const wide = layoutTimedEvents(dense)
+  ok('without a measured width nothing is collapsed', wide.items.length === 4 && wide.overflows.length === 0)
+  ok('four parallel events split the width evenly', wide.items.every((i) => near(i.width, 0.25)))
+
+  // A wide column fits all four.
+  const roomy = layoutTimedEvents(dense, { columnWidth: 400, minEventWidth: 96 })
+  ok('a wide column keeps every event visible', roomy.items.length === 4 && roomy.overflows.length === 0)
+}
+
+{
+  // An event without an end still gets the 30-minute minimum block.
+  const { items } = layoutTimedEvents([{ id: 'x', title: 'x', start_at: '2026-07-04T09:00', end_at: null }])
+  ok('an event without an end gets a minimum block', items[0].height === 28)
+}
 
 // ── timezone safety: everything is local wall-clock, no UTC drift ────────────
 ok('parse keeps wall-clock hour', parseDateTime('2026-06-24T14:00').getHours() === 14)
