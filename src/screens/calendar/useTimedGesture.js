@@ -21,7 +21,14 @@ const LONG_PRESS_MS = 250
 const TAP_SLOP = 8 // a press that moves less than this (before long-press) is a tap/scroll
 const MOVE_SLOP = 6 // movement needed to start a body-move once already editing
 
-export function useTimedGesture({ gridRef, columns = 1, resolveEvent, onCommit, onOpen }) {
+export function useTimedGesture({
+  gridRef,
+  columns = 1,
+  resolveEvent,
+  onCommit,
+  onOpen,
+  onBackgroundTap,
+}) {
   const [editId, setEditId] = useState(null)
   const [draft, setDraft] = useState(null) // { id, start_at, end_at } during a drag
   const g = useRef(null) // live gesture state (never triggers renders)
@@ -68,8 +75,10 @@ export function useTimedGesture({ gridRef, columns = 1, resolveEvent, onCommit, 
     if (!rect) return
     const blockEl = e.target.closest?.('[data-ev-id]')
     if (!blockEl) {
-      // Tap on empty grid → leave edit mode.
+      // Tap on empty grid → leave edit mode (and collapse anything the view
+      // expanded, e.g. the day view's "+X weitere" cluster).
       if (editRef.current) clearEdit()
+      onBackgroundTap?.()
       return
     }
     const id = blockEl.getAttribute('data-ev-id')

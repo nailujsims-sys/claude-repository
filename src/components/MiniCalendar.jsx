@@ -44,7 +44,7 @@ export default function MiniCalendar({ value, onChange }) {
             type="button"
             onClick={prevMonth}
             aria-label="Vorheriger Monat"
-            className="grid h-8 w-8 place-items-center rounded-chip text-text-secondary hover:bg-white/5"
+            className="press-tint grid h-8 w-8 place-items-center rounded-chip text-text-secondary"
           >
             <ChevronLeft size={18} />
           </button>
@@ -52,7 +52,7 @@ export default function MiniCalendar({ value, onChange }) {
             type="button"
             onClick={nextMonth}
             aria-label="Nächster Monat"
-            className="grid h-8 w-8 place-items-center rounded-chip text-text-secondary hover:bg-white/5"
+            className="press-tint grid h-8 w-8 place-items-center rounded-chip text-text-secondary"
           >
             <ChevronRight size={18} />
           </button>

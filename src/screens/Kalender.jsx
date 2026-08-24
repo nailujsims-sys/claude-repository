@@ -121,38 +121,56 @@ export default function Kalender() {
       className="relative flex flex-col overflow-hidden"
       style={{ height: '100dvh', paddingBottom: 'calc(64px + env(safe-area-inset-bottom))' }}
     >
-      {/* Header */}
-      <header className="flex items-center gap-2 px-4 pt-4 pb-2">
-        <button onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 p-1 text-text-primary">
-          <Menu size={26} />
-        </button>
-        <div className="min-w-0 flex-1">
-          <h1 className="truncate text-[19px] font-bold leading-tight text-text-primary">
-            {primary}
-          </h1>
-          {sub && <p className="truncate text-[12px] text-text-secondary">{sub}</p>}
+      {/* Header — deliberately identical in structure for Tag / Woche / Monat:
+          the title block keeps its height even when a view has no subtitle, so
+          switching views never moves the menu, the Heute icon, the search or
+          the row below them. Only the text inside changes. */}
+      <header className="shrink-0 px-4 pt-4 pb-2">
+        <div className="flex h-[42px] items-center gap-2">
+          <button
+            onClick={openSidebar}
+            aria-label="Menü öffnen"
+            className="press-tint -ml-1 grid h-9 w-9 shrink-0 place-items-center rounded-chip text-text-primary"
+          >
+            <Menu size={26} />
+          </button>
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-[19px] font-bold leading-[24px] text-text-primary">
+              {primary}
+            </h1>
+            <p className="truncate text-[12px] leading-[16px] text-text-secondary">
+              {sub || '\u00A0'}
+            </p>
+          </div>
+          <button
+            onClick={goToday}
+            aria-label="Heute"
+            className={`press-tint grid h-9 w-9 shrink-0 place-items-center rounded-chip ${
+              viewingToday ? 'text-text-secondary' : 'text-accent'
+            }`}
+          >
+            <CalendarDays size={22} />
+          </button>
+          <button
+            onClick={() => setSearchOpen(true)}
+            aria-label="Suche"
+            className="press-tint grid h-9 w-9 shrink-0 place-items-center rounded-chip text-text-primary"
+          >
+            <Search size={22} />
+          </button>
         </div>
-        <button
-          onClick={goToday}
-          aria-label="Heute"
-          className={`p-1 ${viewingToday ? 'text-text-secondary' : 'text-accent'}`}
-        >
-          <CalendarDays size={22} />
-        </button>
-        <button onClick={() => setSearchOpen(true)} aria-label="Suche" className="p-1 text-text-primary">
-          <Search size={22} />
-        </button>
       </header>
 
       {/* View switch + period navigation */}
-      <div className="flex items-center justify-between gap-2 px-4 pb-3">
+      <div className="flex shrink-0 items-center justify-between gap-2 px-4 pb-3">
         <div className="flex rounded-chip bg-bg-input p-1">
           {VIEWS.map((v) => (
             <button
               key={v.id}
               onClick={() => switchView(v.id)}
+              aria-pressed={view === v.id}
               className={`rounded-chip px-4 py-1.5 text-[13px] font-medium transition-colors ${
-                view === v.id ? 'bg-accent text-white' : 'text-text-secondary'
+                view === v.id ? 'bg-accent text-white' : 'press-tint text-text-secondary'
               }`}
             >
               {v.label}
@@ -163,14 +181,14 @@ export default function Kalender() {
           <button
             onClick={() => go(-1)}
             aria-label="Zurück"
-            className="grid h-8 w-8 place-items-center rounded-chip text-text-secondary hover:bg-white/5"
+            className="press-tint grid h-8 w-8 place-items-center rounded-chip text-text-secondary"
           >
             <ChevronLeft size={18} />
           </button>
           <button
             onClick={() => go(1)}
             aria-label="Weiter"
-            className="grid h-8 w-8 place-items-center rounded-chip text-text-secondary hover:bg-white/5"
+            className="press-tint grid h-8 w-8 place-items-center rounded-chip text-text-secondary"
           >
             <ChevronRight size={18} />
           </button>
@@ -247,7 +265,11 @@ function SearchOverlay({ events, onClose, onOpenEvent }) {
   return (
     <div className="absolute inset-0 z-30 flex flex-col bg-bg-base animate-fade-in">
       <header className="flex items-center gap-2 px-4 pt-4 pb-2">
-        <button onClick={onClose} aria-label="Zurück" className="-ml-1 p-1 text-text-primary">
+        <button
+          onClick={onClose}
+          aria-label="Zurück"
+          className="press-tint -ml-1 grid h-9 w-9 shrink-0 place-items-center rounded-chip text-text-primary"
+        >
           <ChevronLeft size={24} />
         </button>
         <div className="flex flex-1 items-center gap-2 rounded-input bg-bg-input px-3 py-2">

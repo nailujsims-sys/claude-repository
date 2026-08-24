@@ -69,44 +69,118 @@ export function NowLine({ showLabel = false }) {
   )
 }
 
-// A single timed event, absolutely positioned inside its day column. Column
-// packing (colIndex/colCount) lets overlapping events share the width.
+// ── Text budget of an event card ────────────────────────────────────────────
+// A title is only ever cut off when the card really has no room left: the
+// number of title lines is derived from the card's height, so "Familientreffen"
+// wraps instead of turning into "Familientre…". The type scale follows the
+// view's information density (Tag roomier than Woche) and collapses further on
+// very short blocks; on a sliver-narrow card the text is dropped entirely
+// rather than rendered as a column of single letters.
+const SCALES = {
+  roomy: { font: 12, line: 15, padY: 3, padX: 6 }, // Tag
+  dense: { font: 11, line: 13, padY: 2, padX: 5 }, // Woche
+  tiny: { font: 10, line: 11, padY: 1, padX: 4 }, // very short blocks
+}
+const MIN_TEXT_WIDTH = 42 // px — below this no word fits, so the card stays blank
+const MIN_TIME_WIDTH = 62 // px — below this the time label is dropped
+
+// How many lines still read as a title rather than as a column of syllables.
+function lineBudget(width) {
+  if (width >= 120) return 6
+  if (width >= 84) return 4
+  if (width >= 56) return 3
+  return 2
+}
+
+export function blockTypography(height, width, compact) {
+  const scale = height < 26 ? SCALES.tiny : compact ? SCALES.dense : SCALES.roomy
+  const inner = height - 2 * scale.padY - 2 // minus the 1px border on both ends
+  const timeHeight = scale.line - 1
+  const withTime = Math.floor((inner - timeHeight) / scale.line)
+  const withoutTime = Math.floor(inner / scale.line)
+  // The title comes first: the time only stays while it doesn't cost the title
+  // a second line (on a card that only ever gets one line it is free).
+  const showTime =
+    !compact && width >= MIN_TIME_WIDTH && withTime >= 1 && (withTime >= 2 || withoutTime <= 1)
+  const lines = showTime ? withTime : withoutTime
+  return {
+    ...scale,
+    showText: width >= MIN_TEXT_WIDTH,
+    showTime,
+    lines: Math.min(Math.max(lines, 1), lineBudget(width)),
+  }
+}
+
+// Multi-line-capable text that only gets an ellipsis once it runs out of lines.
+function clampStyle(font, line, lines) {
+  return {
+    fontSize: font,
+    lineHeight: `${line}px`,
+    display: '-webkit-box',
+    WebkitBoxOrient: 'vertical',
+    WebkitLineClamp: lines,
+    overflow: 'hidden',
+    overflowWrap: 'break-word',
+    hyphens: 'auto',
+  }
+}
+
+// A single timed event, absolutely positioned inside its day column. The layout
+// (lib/calendar.js) hands over left/width as fractions of the column, so
+// overlapping events share the width and partial overlaps stay wide.
 //
 // When `editing`, the block "lifts" (ring + shadow), pops to full width and
 // shows top/bottom drag handles — the pointer layer (useTimedGesture) reads the
 // data-ev-id / data-handle attributes to move or resize it. `draft` carries the
 // live times while a drag is in flight so the block follows the finger.
-export function TimedBlock({ item, compact = false, editing = false, draft = null }) {
-  const { ev, colIndex, colCount } = item
-  const geom = draft ? eventTopHeight(draft.start_at, draft.end_at) : { top: item.top, height: item.height }
-  const widthPct = editing ? 100 : 100 / colCount
-  const left = editing ? 0 : colIndex * widthPct
-  const showTime = geom.height >= 34 && !compact
+export function TimedBlock({ item, columnWidth = 0, compact = false, editing = false, draft = null }) {
+  const { ev } = item
+  const geom = draft
+    ? eventTopHeight(draft.start_at, draft.end_at)
+    : { top: item.top, height: item.height }
+  const width = editing ? 1 : item.width
+  const left = editing ? 0 : item.left
+  const height = Math.max(geom.height - 2, 16)
+  const px = columnWidth > 0 ? columnWidth * width : Infinity
+  const t = blockTypography(height, px, compact)
 
   return (
     <button
       type="button"
       data-ev-id={ev.id}
-      className={`absolute overflow-visible rounded-[10px] border border-l-[3px] border-l-accent bg-bg-elevated px-1.5 py-0.5 text-left transition-shadow ${
+      title={eventDisplayTitle(ev)}
+      className={`absolute flex flex-col overflow-visible rounded-[10px] border bg-bg-elevated text-left transition-shadow ${
         editing
           ? 'z-30 border-accent ring-2 ring-accent shadow-lg shadow-black/40'
           : 'z-10 border-subtle'
       }`}
       style={{
         top: geom.top + 1,
-        height: Math.max(geom.height - 2, 16),
-        left: `calc(${left}% + 1px)`,
-        width: `calc(${widthPct}% - 2px)`,
+        height,
+        left: `calc(${left * 100}% + 1px)`,
+        width: `calc(${width * 100}% - 2px)`,
+        paddingBlock: t.padY,
+        paddingInline: t.padX,
         touchAction: editing ? 'none' : undefined,
       }}
     >
-      <p className="truncate text-[11px] font-medium leading-tight text-text-primary">
-        {eventDisplayTitle(ev)}
-      </p>
-      {showTime && (
-        <p className="truncate text-[10px] leading-tight text-text-secondary">
-          {eventTimeLabel(ev)}
-        </p>
+      {t.showText && (
+        <>
+          <p
+            className="font-medium text-text-primary"
+            style={clampStyle(t.font, t.line, t.lines)}
+          >
+            {eventDisplayTitle(ev)}
+          </p>
+          {t.showTime && (
+            <p
+              className="truncate tabular-nums text-text-secondary"
+              style={{ fontSize: t.font - 2, lineHeight: `${t.line - 1}px` }}
+            >
+              {eventTimeLabel(ev)}
+            </p>
+          )}
+        </>
       )}
 
       {editing && (
@@ -132,29 +206,87 @@ export function TimedBlock({ item, compact = false, editing = false, draft = nul
   )
 }
 
+// "+X weitere": stands in for the events that no longer fit next to each other
+// (see layoutTimedEvents). Tapping it leads to the denser view of that day
+// instead of squeezing four unreadable slivers into one column.
+export function MoreEventsChip({ item, columnWidth = 0, compact = false, onSelect }) {
+  const height = Math.max(item.height - 2, 16)
+  const px = columnWidth > 0 ? columnWidth * item.width : Infinity
+  const long = px >= 76
+  const font = compact ? 10 : 11
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect?.(item)}
+      title={`${item.count} weitere Termine`}
+      className="absolute z-10 grid place-items-center rounded-[10px] border border-dashed border-subtle bg-bg-card px-1 text-center text-text-secondary"
+      style={{
+        top: item.top + 1,
+        height,
+        left: `calc(${item.left * 100}% + 1px)`,
+        width: `calc(${item.width * 100}% - 2px)`,
+      }}
+    >
+      <span
+        className="font-medium leading-tight"
+        style={{ fontSize: font, overflowWrap: 'break-word' }}
+      >
+        {long ? `+${item.count} weitere` : `+${item.count}`}
+      </span>
+    </button>
+  )
+}
+
 // Multi-day / all-day bar strip. Works for the day view (columns = 1, bars fill
 // width and stack) and the week view (columns = 7, bars span their days).
-export function BarsArea({ lanes, laneCount, columns, onSelect, laneHeight = 22 }) {
+// Type scale follows the lane height so the label never gets clipped in the
+// month view's tighter lanes.
+export function BarsArea({
+  lanes,
+  laneCount,
+  columns,
+  onSelect,
+  laneHeight = 22,
+  containerWidth = 0,
+}) {
   if (!laneCount) return null
+  const barHeight = laneHeight - (laneHeight >= 20 ? 4 : 3)
+  const roomy = laneHeight >= 20
+
   return (
     <div className="relative" style={{ height: laneCount * laneHeight }}>
-      {lanes.map(({ ev, startIndex, endIndex, lane }) => (
-        <button
-          key={ev.id}
-          onClick={() => onSelect?.(ev)}
-          className="absolute overflow-hidden rounded-chip bg-accent-dim px-2 text-left"
-          style={{
-            top: lane * laneHeight,
-            height: laneHeight - 4,
-            left: `calc(${(startIndex / columns) * 100}% + 2px)`,
-            width: `calc(${((endIndex - startIndex + 1) / columns) * 100}% - 4px)`,
-          }}
-        >
-          <span className="block truncate text-[12px] leading-[18px] text-text-primary">
-            {eventDisplayTitle(ev)}
-          </span>
-        </button>
-      ))}
+      {lanes.map(({ ev, startIndex, endIndex, lane }) => {
+        const span = endIndex - startIndex + 1
+        const barWidth = containerWidth ? (containerWidth / columns) * span - 4 : Infinity
+        const narrow = barWidth < 90
+        const tight = barWidth < 56
+        return (
+          <button
+            key={ev.id}
+            onClick={() => onSelect?.(ev)}
+            title={eventDisplayTitle(ev)}
+            className="absolute overflow-hidden rounded-chip bg-accent-dim text-left"
+            style={{
+              top: lane * laneHeight,
+              height: barHeight,
+              left: `calc(${(startIndex / columns) * 100}% + 2px)`,
+              width: `calc(${(span / columns) * 100}% - 4px)`,
+              paddingInline: tight ? 3 : narrow ? 4 : 6,
+            }}
+          >
+            <span
+              className="block truncate text-text-primary"
+              style={{
+                fontSize: tight ? 10 : roomy && !narrow ? 12 : roomy ? 11 : 10,
+                lineHeight: `${barHeight}px`,
+              }}
+            >
+              {eventDisplayTitle(ev)}
+            </span>
+          </button>
+        )
+      })}
     </div>
   )
 }
