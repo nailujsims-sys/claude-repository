@@ -241,8 +241,11 @@ export default function TasksList() {
           </div>
         )}
 
-        {/* Category tabs */}
-        <div className="no-scrollbar mt-3 flex gap-2 overflow-x-auto px-5 pb-3">
+        {/* Category tabs. The row scrolls horizontally, which also clips it
+            vertically — so 4px of the top margin is carried as padding instead,
+            leaving room for a chip's focus ring inside the scroll box. Same
+            12px above the chips as before. */}
+        <div className="no-scrollbar mt-2 flex gap-2 overflow-x-auto px-5 pb-3 pt-1">
           {TABS.map((tab) => (
             <button
               key={tab}

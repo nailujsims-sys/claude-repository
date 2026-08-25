@@ -164,6 +164,19 @@ body {
   outline-offset: 2px;
 }
 
+/* An outline is painted outside the element, so it gets cut off when the
+   element sits flush against a clipping edge: a task row fills its card
+   exactly, an option row fills its card, an event block sits flush in the
+   calendar grid. Those are full-bleed surfaces rather than free-standing
+   controls, so they draw the same 2px accent ring just inside their own edge,
+   where nothing can clip it. Free-standing controls keep the outset ring —
+   several of them are accent-filled, where an inset ring would disappear. */
+.overflow-hidden [role='button']:focus-visible,
+.overflow-hidden button[class*='w-full']:focus-visible,
+[data-ev-id]:focus-visible {
+  outline-offset: -2px;
+}
+
 /* Text fields opt out of Tailwind's default outline (`outline-none`) and most
    of them draw their own accent ring on focus. Give the outline only to the
    fields that would otherwise show nothing:

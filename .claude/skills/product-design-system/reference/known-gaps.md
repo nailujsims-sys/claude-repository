@@ -126,12 +126,30 @@ calendar drag/resize plus the dnd-kit reorder are direct manipulation — the ro
 shifting aside *are* the drop-target feedback (§6/§22), so removing them would
 remove feedback rather than motion.
 
-### G3 · Focus states — closed 2026-08 (`src/index.css`)
+### G3 · Focus states — closed 2026-08 (`src/index.css`, `src/screens/TasksList.jsx`)
 One central `:focus-visible` rule: a 2px accent outline at 2px offset for links,
 buttons, `summary`, `[role=button|tab|switch]` and anything with a real
 `tabindex`. Text fields get the same outline **only** when they would otherwise
 show nothing — fields carrying their own `focus:ring-accent`, and fields inside a
 `focus-within:ring-*` wrapper, are excluded, so no control ever shows two
 indicators. This closed the previously indicator-less search fields (Aufgaben,
-Kalender), the EventForm location/notes/time fields, and every button in the app.
-No component was changed.
+Kalender) and the EventForm location/notes/time fields.
+
+**Follow-up: the ring was being clipped.** An outline paints *outside* the
+element, so anything flush against a clipping edge lost most of it — a focused
+task row showed only the one horizontal segment that happened to fall between two
+rows. Two different causes, two fixes:
+
+1. *Full-bleed surfaces inside a clipping container* (task rows filling their
+   card, option rows in cards, calendar event blocks) draw the same ring just
+   **inside** their own edge (`outline-offset: -2px`). Free-standing controls keep
+   the outset ring — several are accent-filled, where an inset accent ring would
+   vanish. So: surfaces ring inside, controls ring outside; colour and width are
+   identical either way.
+2. *The horizontal category row* (`overflow-x-auto`) clips vertically and had no
+   top padding, cutting a chip's ring by 4px. `mt-3` became `mt-2 pt-1` — same
+   12px above the chips, 4px of room inside the scroll box. Verified pixel-exact:
+   chip, section label and card all keep their previous positions.
+
+Measured with real Tab navigation across all four routes and the EventForm sheet:
+75 focusable elements, 0 clipped rings.
