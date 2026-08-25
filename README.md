@@ -166,6 +166,13 @@ flipping it from `futureModules` into the active nav lists.
 
 ## 🎨 Design system
 
+The binding product-design standard (visual, UX, interaction, motion,
+accessibility) lives in
+[`.claude/skills/product-design-system/`](.claude/skills/product-design-system/SKILL.md)
+and is wired into every Claude Code session through [`CLAUDE.md`](CLAUDE.md).
+Known deviations of the current code are tracked in
+[`known-gaps.md`](.claude/skills/product-design-system/reference/known-gaps.md).
+
 All tokens live in `tailwind.config.js` and are used as Tailwind classes
 (`bg-bg-card`, `text-text-secondary`, `text-accent`, …).
 
