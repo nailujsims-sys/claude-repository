@@ -1,6 +1,6 @@
 # Known gaps — current app vs. design system
 
-Status: **audit only, nothing changed yet** (2026-08).
+Status: G1 and G3 implemented (2026-08); G2 and G4–G12 still open.
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -16,14 +16,6 @@ issues again and do not start an unrequested refactor.
 
 ## High impact (systemic, affects every module)
 
-### G1 · No `prefers-reduced-motion` support anywhere — §22
-Neither `src/index.css` nor `tailwind.config.js` contains a reduced-motion query.
-Every keyframe animation (`sheet-up`, `slide-in-left`, `page-in`, `task-complete`,
-`cal-enter-*`, `star-pop`, `toast-in`, `shimmer`) plays unconditionally.
-*Direction:* one global `@media (prefers-reduced-motion: reduce)` block in
-`src/index.css` that neutralises transforms and keeps opacity/feedback. Central,
-low-risk, no component changes.
-
 ### G2 · Press feedback missing on most controls — §5
 ~64 `<button>` elements exist; press feedback is present on only a few
 (`BottomNav` plus button `active:scale-95`, `.press-tint` in `Kalender.jsx` and
@@ -32,13 +24,6 @@ low-risk, no component changes.
 `Sidebar`, `TaskRow`'s complete circle and `StarButton` — reacts only on click.
 *Direction:* extend the existing `.press-tint` pattern (or a `.press-scale`
 sibling) rather than adding per-component `active:` classes.
-
-### G3 · No visible focus states — §22
-`outline-none` is applied to inputs across `TaskForm`, `EventForm`, `Login`,
-`TasksList`, `Kalender`; inputs recover a focus ring via `focus:ring-accent`, but
-**no button anywhere has a `focus-visible` style**. Keyboard users get no
-indication of position.
-*Direction:* one global `:focus-visible` rule in `src/index.css`.
 
 ### G4 · Overlays animate in but never out — §11 spatial consistency, §7
 `Overlay.jsx` returns `null` when `open` is false, so `BottomSheet`, `Sidebar`,
@@ -126,4 +111,27 @@ it will not inherit the G4 exit animation.
 
 ## Closed
 
-_(none yet)_
+### G1 · Reduced motion — closed 2026-08 (`src/index.css`)
+One `@media (prefers-reduced-motion: reduce)` block. Spatial animations
+(`sheet-up`, `slide-in-left`, `toast-in`, `cal-enter-*`) keep their duration and
+easing but animate `reduced-fade-in` instead of travelling; `task-completing`
+fades out over the same 300ms the list waits for, so completion still commits
+identically. `star-pop` and the looping skeleton `shimmer` are switched off — the
+star's colour change and the placeholder blocks remain as the feedback.
+Movement transitions (`transition-transform`, `transition-all` — toggle knobs,
+chevrons, the FAB press scale) become instant state changes.
+Untouched on purpose: opacity-only animations (`fade-in`, `page`) and colour
+transitions (`press-tint`, `transition-colors`) carry no movement, and the
+calendar drag/resize plus the dnd-kit reorder are direct manipulation — the rows
+shifting aside *are* the drop-target feedback (§6/§22), so removing them would
+remove feedback rather than motion.
+
+### G3 · Focus states — closed 2026-08 (`src/index.css`)
+One central `:focus-visible` rule: a 2px accent outline at 2px offset for links,
+buttons, `summary`, `[role=button|tab|switch]` and anything with a real
+`tabindex`. Text fields get the same outline **only** when they would otherwise
+show nothing — fields carrying their own `focus:ring-accent`, and fields inside a
+`focus-within:ring-*` wrapper, are excluded, so no control ever shows two
+indicators. This closed the previously indicator-less search fields (Aufgaben,
+Kalender), the EventForm location/notes/time fields, and every button in the app.
+No component was changed.

@@ -138,3 +138,110 @@ body {
     background-color: rgba(255, 255, 255, 0.05);
   }
 }
+
+/* ---------------------------------------------------------------------------
+   FOCUS STATES — design system §22 ("visible keyboard/focus states")
+
+   One focus indicator for the whole app: a 2px accent outline with a small
+   offset, so it reads the same on a card, a sheet, the bottom nav or the
+   accent-coloured FAB (the offset puts the ring on the dark surface behind the
+   button, where it stays visible).
+
+   `:focus-visible` only — a pointer tap never shows it, keyboard navigation
+   always does. Defined centrally instead of per component so a new module
+   inherits it for free.
+--------------------------------------------------------------------------- */
+:where(
+    a[href],
+    button,
+    summary,
+    [role='button'],
+    [role='tab'],
+    [role='switch'],
+    [tabindex]:not([tabindex='-1'])
+  ):focus-visible {
+  outline: 2px solid theme('colors.accent');
+  outline-offset: 2px;
+}
+
+/* Text fields opt out of Tailwind's default outline (`outline-none`) and most
+   of them draw their own accent ring on focus. Give the outline only to the
+   fields that would otherwise show nothing:
+     - `:not([class*='ring-'])` skips fields with their own `focus:ring-accent`
+     - the second rule skips fields whose wrapper already rings on focus-within
+   so a field never shows two indicators at once. */
+:where(input, textarea, select):not([class*='ring-']):focus-visible {
+  outline: 2px solid theme('colors.accent');
+  outline-offset: 2px;
+}
+[class*='focus-within:ring'] :focus-visible {
+  outline: none;
+}
+
+/* ---------------------------------------------------------------------------
+   REDUCED MOTION — design system §22
+
+   "Remove unnecessary movement, remove bounce/elastic effects, replace large
+   spatial animations with subtle fades — but preserve useful feedback."
+
+   So this block never removes feedback, it only takes the movement out of it:
+   every spatial animation becomes the fade it already ends on, and transitions
+   that move something become instant state changes. Opacity-only animations
+   (`fade-in`, `page`) and colour transitions (`press-tint`, `transition-colors`)
+   are already motion-free and stay exactly as they are.
+
+   Deliberately NOT disabled: the drag/resize of calendar events and the
+   drag-to-reorder of tasks. That movement is the user's own finger (§6 direct
+   manipulation) and the rows shifting aside are what communicate the drop
+   target — removing it would remove feedback, not motion.
+--------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  /* Sheets, sidebar, toast and calendar period changes: same duration and
+     easing, no travel. */
+  .animate-sheet-up,
+  .animate-slide-in-left,
+  .animate-toast-in,
+  .cal-enter-next,
+  .cal-enter-prev {
+    animation-name: reduced-fade-in;
+  }
+
+  /* Completing a task keeps its 300ms fade (the list still waits for it before
+     committing), just without the slide. */
+  .task-completing {
+    animation-name: reduced-fade-out;
+  }
+
+  /* The favourite pop is pure decoration — the star's colour change is the
+     feedback and stays. */
+  .animate-star-pop {
+    animation: none;
+  }
+
+  /* Stop the looping skeleton sweep; the placeholder blocks still show that
+     something is loading. */
+  .skeleton-shimmer::after {
+    animation: none;
+  }
+
+  /* Movement transitions (toggle knobs, chevron rotation, the FAB's press
+     scale) still change state — they just arrive instantly. */
+  .transition-transform,
+  .transition-all {
+    transition-property: none;
+  }
+}
+
+@keyframes reduced-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes reduced-fade-out {
+  to {
+    opacity: 0;
+  }
+}
