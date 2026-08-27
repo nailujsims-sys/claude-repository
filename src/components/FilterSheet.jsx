@@ -29,7 +29,7 @@ export default function FilterSheet({ open, onClose, value, onApply }) {
             <button
               key={key}
               onClick={() => toggle(key)}
-              className="flex w-full items-center gap-3 py-3.5 text-left"
+              className="press-tint flex w-full items-center gap-3 py-3.5 text-left"
             >
               <Icon size={18} className="text-text-secondary" />
               <span className="flex-1 text-[15px] text-text-primary">{label}</span>
@@ -41,7 +41,7 @@ export default function FilterSheet({ open, onClose, value, onApply }) {
         <div className="mt-5 flex gap-3">
           <button
             onClick={() => setDraft(DEFAULTS)}
-            className="flex-1 rounded-btn border border-subtle py-3 text-[15px] font-semibold text-text-secondary"
+            className="press-tint flex-1 rounded-btn border border-subtle py-3 text-[15px] font-semibold text-text-secondary"
           >
             Zurücksetzen
           </button>
@@ -50,7 +50,7 @@ export default function FilterSheet({ open, onClose, value, onApply }) {
               onApply(draft)
               onClose()
             }}
-            className="flex-1 rounded-btn bg-accent py-3 text-[15px] font-semibold text-white"
+            className="press-tint flex-1 rounded-btn bg-accent py-3 text-[15px] font-semibold text-white"
           >
             Anwenden
           </button>

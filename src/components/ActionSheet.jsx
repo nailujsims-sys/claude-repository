@@ -23,7 +23,7 @@ export default function ActionSheet() {
             <button
               key={item.id}
               onClick={() => handle(item.action)}
-              className="flex w-full items-center gap-3 rounded-btn px-3 py-3.5 text-left hover:bg-white/5"
+              className="press-tint flex w-full items-center gap-3 rounded-btn px-3 py-3.5 text-left"
             >
               <span className="grid h-10 w-10 place-items-center rounded-btn bg-accent/15 text-accent">
                 <Icon size={20} />

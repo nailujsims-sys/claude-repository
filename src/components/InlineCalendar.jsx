@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
+import IconButton from './IconButton'
 import {
   MONTHS_DE,
   WEEKDAYS_DE,
@@ -78,27 +79,19 @@ export default function InlineCalendar({ value, onChange }) {
       <div className="mb-2 flex items-center justify-between">
         <button
           onClick={selectMonth}
-          className={`rounded-chip px-2 py-1 text-[16px] font-bold ${
+          className={`press-tint rounded-chip px-2 py-1 text-[16px] font-bold ${
             monthSelected ? 'bg-accent text-white' : 'text-text-primary'
           }`}
         >
           {MONTHS_DE[view.month]} {view.year}
         </button>
         <div className="flex items-center gap-1">
-          <button
-            onClick={prevMonth}
-            aria-label="Vorheriger Monat"
-            className="grid h-8 w-8 place-items-center rounded-chip text-text-secondary hover:bg-white/5"
-          >
+          <IconButton small onClick={prevMonth} aria-label="Vorheriger Monat" className="text-text-secondary">
             <ChevronLeft size={18} />
-          </button>
-          <button
-            onClick={nextMonth}
-            aria-label="Nächster Monat"
-            className="grid h-8 w-8 place-items-center rounded-chip text-text-secondary hover:bg-white/5"
-          >
+          </IconButton>
+          <IconButton small onClick={nextMonth} aria-label="Nächster Monat" className="text-text-secondary">
             <ChevronRight size={18} />
-          </button>
+          </IconButton>
         </div>
       </div>
 
@@ -127,7 +120,7 @@ export default function InlineCalendar({ value, onChange }) {
                 const state = dayState(day)
                 const isToday = isSameDay(day.date, today)
                 let cls =
-                  'relative grid h-9 place-items-center rounded-full text-[14px] '
+                  'press-tint relative grid h-9 place-items-center rounded-full text-[14px] '
                 if (state === 'day') cls += 'bg-accent text-white font-semibold'
                 else if (state === 'week') cls += 'bg-accent/30 text-white'
                 else if (state === 'month') cls += 'bg-accent/20 text-white'
@@ -146,8 +139,8 @@ export default function InlineCalendar({ value, onChange }) {
               <button
                 onClick={() => selectWeek(week.days[0].date)}
                 aria-label={`Kalenderwoche ${week.weekNumber} auswählen`}
-                className={`grid h-9 place-items-center rounded-full text-[13px] font-semibold ${
-                  weekSelected ? 'bg-accent text-white' : 'text-section-label hover:bg-white/5'
+                className={`press-tint grid h-9 place-items-center rounded-full text-[13px] font-semibold ${
+                  weekSelected ? 'bg-accent text-white' : 'text-section-label'
                 }`}
               >
                 {week.weekNumber}

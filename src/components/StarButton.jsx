@@ -18,7 +18,7 @@ export default function StarButton({ active, onToggle, size = 22, className = ''
       onClick={handle}
       aria-label={active ? 'Favorit entfernen' : 'Als Favorit markieren'}
       aria-pressed={active}
-      className={`p-1 ${pop ? 'animate-star-pop' : ''} ${className}`}
+      className={`press-fade p-1 ${pop ? 'animate-star-pop' : ''} ${className}`}
     >
       <Star
         size={size}

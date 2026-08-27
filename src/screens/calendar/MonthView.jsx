@@ -100,7 +100,7 @@ const WeekRow = memo(function WeekRow({
           <div
             key={day.iso}
             onClick={() => onSelectDay?.(day.date)}
-            className="relative cursor-pointer overflow-hidden border-l border-t border-subtle px-0.5 pb-1"
+            className="press-tint relative cursor-pointer overflow-hidden border-l border-t border-subtle px-0.5 pb-1"
             style={{ minHeight: CELL_MIN_H }}
           >
             <div className="flex flex-col items-center" style={{ height: NUMBER_BLOCK_H, paddingTop: 4 }}>
@@ -131,7 +131,7 @@ const WeekRow = memo(function WeekRow({
                     onSelectEvent?.(ev)
                   }}
                   title={eventDisplayTitle(ev)}
-                  className="block w-full rounded bg-accent-dim text-left text-text-primary"
+                  className="press-tint block w-full rounded bg-accent-dim text-left text-text-primary"
                   style={{
                     paddingInline: 3,
                     fontSize: 10,
@@ -154,7 +154,7 @@ const WeekRow = memo(function WeekRow({
                     e.stopPropagation()
                     onSelectDay?.(day.date)
                   }}
-                  className="block w-full truncate text-left font-medium text-text-secondary"
+                  className="press-fade block w-full truncate text-left font-medium text-text-secondary"
                   style={{ paddingInline: 2, fontSize: 10, lineHeight: `${CHIP_LINE}px` }}
                 >
                   {/* "weitere" only while the cell is wide enough for it —

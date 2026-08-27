@@ -145,7 +145,7 @@ function TasksCollapsible({ tasks }) {
     <div className="shrink-0 border-t border-subtle bg-bg-base">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center justify-between px-5 py-3"
+        className="press-tint flex w-full items-center justify-between px-5 py-3"
         aria-expanded={open}
       >
         <span className="text-[15px] font-bold text-text-primary">

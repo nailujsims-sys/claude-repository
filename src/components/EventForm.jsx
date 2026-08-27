@@ -158,7 +158,7 @@ export default function EventForm() {
     <button
       onClick={handleSave}
       disabled={!canSave}
-      className={`text-[15px] font-semibold ${canSave ? 'text-accent' : 'text-text-muted'}`}
+      className={`press-fade text-[15px] font-semibold ${canSave ? 'text-accent' : 'text-text-muted'}`}
     >
       {editing ? 'Speichern' : 'Erstellen'}
     </button>
@@ -201,7 +201,7 @@ export default function EventForm() {
                   key={o.v}
                   type="button"
                   onClick={() => set({ kind: o.v })}
-                  className={`flex flex-1 items-center gap-2 rounded-input border px-3 py-2.5 text-[14px] font-medium transition-colors ${
+                  className={`press-tint flex flex-1 items-center gap-2 rounded-input border px-3 py-2.5 text-[14px] font-medium transition-colors ${
                     sel
                       ? 'border-accent bg-accent/10 text-text-primary'
                       : 'border-subtle bg-bg-input text-text-secondary'
@@ -328,7 +328,7 @@ export default function EventForm() {
                   type="button"
                   onClick={() => set({ location: '' })}
                   aria-label="Ort entfernen"
-                  className="shrink-0 text-text-muted hover:text-text-secondary"
+                  className="press-fade shrink-0 text-text-muted"
                 >
                   <X size={16} />
                 </button>
@@ -372,7 +372,7 @@ function Toggle({ checked, onChange, disabled = false }) {
       aria-checked={checked}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+      className={`press-tint relative h-6 w-11 shrink-0 rounded-full transition-colors ${
         checked ? 'bg-accent' : 'bg-bg-input'
       } ${disabled ? 'opacity-50' : ''}`}
     >
@@ -402,7 +402,7 @@ function DateTimeRow({
         <button
           type="button"
           onClick={onToggleDate}
-          className={`flex-1 rounded-input px-3 py-2 text-left text-[14px] transition-colors ${
+          className={`press-tint flex-1 rounded-input px-3 py-2 text-left text-[14px] transition-colors ${
             pickerOpen ? 'bg-accent/15 text-accent' : 'bg-bg-input text-text-primary'
           }`}
         >
@@ -429,7 +429,7 @@ function PickerRow({ icon: Icon, label, value, open, onToggle, disabled = false,
         type="button"
         disabled={disabled}
         onClick={onToggle}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left disabled:opacity-60"
+        className="press-tint flex w-full items-center gap-3 px-4 py-3 text-left disabled:opacity-60"
       >
         <Icon size={18} className="shrink-0 text-text-secondary" />
         <span className="flex-1 text-[15px] text-text-primary">{label}</span>
@@ -454,7 +454,7 @@ function OptionList({ options, value, onSelect }) {
             key={String(o.value)}
             type="button"
             onClick={() => onSelect(o.value)}
-            className={`flex w-full items-center justify-between px-3 py-2.5 text-left text-[14px] ${
+            className={`press-tint flex w-full items-center justify-between px-3 py-2.5 text-left text-[14px] ${
               i > 0 ? 'border-t border-subtle' : ''
             } ${sel ? 'font-medium text-accent' : 'text-text-primary'}`}
           >
@@ -472,7 +472,7 @@ function RevealRow({ icon: Icon, label, onClick }) {
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-3 rounded-input bg-bg-input px-4 py-3 text-left"
+      className="press-tint flex w-full items-center gap-3 rounded-input bg-bg-input px-4 py-3 text-left"
     >
       <Icon size={18} className="shrink-0 text-text-muted" />
       <span className="text-[15px] text-text-secondary">{label}</span>

@@ -122,13 +122,13 @@ export default function EventDetailSheet({ event, onClose }) {
           <div className="mt-6 space-y-3">
             <button
               onClick={handleEdit}
-              className="flex w-full items-center justify-center gap-2 rounded-btn border-[1.5px] border-accent py-3.5 text-[15px] font-semibold text-accent"
+              className="press-tint flex w-full items-center justify-center gap-2 rounded-btn border-[1.5px] border-accent py-3.5 text-[15px] font-semibold text-accent"
             >
               <Pencil size={18} /> Bearbeiten
             </button>
             <button
               onClick={() => setConfirmOpen(true)}
-              className="flex w-full items-center justify-center gap-2 rounded-btn py-3.5 text-[15px] font-semibold text-danger"
+              className="press-tint flex w-full items-center justify-center gap-2 rounded-btn py-3.5 text-[15px] font-semibold text-danger"
               style={{ background: 'rgba(239, 68, 68, 0.12)' }}
             >
               <Trash2 size={18} /> Löschen

@@ -26,10 +26,15 @@ export default function BottomNav() {
                 key={item.id}
                 className="relative flex flex-1 items-start justify-center"
               >
+                {/* Scale only, no `press-tint`: the glow is an inline style,
+                    which beats any class rule, so the press wash could never
+                    paint here. The 0.95 scale this button always had is its
+                    press feedback — now driven by the central controller, so it
+                    cancels when the finger leaves, like everything else. */}
                 <button
                   onClick={openActionSheet}
                   aria-label="Neu erstellen"
-                  className="absolute -top-5 grid h-14 w-14 place-items-center rounded-full bg-accent text-white transition-transform active:scale-95"
+                  className="press-scale absolute -top-5 grid h-14 w-14 place-items-center rounded-full bg-accent text-white"
                   style={{ boxShadow: '0 4px 20px rgba(74, 128, 255, 0.4)' }}
                 >
                   <Plus size={28} />
@@ -40,7 +45,7 @@ export default function BottomNav() {
                 key={item.id}
                 to={item.to}
                 end={item.to === '/'}
-                className="flex flex-1 flex-col items-center justify-center gap-1 pt-2.5 pb-1.5"
+                className="press-fade flex flex-1 flex-col items-center justify-center gap-1 pt-2.5 pb-1.5"
               >
                 {({ isActive }) => {
                   const Icon = item.icon

@@ -15,6 +15,7 @@ import {
 import { useTasks } from '../context/TasksContext'
 import { useUI } from '../context/UIContext'
 import { useToast } from '../context/ToastContext'
+import IconButton from '../components/IconButton'
 import StarButton from '../components/StarButton'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { formatDueLabel, formatLongDate, formatTime } from '../lib/date'
@@ -34,9 +35,9 @@ export default function TaskDetail() {
   if (!task) {
     return (
       <div className="px-5 pt-5 pb-28">
-        <button onClick={() => navigate('/aufgaben')} className="p-1 text-text-primary" aria-label="Zurück">
+        <IconButton onClick={() => navigate('/aufgaben')} className="-ml-1 text-text-primary" aria-label="Zurück">
           <ArrowLeft size={24} />
-        </button>
+        </IconButton>
         <p className="mt-20 text-center text-[15px] text-text-secondary">
           {loading ? 'Lädt…' : 'Aufgabe nicht gefunden.'}
         </p>
@@ -57,19 +58,19 @@ export default function TaskDetail() {
     <div className="px-5 pt-5 pb-56">
       {/* Header */}
       <header className="flex items-center justify-between">
-        <button onClick={() => navigate('/aufgaben')} aria-label="Zurück" className="-ml-1 p-1 text-text-primary">
+        <IconButton onClick={() => navigate('/aufgaben')} aria-label="Zurück" className="-ml-1 text-text-primary">
           <ArrowLeft size={24} />
-        </button>
+        </IconButton>
         <div className="flex items-center gap-2">
           <StarButton active={task.is_favorite} onToggle={() => toggleFavorite(task)} />
           <div className="relative">
-            <button
+            <IconButton
               onClick={() => setMenuOpen((v) => !v)}
               aria-label="Mehr"
-              className="p-1 text-text-primary"
+              className="text-text-primary"
             >
               <MoreHorizontal size={24} />
-            </button>
+            </IconButton>
             {menuOpen && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
@@ -79,7 +80,7 @@ export default function TaskDetail() {
                       setMenuOpen(false)
                       openTaskForm({ mode: 'edit', taskId: task.id })
                     }}
-                    className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-text-primary hover:bg-white/5"
+                    className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-text-primary"
                   >
                     <Pen size={16} /> Bearbeiten
                   </button>
@@ -88,7 +89,7 @@ export default function TaskDetail() {
                       setMenuOpen(false)
                       setConfirmOpen(true)
                     }}
-                    className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-danger hover:bg-white/5"
+                    className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-danger"
                   >
                     <Trash2 size={16} /> Löschen
                   </button>
@@ -163,13 +164,13 @@ export default function TaskDetail() {
         <div className="w-full max-w-app space-y-3 px-5 pb-3 pt-6 bg-gradient-to-t from-bg-base via-bg-base to-transparent">
           <button
             onClick={() => openTaskForm({ mode: 'edit', taskId: task.id })}
-            className="flex w-full items-center justify-center gap-2 rounded-btn border-[1.5px] border-accent py-3.5 text-[15px] font-semibold text-accent"
+            className="press-tint flex w-full items-center justify-center gap-2 rounded-btn border-[1.5px] border-accent py-3.5 text-[15px] font-semibold text-accent"
           >
             <Pencil size={18} /> Bearbeiten
           </button>
           <button
             onClick={() => setConfirmOpen(true)}
-            className="flex w-full items-center justify-center gap-2 rounded-btn py-3.5 text-[15px] font-semibold text-danger"
+            className="press-tint flex w-full items-center justify-center gap-2 rounded-btn py-3.5 text-[15px] font-semibold text-danger"
             style={{ background: 'rgba(239, 68, 68, 0.12)' }}
           >
             <Trash2 size={18} /> Löschen

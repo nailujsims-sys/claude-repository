@@ -122,22 +122,84 @@ body {
   }
 }
 
-/* Icon buttons (calendar header + period arrows): the pressed tint must vanish
-   the moment the finger lifts. On touch devices :hover sticks after a tap until
-   something else is tapped — which is exactly how a "pressed" background ends
-   up staying on an arrow — so the tint lives on :active and the hover version
-   is limited to devices that really have a pointer. */
-.press-tint {
-  transition: background-color 120ms ease;
+/* ── Press feedback (G2) ─────────────────────────────────────────────
+   Interactive surfaces show their pressed state the moment the pointer goes
+   down; the action itself is still only committed by the native click, i.e. on
+   release inside the element. The state is written by src/lib/pressFeedback.js
+   as a `data-pressed` attribute — deliberately not by `:active`:
+     • `:active` also matches the *ancestors* of the pressed node, so pressing
+       the star inside a task row would light up the whole row;
+     • it has no movement threshold, so it cannot tell "the finger drifted 3px"
+       from "the finger left the button";
+     • on touch it is delayed while the browser decides whether the gesture is
+       a scroll — which is exactly the delay G2 is about.
+   The controller mirrors the semantics useTimedGesture.js already uses for the
+   calendar: slop, leaving cancels, re-entering re-arms, pointercancel aborts.
+
+   Two looks, so the feedback fits the surface it sits on, plus one modifier:
+     .press-tint   white wash. Layered with an inset shadow rather than a
+                   background-color so it sits *on top* of whatever background
+                   the element already has — a selected chip stays visibly
+                   selected while it is being pressed, which keeps the press
+                   state distinct from the app's own active states.
+     .press-fade   opacity dip, for bare icons and text links where a filled
+                   box would look wrong.
+     .press-scale  the floating action button's existing 0.95 scale, moved off
+                   `:active` so it cancels like everything else.
+   No new colour is introduced: the wash is the same white the app already used
+   for hover and for `.press-tint`, at the same strength.
+
+   Hover stays behind a pointer query. On touch, `:hover` sticks after a tap
+   until something else is tapped — which is exactly how a "pressed" background
+   ends up frozen on a button. */
+.press-tint,
+.press-fade,
+.press-scale {
+  transition:
+    box-shadow 120ms ease,
+    opacity 120ms ease,
+    transform 120ms ease;
 }
-.press-tint:active {
-  background-color: rgba(255, 255, 255, 0.1);
-}
+
 @media (hover: hover) and (pointer: fine) {
   .press-tint:hover {
-    background-color: rgba(255, 255, 255, 0.05);
+    box-shadow: inset 0 0 0 9999px rgba(255, 255, 255, 0.05);
+  }
+  .press-fade:hover {
+    opacity: 0.8;
   }
 }
+
+/* The press itself is instant — "immediately visible" is the whole point of
+   G2. Only the release eases out, via the transition above. */
+.press-tint[data-pressed],
+.press-fade[data-pressed],
+.press-scale[data-pressed] {
+  transition-duration: 0s;
+}
+
+.press-tint[data-pressed] {
+  box-shadow: inset 0 0 0 9999px rgba(255, 255, 255, 0.1);
+}
+.press-fade[data-pressed] {
+  opacity: 0.62;
+}
+.press-scale[data-pressed] {
+  transform: scale(0.95);
+}
+
+/* Keyboard activation (Enter/Space) shows the same press, but never through
+   opacity: that would composite the focus ring together with the element and
+   make it harder to read. The wash leaves the ring untouched. Must stay after
+   the rule above — [data-pressed="key"] and [data-pressed] have equal
+   specificity, so source order decides. */
+.press-fade[data-pressed='key'] {
+  opacity: 1;
+  box-shadow: inset 0 0 0 9999px rgba(255, 255, 255, 0.1);
+}
+
+/* Reduced motion is handled once, in the single REDUCED MOTION block below —
+   the press classes are named there together with the app's other movement. */
 
 /* ---------------------------------------------------------------------------
    FOCUS STATES — design system §22 ("visible keyboard/focus states")
@@ -170,7 +232,13 @@ body {
    calendar grid. Those are full-bleed surfaces rather than free-standing
    controls, so they draw the same 2px accent ring just inside their own edge,
    where nothing can clip it. Free-standing controls keep the outset ring —
-   several of them are accent-filled, where an inset ring would disappear. */
+   several of them are accent-filled, where an inset ring would disappear.
+
+   These are the same surfaces that carry G2's `.press-tint`, whose pressed
+   state is also an inset. They compose rather than collide: the wash is a
+   translucent inset box-shadow, painted just above the background, while the
+   outline is painted last, on top of the element — so a focused row that is
+   being pressed shows both, with the accent ring fully opaque over the wash. */
 .overflow-hidden [role='button']:focus-visible,
 .overflow-hidden button[class*='w-full']:focus-visible,
 [data-ev-id]:focus-visible {
@@ -200,7 +268,8 @@ body {
    So this block never removes feedback, it only takes the movement out of it:
    every spatial animation becomes the fade it already ends on, and transitions
    that move something become instant state changes. Opacity-only animations
-   (`fade-in`, `page`) and colour transitions (`press-tint`, `transition-colors`)
+   (`fade-in`, `page`) and non-moving transitions (`transition-colors`, and the
+   press wash / press fade — box-shadow and opacity, see the press block above)
    are already motion-free and stay exactly as they are.
 
    Deliberately NOT disabled: the drag/resize of calendar events and the
@@ -237,10 +306,14 @@ body {
     animation: none;
   }
 
-  /* Movement transitions (toggle knobs, chevron rotation, the FAB's press
-     scale) still change state — they just arrive instantly. */
+  /* Movement transitions (toggle knobs, chevron rotation, the floating action
+     button's press scale) still change state — they just arrive instantly.
+     `.press-scale` is named explicitly because G2 moved that scale off the
+     FAB's `transition-transform` utility and onto the central press controller;
+     without it the one transform left in the app would keep animating here. */
   .transition-transform,
-  .transition-all {
+  .transition-all,
+  .press-scale {
     transition-property: none;
   }
 }

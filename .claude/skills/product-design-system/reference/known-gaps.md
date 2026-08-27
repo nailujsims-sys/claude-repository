@@ -1,6 +1,6 @@
 # Known gaps — current app vs. design system
 
-Status: G1 and G3 implemented (2026-08); G2 and G4–G12 still open.
+Status: G1, G2 and G3 implemented (2026-08); G4–G12 still open.
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -15,15 +15,6 @@ issues again and do not start an unrequested refactor.
 ---
 
 ## High impact (systemic, affects every module)
-
-### G2 · Press feedback missing on most controls — §5
-~64 `<button>` elements exist; press feedback is present on only a few
-(`BottomNav` plus button `active:scale-95`, `.press-tint` in `Kalender.jsx` and
-`MiniCalendar.jsx`). Everything else — `ConfirmDialog` buttons, `TaskForm` /
-`EventForm` controls, `TaskDetail` actions, `FilterSheet`, `ActionSheet`,
-`Sidebar`, `TaskRow`'s complete circle and `StarButton` — reacts only on click.
-*Direction:* extend the existing `.press-tint` pattern (or a `.press-scale`
-sibling) rather than adding per-component `active:` classes.
 
 ### G4 · Overlays animate in but never out — §11 spatial consistency, §7
 `Overlay.jsx` returns `null` when `open` is false, so `BottomSheet`, `Sidebar`,
@@ -110,6 +101,51 @@ it will not inherit the G4 exit animation.
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G2 · Press feedback — closed 2026-08 (`src/lib/pressFeedback.js`, `src/index.css`)
+Solved centrally, as the direction asked: one delegated pointer listener
+(`installPressFeedback`, wired once in `main.jsx`) writes a `data-pressed`
+attribute; no per-component `active:` classes and no per-button handlers. The
+semantics are the ones `useTimedGesture.js` already established — feedback on
+down, an 8px slop so a fingertip's drift is not a cancel, leaving the activation
+area cancels, re-entering re-arms, `pointercancel`/scroll aborts. It commits
+nothing: the action still runs from the element's own `onClick`, i.e. the native
+click, which already means "released inside the element". It never calls
+`preventDefault` and never sets `touch-action`, so page scrolling, `useSwipe`
+and the dnd-kit reorder keep the gesture budget they had.
+
+Three classes, extending `.press-tint` rather than replacing it:
+`.press-tint` (white wash, layered as an inset box-shadow so it sits *over* an
+element's own background — a selected chip stays visibly selected while pressed,
+keeping press distinct from the app's active states), `.press-fade` (opacity dip,
+for bare icons and text links) and `.press-scale` (the FAB's pre-existing 0.95
+scale, moved off `:active` onto the controller so it cancels like everything
+else). No new colour, no added scaling, no sounds or haptics.
+
+Deliberately *not* `:active`: it also matches the ancestors of the pressed node
+(pressing the star would have tinted the whole task row), it has no movement
+threshold, and on touch it is delayed while the browser decides whether the
+gesture is a scroll.
+
+Also folded in: the ~20 duplicated header icon buttons became one `IconButton`,
+and 11 unguarded `hover:bg-white/5` / `hover:text-*` utilities moved onto the
+press classes' `(hover: hover)`-guarded hover, which removed sticky hover at
+those call sites.
+
+**Interaction with G1 and G3.** Reduced motion stays a single block: only
+`.press-scale` is neutralised there (a transform is movement — it still changes
+state, just instantly, exactly as G1 treated the FAB before), while the wash and
+the fade keep their 120ms release easing because box-shadow and opacity carry no
+movement. G3's inset focus ring and G2's inset wash compose rather than collide:
+the wash paints just above the background, the outline paints last, so a focused
+row that is pressed shows both. Keyboard activation writes `data-pressed="key"`
+so `.press-fade` uses the wash instead of an opacity dip and never dims the ring.
+The floating action button carries `.press-scale` only — its glow is an inline
+style, which beats any class rule, so a wash could never paint there.
+
+`tools/pressLogic.mjs` unit-tests the state machine (slop, activation area,
+rect drift) and runs as part of `npm run test:logic`.
+
 
 ### G1 · Reduced motion — closed 2026-08 (`src/index.css`)
 One `@media (prefers-reduced-motion: reduce)` block. Spatial animations

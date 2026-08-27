@@ -1,4 +1,5 @@
 import { Menu, Lock } from 'lucide-react'
+import IconButton from '../components/IconButton'
 import { useUI } from '../context/UIContext'
 import { futureModules } from '../config/navigation'
 
@@ -8,9 +9,9 @@ export default function Mehr() {
   return (
     <div className="min-h-screen px-5 pt-5 pb-28">
       <header className="flex items-center gap-2">
-        <button onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 p-1 text-text-primary">
+        <IconButton onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 text-text-primary">
           <Menu size={26} />
-        </button>
+        </IconButton>
         <h1 className="text-[28px] font-bold text-text-primary">Mehr</h1>
       </header>
 
