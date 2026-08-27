@@ -1,4 +1,5 @@
 import { X } from 'lucide-react'
+import IconButton from './IconButton'
 import Overlay from './Overlay'
 
 // Bottom sheet that slides up. Two variants:
@@ -27,13 +28,13 @@ export default function BottomSheet({
       >
         {full ? (
           <div className="flex items-center justify-between px-5 h-14 shrink-0 border-b border-subtle">
-            <button
+            <IconButton
               onClick={onClose}
-              className="text-text-secondary hover:text-text-primary -ml-1 p-1"
+              className="-ml-1 text-text-secondary"
               aria-label="Schließen"
             >
               <X size={24} />
-            </button>
+            </IconButton>
             <h2 className="text-[17px] font-semibold text-text-primary">{title}</h2>
             <div className="min-w-[24px] text-right">{headerRight}</div>
           </div>

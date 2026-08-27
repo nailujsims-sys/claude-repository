@@ -133,6 +133,13 @@ function clampStyle(font, line, lines) {
 // shows top/bottom drag handles — the pointer layer (useTimedGesture) reads the
 // data-ev-id / data-handle attributes to move or resize it. `draft` carries the
 // live times while a drag is in flight so the block follows the finger.
+//
+// Press feedback (G2) is the shared `press-tint`, and only outside edit mode:
+// while editing, the ring and shadow *are* the state, and a second wash would
+// both fight the `shadow-lg` and blur the line between "pressed" and "grabbed".
+// The block has no onClick of its own — the grid's gesture layer decides
+// between tap-to-open and long-press-to-grab — so the central controller here
+// only ever paints, which is exactly why it must not commit anything.
 export function TimedBlock({ item, columnWidth = 0, compact = false, editing = false, draft = null }) {
   const { ev } = item
   const geom = draft
@@ -152,7 +159,7 @@ export function TimedBlock({ item, columnWidth = 0, compact = false, editing = f
       className={`absolute flex flex-col overflow-visible rounded-[10px] border bg-bg-elevated text-left transition-shadow ${
         editing
           ? 'z-30 border-accent ring-2 ring-accent shadow-lg shadow-black/40'
-          : 'z-10 border-subtle'
+          : 'press-tint z-10 border-subtle'
       }`}
       style={{
         top: geom.top + 1,
@@ -220,7 +227,7 @@ export function MoreEventsChip({ item, columnWidth = 0, compact = false, onSelec
       type="button"
       onClick={() => onSelect?.(item)}
       title={`${item.count} weitere Termine`}
-      className="absolute z-10 grid place-items-center rounded-[10px] border border-dashed border-subtle bg-bg-card px-1 text-center text-text-secondary"
+      className="press-tint absolute z-10 grid place-items-center rounded-[10px] border border-dashed border-subtle bg-bg-card px-1 text-center text-text-secondary"
       style={{
         top: item.top + 1,
         height,
@@ -266,7 +273,7 @@ export function BarsArea({
             key={ev.id}
             onClick={() => onSelect?.(ev)}
             title={eventDisplayTitle(ev)}
-            className="absolute overflow-hidden rounded-chip bg-accent-dim text-left"
+            className="press-tint absolute overflow-hidden rounded-chip bg-accent-dim text-left"
             style={{
               top: lane * laneHeight,
               height: barHeight,

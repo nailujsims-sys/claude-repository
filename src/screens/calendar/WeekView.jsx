@@ -83,7 +83,7 @@ function WeekView({ weekMonday, events, tasks, onSelectEvent, onSelectDay }) {
                 <button
                   key={iso}
                   onClick={() => onSelectDay?.(day)}
-                  className={`flex flex-1 flex-col items-center gap-1 py-2 ${
+                  className={`press-tint flex flex-1 flex-col items-center gap-1 py-2 ${
                     t ? 'bg-white/[0.03]' : ''
                   }`}
                 >

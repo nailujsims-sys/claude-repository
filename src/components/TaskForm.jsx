@@ -80,7 +80,7 @@ export default function TaskForm() {
     <button
       onClick={handleSave}
       disabled={!canSave}
-      className={`text-[15px] font-semibold ${
+      className={`press-fade text-[15px] font-semibold ${
         canSave ? 'text-accent' : 'text-text-muted'
       }`}
     >
@@ -113,7 +113,7 @@ export default function TaskForm() {
               <button
                 key={cat}
                 onClick={() => set({ category: cat })}
-                className={`flex-1 rounded-chip py-2 text-[14px] font-medium transition-colors ${
+                className={`press-tint flex-1 rounded-chip py-2 text-[14px] font-medium transition-colors ${
                   form.category === cat
                     ? 'bg-accent text-white'
                     : 'text-text-secondary'
@@ -154,7 +154,7 @@ export default function TaskForm() {
                 <button
                   onClick={() => set({ due_time: '' })}
                   aria-label="Uhrzeit entfernen"
-                  className="text-text-muted hover:text-text-secondary"
+                  className="press-fade text-text-muted"
                 >
                   <X size={18} />
                 </button>

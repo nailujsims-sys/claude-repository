@@ -51,7 +51,7 @@ export default function Login() {
         <button
           type="submit"
           disabled={busy || !email || !password}
-          className={`w-full rounded-btn py-3.5 text-[15px] font-semibold ${
+          className={`press-tint w-full rounded-btn py-3.5 text-[15px] font-semibold ${
             busy || !email || !password
               ? 'bg-bg-input text-text-muted'
               : 'bg-accent text-white'

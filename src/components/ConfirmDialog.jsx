@@ -20,13 +20,13 @@ export default function ConfirmDialog({
         <div className="mt-5 flex gap-3">
           <button
             onClick={onCancel}
-            className="flex-1 rounded-btn border border-subtle py-2.5 text-[15px] font-semibold text-text-secondary"
+            className="press-tint flex-1 rounded-btn border border-subtle py-2.5 text-[15px] font-semibold text-text-secondary"
           >
             {cancelLabel}
           </button>
           <button
             onClick={onConfirm}
-            className="flex-1 rounded-btn bg-danger py-2.5 text-[15px] font-semibold text-white"
+            className="press-tint flex-1 rounded-btn bg-danger py-2.5 text-[15px] font-semibold text-white"
           >
             {confirmLabel}
           </button>

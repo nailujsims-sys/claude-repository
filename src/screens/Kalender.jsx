@@ -26,6 +26,7 @@ import WeekView from './calendar/WeekView'
 import MonthView from './calendar/MonthView'
 import EventDetailSheet from '../components/EventDetailSheet'
 import { useSwipe } from './calendar/useSwipe'
+import IconButton from '../components/IconButton'
 
 const VIEWS = [
   { id: 'day', label: 'Tag' },
@@ -127,13 +128,9 @@ export default function Kalender() {
           the row below them. Only the text inside changes. */}
       <header className="shrink-0 px-4 pt-4 pb-2">
         <div className="flex h-[42px] items-center gap-2">
-          <button
-            onClick={openSidebar}
-            aria-label="Menü öffnen"
-            className="press-tint -ml-1 grid h-9 w-9 shrink-0 place-items-center rounded-chip text-text-primary"
-          >
+          <IconButton onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 text-text-primary">
             <Menu size={26} />
-          </button>
+          </IconButton>
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-[19px] font-bold leading-[24px] text-text-primary">
               {primary}
@@ -142,22 +139,16 @@ export default function Kalender() {
               {sub || '\u00A0'}
             </p>
           </div>
-          <button
+          <IconButton
             onClick={goToday}
             aria-label="Heute"
-            className={`press-tint grid h-9 w-9 shrink-0 place-items-center rounded-chip ${
-              viewingToday ? 'text-text-secondary' : 'text-accent'
-            }`}
+            className={viewingToday ? 'text-text-secondary' : 'text-accent'}
           >
             <CalendarDays size={22} />
-          </button>
-          <button
-            onClick={() => setSearchOpen(true)}
-            aria-label="Suche"
-            className="press-tint grid h-9 w-9 shrink-0 place-items-center rounded-chip text-text-primary"
-          >
+          </IconButton>
+          <IconButton onClick={() => setSearchOpen(true)} aria-label="Suche" className="text-text-primary">
             <Search size={22} />
-          </button>
+          </IconButton>
         </div>
       </header>
 
@@ -169,8 +160,8 @@ export default function Kalender() {
               key={v.id}
               onClick={() => switchView(v.id)}
               aria-pressed={view === v.id}
-              className={`rounded-chip px-4 py-1.5 text-[13px] font-medium transition-colors ${
-                view === v.id ? 'bg-accent text-white' : 'press-tint text-text-secondary'
+              className={`press-tint rounded-chip px-4 py-1.5 text-[13px] font-medium transition-colors ${
+                view === v.id ? 'bg-accent text-white' : 'text-text-secondary'
               }`}
             >
               {v.label}
@@ -178,20 +169,12 @@ export default function Kalender() {
           ))}
         </div>
         <div className="flex items-center gap-1">
-          <button
-            onClick={() => go(-1)}
-            aria-label="Zurück"
-            className="press-tint grid h-8 w-8 place-items-center rounded-chip text-text-secondary"
-          >
+          <IconButton small onClick={() => go(-1)} aria-label="Zurück" className="text-text-secondary">
             <ChevronLeft size={18} />
-          </button>
-          <button
-            onClick={() => go(1)}
-            aria-label="Weiter"
-            className="press-tint grid h-8 w-8 place-items-center rounded-chip text-text-secondary"
-          >
+          </IconButton>
+          <IconButton small onClick={() => go(1)} aria-label="Weiter" className="text-text-secondary">
             <ChevronRight size={18} />
-          </button>
+          </IconButton>
         </div>
       </div>
 
@@ -265,13 +248,9 @@ function SearchOverlay({ events, onClose, onOpenEvent }) {
   return (
     <div className="absolute inset-0 z-30 flex flex-col bg-bg-base animate-fade-in">
       <header className="flex items-center gap-2 px-4 pt-4 pb-2">
-        <button
-          onClick={onClose}
-          aria-label="Zurück"
-          className="press-tint -ml-1 grid h-9 w-9 shrink-0 place-items-center rounded-chip text-text-primary"
-        >
+        <IconButton onClick={onClose} aria-label="Zurück" className="-ml-1 text-text-primary">
           <ChevronLeft size={24} />
-        </button>
+        </IconButton>
         <div className="flex flex-1 items-center gap-2 rounded-input bg-bg-input px-3 py-2">
           <Search size={16} className="text-text-muted" />
           <input
@@ -282,7 +261,7 @@ function SearchOverlay({ events, onClose, onOpenEvent }) {
             className="flex-1 bg-transparent text-[15px] text-text-primary placeholder:text-text-muted outline-none"
           />
           {query && (
-            <button onClick={() => setQuery('')} aria-label="Suche leeren">
+            <button onClick={() => setQuery('')} aria-label="Suche leeren" className="press-fade">
               <X size={16} className="text-text-muted" />
             </button>
           )}
@@ -313,7 +292,7 @@ function SearchOverlay({ events, onClose, onOpenEvent }) {
               <button
                 key={ev.id}
                 onClick={() => onOpenEvent(ev)}
-                className="flex w-full items-center gap-3 px-4 py-3 text-left"
+                className="press-tint flex w-full items-center gap-3 px-4 py-3 text-left"
               >
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[15px] font-medium text-text-primary">

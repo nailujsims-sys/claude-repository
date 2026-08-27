@@ -23,6 +23,7 @@ import { useUI } from '../context/UIContext'
 import { useTasks } from '../context/TasksContext'
 import { buildSections, CATEGORIES } from '../lib/taskSelectors'
 import { addDays, endOfMonth, isOverdue, startOfDay, startOfISOWeek, toISODate } from '../lib/date'
+import IconButton from '../components/IconButton'
 import TaskRow from '../components/TaskRow'
 import FilterSheet, { FILTER_DEFAULTS } from '../components/FilterSheet'
 import { SkeletonTaskList } from '../components/Skeleton'
@@ -201,23 +202,23 @@ export default function TasksList() {
       <div className="sticky top-0 z-30 border-b border-subtle bg-bg-base">
         {/* Header */}
         <header className="flex items-center gap-2 px-5 pt-5">
-          <button onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 p-1 text-text-primary">
+          <IconButton onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 text-text-primary">
             <Menu size={26} />
-          </button>
+          </IconButton>
           <h1 className="flex-1 text-[28px] font-bold text-text-primary">Aufgaben</h1>
-          <button
+          <IconButton
             onClick={() => {
               setSearchOpen((v) => !v)
               if (searchOpen) setSearch('')
             }}
             aria-label="Suche"
-            className="p-1 text-text-primary"
+            className="text-text-primary"
           >
             <Search size={22} />
-          </button>
-          <button onClick={() => setFilterOpen(true)} aria-label="Filter" className="p-1 text-text-primary">
+          </IconButton>
+          <IconButton onClick={() => setFilterOpen(true)} aria-label="Filter" className="text-text-primary">
             <SlidersHorizontal size={22} />
-          </button>
+          </IconButton>
         </header>
 
         {/* Search bar */}
@@ -233,7 +234,7 @@ export default function TasksList() {
                 className="flex-1 bg-transparent text-[15px] text-text-primary placeholder:text-text-muted outline-none"
               />
               {search && (
-                <button onClick={() => setSearch('')} aria-label="Suche leeren">
+                <button onClick={() => setSearch('')} aria-label="Suche leeren" className="press-fade">
                   <X size={16} className="text-text-muted" />
                 </button>
               )}
@@ -247,7 +248,7 @@ export default function TasksList() {
             <button
               key={tab}
               onClick={() => setCategory(tab)}
-              className={`shrink-0 rounded-chip px-4 py-1.5 text-[14px] font-medium transition-colors ${
+              className={`press-tint shrink-0 rounded-chip px-4 py-1.5 text-[14px] font-medium transition-colors ${
                 category === tab ? 'bg-accent text-white' : 'text-text-secondary'
               }`}
             >

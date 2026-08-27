@@ -45,7 +45,7 @@ export default function TaskRow({
 
   return (
     <div
-      className={`relative flex items-center gap-3 px-4 ${
+      className={`press-tint relative flex items-center gap-3 px-4 ${
         completing ? 'task-completing' : ''
       } ${isDragging ? 'opacity-90' : ''}`}
       style={{ minHeight: 60 }}
@@ -61,7 +61,7 @@ export default function TaskRow({
       <button
         onClick={handleCircle}
         aria-label={completed ? 'Als offen markieren' : 'Als erledigt markieren'}
-        className="shrink-0"
+        className="press-fade shrink-0"
       >
         <span
           className={`grid h-[22px] w-[22px] place-items-center rounded-full border-2 transition-colors ${

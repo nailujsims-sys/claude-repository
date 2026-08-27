@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { Lock, User, X } from 'lucide-react'
+import IconButton from './IconButton'
 import Overlay from './Overlay'
 import { useUI } from '../context/UIContext'
 import { useAuth } from '../context/AuthContext'
@@ -24,13 +25,13 @@ export default function Sidebar() {
               <p className="text-[12px] text-text-secondary">Mind Whiteboard</p>
             </div>
           </div>
-          <button
+          <IconButton
             onClick={closeSidebar}
             aria-label="Menü schließen"
-            className="p-1 text-text-secondary hover:text-text-primary"
+            className="text-text-secondary"
           >
             <X size={22} />
-          </button>
+          </IconButton>
         </div>
 
         <nav className="flex-1 overflow-y-auto px-3">
@@ -55,10 +56,8 @@ export default function Sidebar() {
                 end={item.to === '/'}
                 onClick={closeSidebar}
                 className={({ isActive }) =>
-                  `flex items-center gap-3 rounded-btn px-3 py-3 text-[15px] font-medium ${
-                    isActive
-                      ? 'bg-accent/15 text-accent'
-                      : 'text-text-primary hover:bg-white/5'
+                  `press-tint flex items-center gap-3 rounded-btn px-3 py-3 text-[15px] font-medium ${
+                    isActive ? 'bg-accent/15 text-accent' : 'text-text-primary'
                   }`
                 }
               >

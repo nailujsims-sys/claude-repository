@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
+import IconButton from './IconButton'
 import {
   MONTHS_DE,
   WEEKDAYS_DE,
@@ -40,22 +41,12 @@ export default function MiniCalendar({ value, onChange }) {
           {MONTHS_DE[view.month]} {view.year}
         </span>
         <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={prevMonth}
-            aria-label="Vorheriger Monat"
-            className="press-tint grid h-8 w-8 place-items-center rounded-chip text-text-secondary"
-          >
+          <IconButton small onClick={prevMonth} aria-label="Vorheriger Monat" className="text-text-secondary">
             <ChevronLeft size={18} />
-          </button>
-          <button
-            type="button"
-            onClick={nextMonth}
-            aria-label="Nächster Monat"
-            className="press-tint grid h-8 w-8 place-items-center rounded-chip text-text-secondary"
-          >
+          </IconButton>
+          <IconButton small onClick={nextMonth} aria-label="Nächster Monat" className="text-text-secondary">
             <ChevronRight size={18} />
-          </button>
+          </IconButton>
         </div>
       </div>
 
@@ -75,7 +66,7 @@ export default function MiniCalendar({ value, onChange }) {
             {week.days.map((day) => {
               const isSel = selected && isSameDay(day.date, selected)
               const isTod = isSameDay(day.date, today)
-              let cls = 'grid h-9 place-items-center rounded-full text-[14px] '
+              let cls = 'press-tint grid h-9 place-items-center rounded-full text-[14px] '
               if (isSel) cls += 'bg-accent text-white font-semibold'
               else if (isTod) cls += 'text-accent font-bold'
               else cls += day.inMonth ? 'text-text-primary' : 'text-text-muted'

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Menu, Bell, User, Sparkles, ArrowRight, Quote, Globe } from 'lucide-react'
+import IconButton from '../components/IconButton'
 import { useUI } from '../context/UIContext'
 import { useAuth } from '../context/AuthContext'
 import { useTasks } from '../context/TasksContext'
@@ -36,14 +37,14 @@ export default function Home() {
     <div className="px-5 pb-28 pt-3">
       {/* Header */}
       <header className="flex items-center justify-between py-2">
-        <button onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 p-1 text-text-primary">
+        <IconButton onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 text-text-primary">
           <Menu size={26} />
-        </button>
+        </IconButton>
         <div className="flex items-center gap-4">
-          <button aria-label="Benachrichtigungen" className="relative p-1 text-text-primary">
+          <IconButton aria-label="Benachrichtigungen" className="relative text-text-primary">
             <Bell size={22} />
-            <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-accent" />
-          </button>
+            <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-accent" />
+          </IconButton>
           <div className="grid h-9 w-9 place-items-center rounded-full bg-bg-elevated text-text-secondary">
             <User size={20} />
           </div>
@@ -87,7 +88,7 @@ export default function Home() {
           <p className="mt-2 max-w-[80%] text-[14px] leading-snug text-text-secondary">
             EZB-Sitzung 14:15 Uhr · DAX leicht im Plus · Nvidia-Zahlen nachbörslich.
           </p>
-          <button className="mt-3 flex items-center gap-1 text-[14px] font-semibold text-accent">
+          <button className="press-fade mt-3 flex items-center gap-1 text-[14px] font-semibold text-accent">
             Briefing öffnen <ArrowRight size={16} />
           </button>
         </div>
@@ -97,7 +98,7 @@ export default function Home() {
       <section className="mb-3 rounded-card border border-subtle bg-bg-card p-4">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-[16px] font-bold text-text-primary">Heute im Überblick</h2>
-          <button className="text-[13px] font-semibold text-accent">Mehr anzeigen</button>
+          <button className="press-fade text-[13px] font-semibold text-accent">Mehr anzeigen</button>
         </div>
         <div className="space-y-3">
           {SCHEDULE.map((e) => (
@@ -117,7 +118,7 @@ export default function Home() {
 
       {/* Aufgaben preview (live) */}
       <section
-        className="rounded-card border border-subtle bg-bg-card p-4"
+        className="press-tint rounded-card border border-subtle bg-bg-card p-4"
         onClick={() => navigate('/aufgaben')}
         role="button"
       >
@@ -137,7 +138,7 @@ export default function Home() {
               <button
                 key={t.id}
                 onClick={() => setScope(t.id)}
-                className={`rounded-chip px-3 py-1 text-[13px] font-medium transition-colors ${
+                className={`press-tint rounded-chip px-3 py-1 text-[13px] font-medium transition-colors ${
                   scope === t.id ? 'bg-accent text-white' : 'text-text-secondary'
                 }`}
               >
