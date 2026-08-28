@@ -1,7 +1,6 @@
 # Known gaps — current app vs. design system
 
-Status: G1, G2, G3, G4 and G10 implemented (2026-08); G5–G9, G11, G13–G15 open,
-G16 newly filed.
+Status: G1, G2, G3, G4, G10 and G11 implemented (2026-08); G5–G9, G13–G16 open.
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -56,12 +55,6 @@ actions.
 ### G9 · `StarButton` pop is a fixed 220ms timer — §7
 `setTimeout(() => setPop(false), 220)`; rapid re-taps restart rather than
 continue from the current visual state. Minor.
-
-### G11 · `BottomNav` blur is an ad-hoc material — §25
-`BottomNav.jsx` sets `backdropFilter: blur(20px)` with an inline rgba background
-— the one translucency in the app, while §25 defers a glass/material system.
-Not a bug; documented so it is not copied into new modules until a material
-system is decided.
 
 ### G13 · No focus trap in any overlay — §22
 Tab from an open sheet walks straight out of it into the page behind, which stays
@@ -119,6 +112,63 @@ motion later it should originate from its trigger (§11), not slide like a sheet
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G11 · `BottomNav` blur is an ad-hoc material — closed 2026-08 (`src/components/BottomNav.jsx`)
+The bar was `background: rgba(8, 12, 20, 0.92)` plus `backdropFilter: blur(20px)`,
+inline — the app's one translucency, while §25 defers a glass/material system.
+It is now `bg-bg-base`, opaque, and only `paddingBottom: env(safe-area-inset-bottom)`
+stays inline (`env()` has no Tailwind token).
+
+**Measured before deciding, and the measurements changed the decision.** The gap
+was filed as "not a bug, just documented". Two findings made removal the better
+answer than documentation:
+
+1. **The blur did nothing.** Over the whole bar, in four states: 20 of 88,920
+   pixels differed between `blur(20px)` and no backdrop-filter at all, by 1/255.
+   At 92% opacity only 8% of the backdrop reaches the bar, and in 4 of 5 sampled
+   states the area behind the bar is uniformly the page colour anyway — every
+   screen reserves `pb-28`, so content sits behind the bar only mid-scroll. Even
+   with high-contrast stripes deliberately placed behind it, the blur only
+   softened 20 levels of banding to 14. Scroll cost was identical (16.67 vs
+   16.74 ms/frame, both vsync-bound).
+2. **The app already had an answer for this surface.** `TasksList.jsx:202` — the
+   other sticky chrome that content scrolls underneath — is `bg-bg-base`, opaque,
+   no blur. So this was not only a §25 question but a §2 one: two materials for
+   one job. Reusing the existing pattern is what closed it; `TasksList.jsx` was
+   not touched.
+
+Also gone: an unnamed colour literal. `rgba(8, 12, 20, 0.92)` was `bg-base` at
+92% — the same class of thing G10 removed from typography.
+
+**Verification against `ec90a42`.**
+- Geometry: 44 states × 390px and 1280px, **8540 elements, 0 differences**, and
+  0 computed-style differences. Border, `z-40`, `pointer-events`, safe-area
+  padding and the FAB are byte-identical in the DOM.
+- Pixels: 10 of 44 viewport screenshots byte-identical (the ones where a sheet
+  covers the bar); in the other 34 **every differing pixel lies inside the bar** —
+  nothing anywhere else on any screen changed.
+- The bar's own difference decomposes into two parts, both checked:
+  *(a)* the intended one — with grayscale text AA forced on both sides, the
+  residual is **maxDelta 6 where content scrolls behind, maxDelta 2 elsewhere,
+  avgDelta ≈1**. That is the removed 8% bleed plus a one-level rounding shift
+  (the bar now *is* `#080C14` instead of compositing to `rgb(7,11,19)`).
+  *(b)* a **measurement artefact**: 414 pixels along the label baseline differ by
+  up to 127. Chromium enables LCD subpixel antialiasing over an opaque background
+  and disables it over a translucent one, so the labels simply joined the text
+  rendering path the rest of the app already uses. Proven, not assumed: with
+  `--disable-lcd-text` on both sides the deltas above 2 vanish completely
+  (3-8: 0, 9-32: 0, >32: 0), and the old bar renders identically with and without
+  LCD text — it never had it. Irrelevant on the actual target: iOS has no LCD
+  text AA and `-webkit-font-smoothing: antialiased` is set globally.
+- G1–G3: 99 Tab stops across five screens keep identical focus rings; press
+  feedback unchanged, including the nav tabs' `press-fade` opacity dip and the
+  FAB's `press-scale` plus its glow.
+- Emitted CSS is byte-identical to the baseline. `npm run build && npm run smoke
+  && npm run test:logic` pass.
+
+No material or glass abstraction was introduced — §25 and §26 stay untouched for
+the day a material system is decided deliberately. After this there is no
+translucency left in `src/` to copy.
 
 ### G10 · Typography literals → named tokens — closed 2026-08 (`tailwind.config.js`, 26 files under `src/`)
 The scale existed; it just had no names. 137 inline `text-[Npx]` literals across

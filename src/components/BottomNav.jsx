@@ -11,14 +11,17 @@ export default function BottomNav() {
   return (
     <nav className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center">
       <div className="pointer-events-auto w-full max-w-app">
+        {/* Opaque `bg-base`, the same material the sticky header in
+            `TasksList.jsx` already uses for the same job: persistent chrome with
+            content scrolling underneath. Previously an inline
+            `rgba(8, 12, 20, 0.92)` plus `blur(20px)` — the app's only
+            translucency, while §25 defers a glass/material system (G11). The
+            blur was measurably inert: at 92% opacity it changed 20 of 88,920
+            pixels, by 1/255. Only `paddingBottom` stays inline; `env()` has no
+            Tailwind token. */}
         <div
-          className="flex items-stretch border-t border-subtle"
-          style={{
-            background: 'rgba(8, 12, 20, 0.92)',
-            backdropFilter: 'blur(20px)',
-            WebkitBackdropFilter: 'blur(20px)',
-            paddingBottom: 'env(safe-area-inset-bottom)',
-          }}
+          className="flex items-stretch border-t border-subtle bg-bg-base"
+          style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
         >
           {bottomNav.map((item) =>
             item.type === 'plus' ? (

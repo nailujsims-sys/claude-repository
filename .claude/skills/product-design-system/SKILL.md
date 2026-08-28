@@ -91,6 +91,13 @@ effects, replace large spatial animation with a fade — but **keep the feedback
 No sounds. No haptics. No glass/translucency design system. Do not add these to a
 new module just because they are technically possible.
 
+**Chrome surfaces are opaque.** A bar that stays put while content scrolls
+underneath — the bottom navigation, a sticky header — uses `bg-bg-base` and
+nothing else: no alpha, no `backdrop-filter`, no `blur()`. Both surfaces in the
+app do this today (G11). There is deliberately no material token to reach for; if
+a surface seems to need one, that is a design decision for the polish phase
+(§26), not a local choice.
+
 ## This repository's existing vocabulary
 
 Reuse these before inventing anything:
@@ -113,6 +120,7 @@ Reuse these before inventing anything:
 | Period swiping | `src/screens/calendar/useSwipe.js` |
 | List reordering | `@dnd-kit` in `src/screens/TasksList.jsx` (TouchSensor delay 250 / tolerance 6) |
 | Navigation entries | `src/config/navigation.js` (config arrays — no component edits needed) |
+| Persistent chrome surface (§25) | Opaque `bg-bg-base` — `BottomNav.jsx` and the sticky header in `TasksList.jsx`. **No translucency, no `backdrop-filter`.** |
 
 Layout is mobile-first (~390px), capped at `max-width: 430px` (`.app-frame`).
 
