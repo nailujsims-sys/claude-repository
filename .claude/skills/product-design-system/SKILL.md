@@ -87,12 +87,15 @@ Reduced motion, sufficient contrast, readable type, large-enough targets, visibl
 focus states. Under `prefers-reduced-motion`: remove movement and elastic
 effects, replace large spatial animation with a fade — but **keep the feedback**.
 
-**An overlay keeps focus (G13).** Anything built on `usePresence` already traps
-Tab, takes the initial focus onto its panel container and hands focus back to the
-trigger on close. So: render your panel with the props from `panel()` /
-`useOverlayPanel` and it is done — never write a per-overlay trap, and never move
-the initial focus onto a control, which would open the keyboard on a phone. An
-`autoFocus` field inside the panel still wins, and that is the way to ask for one.
+**An overlay keeps focus (G13) and holds the page still (G14).** Anything built
+on `usePresence` already traps Tab, takes the initial focus onto its panel
+container, hands focus back to the trigger on close, and locks the page behind
+it for as long as it is mounted. So: render your panel with the props from
+`panel()` / `useOverlayPanel` and it is done — never write a per-overlay trap or
+scroll lock, and never move the initial focus onto a control, which would open
+the keyboard on a phone. An `autoFocus` field inside the panel still wins, and
+that is the way to ask for one. A scroll area *inside* the panel keeps working;
+give it `overscroll-contain`, as `BottomSheet` does.
 
 ### Explicitly out of scope right now (§23–§25)
 No sounds. No haptics. No glass/translucency design system. Do not add these to a
@@ -117,6 +120,7 @@ Reuse these before inventing anything:
 | Press feedback on icon buttons | `.press-tint` (`src/index.css`) — touch-safe, `:hover` only on real pointers |
 | Modal / panel scaffolding | `src/components/Overlay.jsx` (backdrop, Esc, focus trap, phone-frame column) |
 | Focus inside an overlay (§22) | Automatic via `usePresence` — initial focus on the panel container, Tab/Shift+Tab wrap, focus handed back on close. Do **not** add a per-overlay trap. |
+| Scroll lock behind an overlay (§22) | Automatic via `usePresence` (`src/lib/scrollLock.js`) — refcounted, held through the exit animation. Do **not** lock scrolling per overlay. |
 | Sheets | `src/components/BottomSheet.jsx` (`full` and auto-height variants) |
 | Destructive confirmation | `src/components/ConfirmDialog.jsx` |
 | Transient feedback | `src/context/ToastContext.jsx` + `ToastHost.jsx` |

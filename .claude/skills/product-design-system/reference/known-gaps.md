@@ -1,7 +1,7 @@
 # Known gaps — current app vs. design system
 
-Status: G1, G2, G3, G4, G10, G11 and G13 implemented (2026-08); G5–G9, G14–G16
-open.
+Status: G1, G2, G3, G4, G10, G11, G13 and G14 implemented (2026-08); G5–G9, G15,
+G16 open.
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -57,10 +57,6 @@ actions.
 `setTimeout(() => setPop(false), 220)`; rapid re-taps restart rather than
 continue from the current visual state. Minor.
 
-### G14 · No scroll lock behind an open overlay — §22
-The page behind a sheet still scrolls. Same story as G13: pre-existing, out of
-G4's scope, and belongs in `Overlay.jsx` when it is picked up.
-
 ### G16 · The type scale is named but not yet coherent — §15, §17
 Filed while closing G10, which deliberately renamed sizes without changing any
 of them. Two things are now visible that were hidden inside the literals:
@@ -105,6 +101,85 @@ motion later it should originate from its trigger (§11), not slide like a sheet
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G14 · No scroll lock behind an open overlay — closed 2026-08 (`src/lib/scrollLock.js`, `src/components/Overlay.jsx`)
+`usePresence` now holds a refcounted scroll lock for as long as an overlay is
+mounted, so all eight inherit it — the same shape as G4 and G13.
+
+**Cause.** Nothing prevented it. The backdrop is an ordinary div, so a wheel or
+touch landing on it walks up the DOM to the nearest scrollable ancestor, which
+is the window. Measured: the page moved up to 246px behind five of the eight
+overlays (ActionSheet, TaskForm, EventForm, FilterSheet, Sidebar), by wheel and
+by real touch alike. The other three only looked innocent — `/kalender` has no
+window scroll at all (`100dvh` + `overflow-hidden`) and TaskDetail is exactly
+one viewport tall — so they would scroll too the moment their content grows.
+Very visible while it lasted: the backdrop is only 60% opaque, and 19.3% of all
+pixels changed with maxDelta 99/255 when the page moved behind an open sheet.
+
+That also bounds the fix: **only the window scroll needed locking.** The
+calendar's inner scrollers are never ancestors of an overlay, so they cannot
+receive the chained scroll — verified, and left untouched.
+
+**`overflow: hidden` on `body`, not on `html`, and not on both.** Because `html`
+is `overflow: visible`, the body's overflow propagates to the viewport and stops
+the scroll while leaving the offset alone: no save, no restore, no jump on close.
+The four candidates, measured at scrollY 150 with a sheet open:
+
+| recipe | locks | elements moved | pixels | scrollY |
+|---|---|---|---|---|
+| `overflow:hidden` on `body` | yes | **0** | **0** | **150 kept** |
+| `overflow:hidden` on `html` | yes | 0 | 0 | 150 kept |
+| `position:fixed` + `top:-Y` | yes | 0 | 0 | → 0, needs restoring |
+| `overflow:hidden` on both | yes | 135 of 235, worst 150px | 202,656 | → 0 |
+
+**Scrollbar compensation is built in even though it cannot be verified here.**
+Hiding the overflow removes a classic scrollbar, and `.app-frame` is centred —
+`x = (clientWidth - 430) / 2`, checked at three widths — so losing an S-pixel
+scrollbar would slide the whole app S/2 to the right (~7.5px). `lockScroll`
+therefore pads the body by exactly the measured scrollbar width, and only when
+it is non-zero. Every headless Chromium draws overlay scrollbars (0px), and
+`--disable-features=OverlayScrollbar` does not change that, so this path is
+reasoned and coded but **not exercised by the test rig**.
+
+**Held one phase longer than the focus trap.** The lock is taken while
+`isMounted(phase)`, which includes `exiting`: the panel is still on screen for
+those 300ms and the page must not slide underneath it. G13's trap, by contrast,
+hands control back as soon as an overlay starts leaving. Nesting is handled by
+the refcount, not by the hook — a ConfirmDialog over an EventDetailSheet holds
+two, and closing the dialog does not unlock.
+
+**Verification against `e46f8fe`** (all eleven checks defined before writing any
+code):
+- All 8 overlays × wheel **and** real touch (`Input.dispatchTouchEvent`): locked.
+  With a control in the same run — without an overlay the page and the calendar
+  grid still scroll, so a green result means the lock works rather than the
+  instrument being dead. That control matters: two earlier touch instruments
+  (synthetic `TouchEvent`s and `Input.synthesizeScrollGesture`) reported
+  everything as "locked" including the control, and were discarded.
+- The overlay's own body still scrolls by wheel and touch (TaskForm, 0 → 23).
+- Closing restores scrolling and keeps the position exactly (150 → 150), and
+  `body` returns to `overflow: visible` with no inline leftovers.
+- Nested: sheet `hidden`, + dialog `hidden`, dialog closed → still `hidden`,
+  sheet closed → released.
+- Sampled every 60ms through the exit: `hidden` for all four `exiting` samples.
+- Geometry: 44 states × 390px and 1280px, **9380 elements, 0 differences**, 0
+  computed-style differences, **44 of 44 screenshots byte-identical**.
+- Root styles: `body overflow` is the only difference, in exactly the 22 states
+  where an overlay is open (11 scenarios × 2 widths).
+- G13 intact: 8/8 overlays still focus into the panel, 0 Tab and 0 Shift+Tab
+  escapes. G1–G3 intact: 101 Tab stops, identical rings and press feedback.
+- `tools/overlayLogic.mjs` 53 → 68 cases (nesting, unbalanced release, three
+  deep). `build`, `smoke`, `test:logic` pass.
+
+**Open risk: iOS Safari is untested.** `overflow: hidden` on `body` is the
+recipe that iOS has historically honoured least — that is why the
+`position: fixed` variant exists. There is no Safari and no device in this
+environment, so this needs one manual check on a real iPhone: open a sheet and
+drag over the backdrop. The app already sets `overscroll-behavior-y: none` on
+`body`, which handles document rubber-banding on iOS 16+, so the odds are good.
+If it does turn out to leak, swapping to the `position: fixed` recipe is a
+change inside `scrollLock.js` alone — the refcount and the `usePresence`
+integration stay as they are.
 
 ### G13 · No focus trap in any overlay — closed 2026-08 (`src/lib/focusTrap.js`, `src/components/Overlay.jsx`, `src/lib/overlayPresence.js`)
 Solved centrally, like G4: `usePresence` owns the whole focus lifecycle, so all

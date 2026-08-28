@@ -15,6 +15,7 @@ import {
   createTopmostStack,
 } from './src/lib/overlayPresence.js'
 import { wrapTab } from './src/lib/focusTrap.js'
+import { createLockCounter } from './src/lib/scrollLock.js'
 
 let pass = 0, fail = 0
 const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log('  ✗ ' + name) } }
@@ -163,6 +164,36 @@ ok('shift+tab from outside the panel returns to the last element',
   ok('closing the dialog hands the trap back to the sheet', focus.isTop(sheet))
   popSheet()
   ok('nothing owns the trap once every overlay is gone', focus.size() === 0)
+}
+
+// ── scroll lock: who applies it and who removes it (G14) ────────────────────
+{
+  const c = createLockCounter()
+  ok('the first overlay applies the lock', c.acquire() === true)
+  ok('a second overlay does not re-apply it', c.acquire() === false)
+  ok('two overlays are counted', c.size() === 2)
+  ok('closing the inner overlay does not unlock', c.release() === false)
+  ok('the page stays locked while one overlay is left', c.size() === 1)
+  ok('closing the last overlay unlocks', c.release() === true)
+  ok('nothing is held afterwards', c.size() === 0)
+}
+{
+  // An unbalanced release must not drive the count negative — that would leave
+  // the next overlay unable to lock at all.
+  const c = createLockCounter()
+  ok('releasing an unheld lock is a no-op', c.release() === false)
+  ok('the count never goes below zero', c.size() === 0)
+  ok('a later overlay still applies the lock', c.acquire() === true)
+  ok('and still removes it', c.release() === true)
+}
+{
+  // Three deep, released out of order — the count is what matters, not order.
+  const c = createLockCounter()
+  c.acquire(); c.acquire(); c.acquire()
+  ok('three overlays are counted', c.size() === 3)
+  ok('first release keeps the lock', c.release() === false)
+  ok('second release keeps the lock', c.release() === false)
+  ok('third release drops it', c.release() === true)
 }
 
 console.log(\`  \${pass} passed, \${fail} failed\`)

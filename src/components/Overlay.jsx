@@ -14,6 +14,7 @@ import {
   focusStack,
 } from '../lib/overlayPresence'
 import { focusablesIn, wrapTab } from '../lib/focusTrap'
+import { lockScroll, unlockScroll } from '../lib/scrollLock'
 
 // How long after the nominal duration we stop waiting for `transitionend`.
 // The event is the primary signal; this only covers the cases where it never
@@ -96,6 +97,21 @@ export function usePresence(open, { duration = 300, onEscape = null } = {}) {
       remove()
     }
   }, [hasEscape, listens])
+
+  // ── Scroll lock (G14) ─────────────────────────────────────────────────────
+  //
+  // Held for as long as the overlay is in the DOM, which deliberately includes
+  // `exiting`: the panel is still on screen for those 300ms, and releasing at
+  // the start of the exit would let the page slide underneath it. That is one
+  // phase longer than the focus trap below, which hands control back the moment
+  // the overlay starts leaving. Nesting is handled by the refcount in
+  // scrollLock.js, not here.
+  const mounted = isMounted(phase)
+  useEffect(() => {
+    if (!mounted) return
+    lockScroll()
+    return unlockScroll
+  }, [mounted])
 
   // ── Focus (G13) ───────────────────────────────────────────────────────────
   //
@@ -203,7 +219,7 @@ export function usePresence(open, { duration = 300, onEscape = null } = {}) {
     onTransitionEnd: handleTransitionEnd,
   })
 
-  return { phase, mounted: isMounted(phase), style: { '--ov-dur': `${duration}ms` }, panel }
+  return { phase, mounted, style: { '--ov-dur': `${duration}ms` }, panel }
 }
 
 /** Props for the element that actually animates. Call inside <Overlay>. */
