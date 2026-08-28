@@ -14,21 +14,19 @@ import {
 } from 'lucide-react'
 import { useTasks } from '../context/TasksContext'
 import { useUI } from '../context/UIContext'
-import { useToast } from '../context/ToastContext'
+import { useTaskActions } from '../lib/useTaskActions'
 import IconButton from '../components/IconButton'
 import StarButton from '../components/StarButton'
-import ConfirmDialog from '../components/ConfirmDialog'
 import { formatDueLabel, formatLongDate, formatTime } from '../lib/date'
 
 export default function TaskDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { getTask, loading, toggleFavorite, softDeleteTask } = useTasks()
+  const { getTask, loading, toggleFavorite } = useTasks()
   const { openTaskForm } = useUI()
-  const { showToast } = useToast()
+  const { softDelete } = useTaskActions()
 
   const [menuOpen, setMenuOpen] = useState(false)
-  const [confirmOpen, setConfirmOpen] = useState(false)
 
   const task = getTask(id)
 
@@ -47,11 +45,11 @@ export default function TaskDetail() {
 
   const subtitle = [task.category, task.subcategory].filter(Boolean).join(' · ')
 
-  const handleDelete = () => {
-    softDeleteTask(task)
-    setConfirmOpen(false)
-    showToast('Aufgabe gelöscht')
-    navigate('/aufgaben')
+  // No confirmation: the task goes to the Papierkorb and the toast offers the
+  // way back (G8). Navigating only once the delete actually landed, so the user
+  // is never sent away from a task that is still there.
+  const handleDelete = async () => {
+    if (await softDelete(task)) navigate('/aufgaben')
   }
 
   return (
@@ -87,7 +85,7 @@ export default function TaskDetail() {
                   <button
                     onClick={() => {
                       setMenuOpen(false)
-                      setConfirmOpen(true)
+                      handleDelete()
                     }}
                     className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-danger"
                   >
@@ -169,7 +167,7 @@ export default function TaskDetail() {
             <Pencil size={18} /> Bearbeiten
           </button>
           <button
-            onClick={() => setConfirmOpen(true)}
+            onClick={handleDelete}
             className="press-tint flex w-full items-center justify-center gap-2 rounded-btn py-3.5 text-[15px] font-semibold text-danger"
             style={{ background: 'rgba(239, 68, 68, 0.12)' }}
           >
@@ -178,13 +176,6 @@ export default function TaskDetail() {
         </div>
       </div>
 
-      <ConfirmDialog
-        open={confirmOpen}
-        title="Aufgabe löschen?"
-        message="Diese Aufgabe wird in den Papierkorb verschoben."
-        onCancel={() => setConfirmOpen(false)}
-        onConfirm={handleDelete}
-      />
     </div>
   )
 }

@@ -21,6 +21,7 @@ import { CSS } from '@dnd-kit/utilities'
 
 import { useUI } from '../context/UIContext'
 import { useTasks } from '../context/TasksContext'
+import { useTaskActions } from '../lib/useTaskActions'
 import { buildSections, CATEGORIES } from '../lib/taskSelectors'
 import { addDays, endOfMonth, isOverdue, startOfDay, startOfISOWeek, toISODate } from '../lib/date'
 import IconButton from '../components/IconButton'
@@ -56,8 +57,8 @@ function dueForSection(key) {
 
 export default function TasksList() {
   const { openSidebar } = useUI()
-  const { tasks, loading, toggleFavorite, completeTask, uncompleteTask, reorderTasks } =
-    useTasks()
+  const { tasks, loading, toggleFavorite, uncompleteTask, reorderTasks } = useTasks()
+  const { complete } = useTaskActions()
   const navigate = useNavigate()
 
   const [category, setCategory] = useState('Alle')
@@ -188,7 +189,7 @@ export default function TasksList() {
   const rowHandlers = {
     onOpen: (t) => navigate(`/aufgaben/${t.id}`),
     onToggleFavorite: toggleFavorite,
-    onComplete: completeTask,
+    onComplete: complete,
     onUncomplete: uncompleteTask,
   }
 

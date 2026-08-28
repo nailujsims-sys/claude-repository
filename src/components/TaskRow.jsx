@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Check } from 'lucide-react'
 import StarButton from './StarButton'
 import { formatTime } from '../lib/date'
@@ -21,6 +21,17 @@ export default function TaskRow({
   isOverdue = false,
 }) {
   const [completing, setCompleting] = useState(false)
+  // The completion animation plays before the commit, so the row has to hold a
+  // timer. Keeping it in a ref is what makes the window safe: it is cleared if
+  // the row goes away first, and a second tap while it is running is ignored
+  // instead of arming a second commit.
+  const commitTimer = useRef(null)
+  useEffect(
+    () => () => {
+      if (commitTimer.current) clearTimeout(commitTimer.current)
+    },
+    []
+  )
   const completed = variant === 'completed'
   const deleted = variant === 'deleted'
   // Overdue styling only applies to open tasks (not completed/deleted) and
@@ -36,8 +47,12 @@ export default function TaskRow({
       return
     }
     // Play the slide-out animation, then persist completion.
+    if (commitTimer.current) return // already on its way out
     setCompleting(true)
-    setTimeout(() => onComplete?.(task), 300)
+    commitTimer.current = setTimeout(() => {
+      commitTimer.current = null
+      onComplete?.(task)
+    }, 300)
   }
 
   const subtitle = [task.category, task.subcategory].filter(Boolean).join(' · ')

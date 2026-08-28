@@ -110,6 +110,13 @@ export function TasksProvider({ children }) {
     [updateTask]
   )
 
+  // The missing counterpart to softDeleteTask. Deliberately a two-field patch
+  // and nothing more: anything the task picked up since it was deleted stays.
+  const restoreTask = useCallback(
+    (task) => updateTask(task.id, { is_deleted: false, deleted_at: null }),
+    [updateTask]
+  )
+
   const reorderTasks = useCallback(
     async (updates) => {
       // updates: [{ id, sort_order?, due_date?, due_type? }]
@@ -145,6 +152,7 @@ export function TasksProvider({ children }) {
       completeTask,
       uncompleteTask,
       softDeleteTask,
+      restoreTask,
       reorderTasks,
     }),
     [
@@ -159,6 +167,7 @@ export function TasksProvider({ children }) {
       completeTask,
       uncompleteTask,
       softDeleteTask,
+      restoreTask,
       reorderTasks,
     ]
   )

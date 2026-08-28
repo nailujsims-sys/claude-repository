@@ -14,6 +14,7 @@ import { tasksForDay } from '../../lib/taskSelectors'
 import { useTasks } from '../../context/TasksContext'
 import { useEvents } from '../../context/EventsContext'
 import { useToast } from '../../context/ToastContext'
+import { useTaskActions } from '../../lib/useTaskActions'
 import TaskRow from '../../components/TaskRow'
 import {
   HourGutter,
@@ -132,10 +133,12 @@ export default memo(DayView)
 function TasksCollapsible({ tasks }) {
   const [open, setOpen] = useState(true)
   const navigate = useNavigate()
-  const { completeTask, uncompleteTask, toggleFavorite } = useTasks()
+  const { uncompleteTask, toggleFavorite } = useTasks()
+  // Same tap, same meaning as in the Aufgaben list — including the undo.
+  const { complete } = useTaskActions()
 
   const handlers = {
-    onComplete: completeTask,
+    onComplete: complete,
     onUncomplete: uncompleteTask,
     onToggleFavorite: toggleFavorite,
     onOpen: (t) => navigate(`/aufgaben/${t.id}`),

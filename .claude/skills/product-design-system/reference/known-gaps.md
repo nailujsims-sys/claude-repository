@@ -1,6 +1,6 @@
 # Known gaps — current app vs. design system
 
-Status: G1–G6 implemented (2026-08); G7–G11 open, G13–G15 newly filed.
+Status: G1–G8 implemented (2026-08); G9–G11 open, G13–G16 open.
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -11,25 +11,6 @@ issues again and do not start an unrequested refactor.
   user explicitly asks for it (see SKILL.md → Rule 0).
 - When a gap is closed, move it to *Closed* with the commit/date.
 - When a new deviation is found, add it here instead of fixing it opportunistically.
-
----
-
-## Medium impact (single interaction)
-
-### G7 · Task completion is a blocking 300ms timer — §5, §7, §19
-`TaskRow.jsx` sets `completing` and commits via `setTimeout(…, 300)`. The
-animation is not interruptible, the action cannot be cancelled once the circle is
-tapped, and there is no undo afterwards.
-*Direction:* pair with G8 (undo in the toast) before touching the timing.
-
-### G8 · No undo anywhere; deletes always confirm — §18, §19
-`ToastContext`/`ToastHost` support message-only toasts (2s, no action slot).
-Every destructive path instead opens `ConfirmDialog` ("Are you sure?"), which the
-design system asks us to avoid where an action can reasonably be reversed. Task
-deletion is already a *soft* delete (Papierkorb) — the ideal undo candidate.
-*Direction:* add an optional action to the toast, then replace the soft-delete
-confirmation with delete + undo. Keep `ConfirmDialog` for genuinely irreversible
-actions.
 
 ---
 
@@ -65,6 +46,26 @@ is on its way out.
 The page behind a sheet still scrolls. Same story as G13: pre-existing, out of
 G4's scope, and belongs in `Overlay.jsx` when it is picked up.
 
+### G16 · A completed row leaves left and reappears lower down — §11
+Found in the browser during the G7/G8 analysis, not previously recorded. With
+"Erledigte Aufgaben anzeigen" **on**, the completion animation slides the row out
+to the left and the same task then reappears in the completed group further down
+the card, at full opacity and with no animation at all (measured: y=174 → y=474).
+It did not travel there; it vanished and was drawn somewhere else. §11 asks for
+the opposite — what leaves toward one side comes back from it.
+
+The cause is structural, not cosmetic: the active rows and the completed rows are
+two different child arrays in `TasksList.jsx`, so the move is an unmount plus a
+remount, which also resets `TaskRow`'s own `completing` state. Fixing it properly
+means a row can stay visible while the selector has already stopped returning it
+— G4's presence lifecycle applied to list rows. That is deliberately out of
+G7/G8's scope; it would be more machinery than both of them together.
+
+*Direction:* whoever picks this up should look at it together with the
+"completed row stays in place for a few seconds, tap the circle to undo"
+alternative that G7 considered and deferred — they are the same mechanism, and
+that variant would make the undo toast unnecessary for completion.
+
 ### G15 · The task-detail menu popover has no motion — §11
 `TaskDetail.jsx` renders its own `absolute … z-20` menu with no enter or exit
 animation, so it appears and vanishes instantly. It is a small anchored popover
@@ -85,6 +86,85 @@ motion later it should originate from its trigger (§11), not slide like a sheet
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G7 · Task completion timer + G8 · Undo instead of confirmation — closed 2026-08 (`src/lib/toastState.js`, `src/lib/useTaskActions.js`, `src/context/ToastContext.jsx`, `src/components/ToastHost.jsx`, `src/components/TaskRow.jsx`, `src/context/TasksContext.jsx`, `src/screens/TaskDetail.jsx`)
+Closed together, because G7 had no good answer without G8: the completed row is
+hidden by the default filter, so the undo has to live somewhere that outlives it.
+
+**The commit is not delayed.** The obvious shape — hold the write for a few
+seconds and let undo cancel it — was rejected: the same task is rendered in the
+Aufgaben list, the calendar's day list and the Home counts, and for those seconds
+they would disagree; a reload or an app switch would silently discard an action
+the screen had already shown as done; and a backgrounded tab throttles the very
+timer the write would depend on. Committing immediately and *reversing* on undo
+matches what `updateTask` already does (optimistic state, then persistence) and
+needed no new persistence at all.
+
+**§5 was already satisfied; §19 was the actual gap.** The gap text asked for the
+300ms window to become cancellable. It should not be: at 240ms the row measures
+`opacity: 0.15` and has 60ms left — that is not a target anyone can decide
+against, and press feedback on the circle has worked since G2 (measured, 0.62 on
+pointer-down). The honest answer to "I didn't mean that" at this timescale is
+undo, so G7 reduced to the lifecycle fix plus the undo, and the animation is
+visually untouched.
+
+**The lifecycle fix is small and was a real bug.** The commit timer now lives in
+a ref, is cleared on unmount, and a second tap while it runs is ignored instead
+of arming a second commit. On `ee7a274`, tapping the circle and navigating away
+within 300ms still completed the task after the row was gone; it no longer does.
+
+**Undo is always a counter-patch, never a stored copy.** `uncompleteTask` already
+existed; `restoreTask` is its missing mirror for the soft delete
+(`is_deleted: false, deleted_at: null`, nothing else). A patch leaves anything
+the task picked up in the meantime intact, and because neither direction touches
+`sort_order`, an undone task lands back exactly where it was — measured, y=174
+before and after.
+
+**`TasksContext` never learns about toasts.** `useTaskActions()` is the thin seam
+between the mutations and their feedback, and it is why completing a task from
+the calendar's day list means the same thing as completing it in the Aufgaben
+list. That is the one file on the "do not touch" list that had to change:
+`DayView`'s task list is a second call site for exactly this action, and leaving
+it out would have made the same tap behave two ways.
+
+**The toast grew an action slot, not a stack.** One slot, as before: a newer
+message replaces an older one and its undo goes with it — the action itself
+stands, nothing is lost but the chance to reverse it. `toastState.js` holds the
+transitions because that is where the sharp edges are: ids come from a counter
+rather than `Date.now()` (two toasts in one millisecond used to collide), a timer
+is refused if its toast has already been replaced, and an action can be taken
+exactly once. 47 cases in `tools/toastLogic.mjs`.
+
+**Deleting a task is one tap.** `ConfirmDialog` is gone from `TaskDetail`; it
+stays in `EventDetailSheet`, where the delete really is permanent and §18 still
+justifies interrupting. Worth recording why the dialog was defensible until now:
+nothing in the app ever set `is_deleted` back to `false`, so the Papierkorb was a
+one-way trip and the dialog was the only protection there was. Removing it was
+only safe *because* `restoreTask` now exists.
+
+**Accessibility.** The live region is mounted permanently and only its content
+changes — one that appears together with its text is not reliably announced. Only
+the undo button takes pointer events back; the wrapper and the card stay
+`pointer-events: none`, verified by hit-test (a tap on the card body lands on the
+`h1` behind it). The button is a real button, focusable, and Enter runs it. Note
+for later: dnd-kit mounts its own `role="status"` region on the Aufgaben screen,
+so there are two live regions there — different purposes, no conflict, but worth
+knowing before adding a third.
+
+Reduced motion needed no new rule: the completion still fades over the same
+300ms (G1) and the toast still uses `reduced-fade-in`.
+
+Verified in Chromium with real touch events (74 assertions) — the 300ms
+animation unchanged, undo restoring the exact row position, unmount cancelling
+the commit, four rapid taps committing once, overlapping completions, a stale 5s
+timer failing to close its successor, 5s with an action and 2s without, keyboard
+undo, the event dialog untouched, and G5's sheet drag, G6's swipe and the dnd-kit
+reorder all unchanged. Task and calendar geometry is identical to `ee7a274` at
+390px and 1280px (the only two moving numbers are an event's Y in the time grid,
+which drifts with the wall clock — reproduced by comparing `ee7a274` with itself
+70 seconds apart).
+
+*One thing deliberately left open:* see G16.
 
 ### G6 · Swipe navigation: feedback and velocity — closed 2026-08 (`src/lib/swipeNav.js`, `src/screens/calendar/useSwipe.js`, `src/screens/Kalender.jsx`, `src/index.css`)
 The swipe now shows that it was understood while the finger is down, and a flick
