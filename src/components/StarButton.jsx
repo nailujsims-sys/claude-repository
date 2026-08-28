@@ -1,15 +1,15 @@
-import { useState } from 'react'
 import { Star } from 'lucide-react'
 
-// Favorite toggle with a small scale-pop on tap. Used in the list and detail.
+// Favorite toggle. Used in the list and detail.
+//
+// The feedback is the star itself: `.press-fade` dips it on pointer-down (G2)
+// and the colour, fill and aria-pressed carry the state. It deliberately has no
+// animation of its own — the scale pop it used to play was decoration, and §8
+// asks for none (G9).
 export default function StarButton({ active, onToggle, size = 22, className = '' }) {
-  const [pop, setPop] = useState(false)
-
   const handle = (e) => {
     e.stopPropagation()
     e.preventDefault()
-    setPop(true)
-    setTimeout(() => setPop(false), 220)
     onToggle?.()
   }
 
@@ -18,7 +18,7 @@ export default function StarButton({ active, onToggle, size = 22, className = ''
       onClick={handle}
       aria-label={active ? 'Favorit entfernen' : 'Als Favorit markieren'}
       aria-pressed={active}
-      className={`press-fade p-1 ${pop ? 'animate-star-pop' : ''} ${className}`}
+      className={`press-fade p-1 ${className}`}
     >
       <Star
         size={size}

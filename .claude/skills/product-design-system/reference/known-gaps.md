@@ -1,6 +1,6 @@
 # Known gaps — current app vs. design system
 
-Status: G1–G8 implemented (2026-08); G9–G11 open, G13–G16 open.
+Status: G1–G9 implemented (2026-08); G10, G11 open, G13–G16 open.
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -15,10 +15,6 @@ issues again and do not start an unrequested refactor.
 ---
 
 ## Low impact
-
-### G9 · `StarButton` pop is a fixed 220ms timer — §7
-`setTimeout(() => setPop(false), 220)`; rapid re-taps restart rather than
-continue from the current visual state. Minor.
 
 ### G10 · Typography values are literals, not tokens — §15
 Sizes are written inline as `text-[15px]`, `text-[17px]`, `text-[12px]`,
@@ -86,6 +82,46 @@ motion later it should originate from its trigger (§11), not slide like a sheet
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G9 · The favourite pop is gone — closed 2026-08 (`src/components/StarButton.jsx`, `tailwind.config.js`, `src/index.css`)
+**The entry this replaces was wrong about the symptom, and that mattered.** It
+said a rapid re-tap restarts the animation instead of continuing from the current
+visual state. It does neither — the second tap is swallowed whole. Measured, with
+the second tap at 80ms:
+
+```
+t= 72ms  scale=1.2533
+t= 82ms  scale=1.2533   <- second tap
+t= 94ms  scale=1.2867
+t=106ms  scale=1.3000
+t=122ms  scale=1.2220   … the first curve simply runs to its end
+t=222ms  class removed
+```
+
+`setPop(true)` while `pop` is already true is a no-op, so the class never leaves
+the DOM, and a CSS animation only restarts if it is removed and re-added. The
+favourite still toggled correctly; only the celebration was missing, and exactly
+in the most ordinary case — starring something and immediately unstarring it.
+
+**So the fix was not to make the pop interruptible; it was to delete it.** §8 is
+explicit that motion must never exist purely for decoration and warns against
+excessive scaling, and a 1.0 → 1.3 → 1.0 jump on a productivity tool is well
+inside that warning. G1 had already classified this pop as decoration when it
+switched it off under reduced motion. Nothing was lost by removing it, because
+nothing depended on it: `.press-fade` still dips the star on pointer-down
+(measured `opacity: 0.62`, §5), and the state is carried by colour, fill and
+`aria-pressed` (measured `rgb(74,82,104)` → `rgb(74,128,255)`, `fill: none` →
+`#4A80FF`, label flipping between "Als Favorit markieren" and
+"Favorit entfernen").
+
+No replacement animation, no transition, no data attribute, no timer. Two
+incidental defects went with it: the 220ms timer outlived its own 200ms
+animation by 20ms, and it was never cleared on unmount — the same fault G7 had
+just fixed in `TaskRow`, in a component whose rows unmount constantly.
+
+`star-pop` was the last scale keyframe in the app; the `tailwind.config.js`
+keyframe, the animation token and the reduced-motion override are all gone with
+it, so reduced motion needs no rule for a star that no longer moves.
 
 ### G7 · Task completion timer + G8 · Undo instead of confirmation — closed 2026-08 (`src/lib/toastState.js`, `src/lib/useTaskActions.js`, `src/context/ToastContext.jsx`, `src/components/ToastHost.jsx`, `src/components/TaskRow.jsx`, `src/context/TasksContext.jsx`, `src/screens/TaskDetail.jsx`)
 Closed together, because G7 had no good answer without G8: the completed row is

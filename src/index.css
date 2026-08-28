@@ -424,12 +424,6 @@ body {
     animation-name: reduced-fade-out;
   }
 
-  /* The favourite pop is pure decoration — the star's colour change is the
-     feedback and stays. */
-  .animate-star-pop {
-    animation: none;
-  }
-
   /* Stop the looping skeleton sweep; the placeholder blocks still show that
      something is loading. */
   .skeleton-shimmer::after {
