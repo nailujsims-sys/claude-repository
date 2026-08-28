@@ -11,6 +11,7 @@ import {
 import BottomSheet from './BottomSheet'
 import ConfirmDialog from './ConfirmDialog'
 import { useUI } from '../context/UIContext'
+import useRetained from '../lib/useRetained'
 import { useEvents } from '../context/EventsContext'
 import { useToast } from '../context/ToastContext'
 import {
@@ -49,7 +50,10 @@ function timeLabel(ev) {
 // of the three views. The bottom actions (Bearbeiten / Löschen) mirror the task
 // detail exactly — same buttons, colors, animation and confirm dialog.
 export default function EventDetailSheet({ event, onClose }) {
-  const ev = event
+  // Retained: `event` is nulled the instant the sheet is closed, and an empty
+  // sheet sliding down looks like a bug. The exit keeps showing the event the
+  // user was reading.
+  const ev = useRetained(event)
   const { openEventForm } = useUI()
   const { deleteEvent } = useEvents()
   const { showToast } = useToast()
@@ -72,7 +76,7 @@ export default function EventDetailSheet({ event, onClose }) {
   }
 
   return (
-    <BottomSheet open={!!ev} onClose={onClose} title="Termin">
+    <BottomSheet open={!!event} onClose={onClose} title="Termin">
       {ev && (
         <div className="px-5 pb-6 pt-1">
           <h3 className="text-[22px] font-bold leading-tight text-text-primary">
@@ -137,14 +141,13 @@ export default function EventDetailSheet({ event, onClose }) {
         </div>
       )}
 
-      {confirmOpen && (
-        <ConfirmDialog
-          title="Termin löschen?"
-          message="Dieser Termin wird dauerhaft gelöscht."
-          onCancel={() => setConfirmOpen(false)}
-          onConfirm={handleDelete}
-        />
-      )}
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Termin löschen?"
+        message="Dieser Termin wird dauerhaft gelöscht."
+        onCancel={() => setConfirmOpen(false)}
+        onConfirm={handleDelete}
+      />
     </BottomSheet>
   )
 }

@@ -3,6 +3,7 @@ import { ChevronRight, Folder, X } from 'lucide-react'
 import BottomSheet from './BottomSheet'
 import InlineCalendar from './InlineCalendar'
 import { useUI } from '../context/UIContext'
+import useRetained from '../lib/useRetained'
 import { useTasks } from '../context/TasksContext'
 import { useToast } from '../context/ToastContext'
 import { CATEGORIES } from '../lib/taskSelectors'
@@ -23,7 +24,10 @@ export default function TaskForm() {
   const { showToast } = useToast()
 
   const open = !!taskForm
-  const editing = taskForm?.mode === 'edit'
+  // `taskForm` is cleared the moment the sheet is closed, so read the mode
+  // from the retained value: otherwise "Aufgabe bearbeiten" would flip to
+  // "Neue Aufgabe" while the sheet is still sliding off the screen.
+  const editing = useRetained(taskForm)?.mode === 'edit'
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
 

@@ -13,6 +13,7 @@ import {
 import BottomSheet from './BottomSheet'
 import MiniCalendar from './MiniCalendar'
 import { useUI } from '../context/UIContext'
+import useRetained from '../lib/useRetained'
 import { useEvents } from '../context/EventsContext'
 import { useToast } from '../context/ToastContext'
 import { startOfDay, toISODate, formatLongDate } from '../lib/date'
@@ -73,7 +74,9 @@ export default function EventForm() {
   const { showToast } = useToast()
 
   const open = !!eventForm
-  const editing = eventForm?.mode === 'edit'
+  // Retained so the header keeps saying "Termin bearbeiten" while the sheet
+  // slides out — `eventForm` is already null by then.
+  const editing = useRetained(eventForm)?.mode === 'edit'
 
   const [form, setForm] = useState(emptyForm)
   const [saving, setSaving] = useState(false)

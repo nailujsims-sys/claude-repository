@@ -122,6 +122,77 @@ body {
   }
 }
 
+/* ── Overlay presence (G4) ───────────────────────────────────────────
+   Overlays used to animate in with a keyframe and then vanish: closing
+   unmounted them on the spot, so there was nothing left on screen to animate
+   out. And a keyframe always restarts from its `from` value, so interrupting
+   one meant jumping back to the start of the movement.
+
+   Transitions fix both. The panel stays mounted for the whole
+   entering → open → exiting lifecycle (src/lib/overlayPresence.js keeps it
+   there) and only its *target* changes; the browser then interpolates from
+   whatever is currently on screen. Closing halfway through the opening move
+   reverses out of that exact position, and reopening during the exit turns
+   around without a remount — so the form inside keeps its state.
+
+   `--ov-dur` is written by the overlay root (usePresence) so a panel and its
+   backdrop always move over the same span. Durations and easing are the ones
+   the keyframes already used: 300ms for sheets, 250ms for the sidebar, 200ms
+   for the dialog fade.
+
+   The open state is `transform: none`, not `translateY(0)`: any transform
+   value at all leaves a containing block behind and would re-anchor
+   `position: fixed` descendants — the confirm dialog inside a sheet is exactly
+   that case. `none` interpolates as the identity matrix, so the movement is
+   unchanged. */
+:root {
+  --ov-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ov-backdrop {
+  opacity: 0;
+  transition: opacity var(--ov-dur, 300ms) ease-out;
+}
+.ov-backdrop[data-phase='open'] {
+  opacity: 1;
+}
+
+/* An overlay on its way out must neither take a tap itself nor block one meant
+   for the app behind it: reopening it mid-exit has to stay possible, and that
+   is only true if its trigger is reachable again the moment the exit starts.
+   `pointer-events` is inherited, so switching the root off covers the backdrop
+   and the column too — only the panel, which opts back in with
+   `pointer-events-auto`, needs a rule of its own. `inert` (set by usePresence)
+   additionally takes the leaving panel out of the tab order. */
+.ov-root[data-phase='exiting'],
+.ov-panel[data-phase='exiting'] {
+  pointer-events: none;
+}
+
+.ov-panel-sheet {
+  transform: translateY(100%);
+  transition: transform var(--ov-dur, 300ms) var(--ov-ease);
+}
+.ov-panel-sheet[data-phase='open'] {
+  transform: none;
+}
+
+.ov-panel-left {
+  transform: translateX(-100%);
+  transition: transform var(--ov-dur, 250ms) var(--ov-ease);
+}
+.ov-panel-left[data-phase='open'] {
+  transform: none;
+}
+
+.ov-panel-fade {
+  opacity: 0;
+  transition: opacity var(--ov-dur, 200ms) ease-out;
+}
+.ov-panel-fade[data-phase='open'] {
+  opacity: 1;
+}
+
 /* ── Press feedback (G2) ─────────────────────────────────────────────
    Interactive surfaces show their pressed state the moment the pointer goes
    down; the action itself is still only committed by the native click, i.e. on
@@ -278,14 +349,28 @@ body {
    target — removing it would remove feedback, not motion.
 --------------------------------------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
-  /* Sheets, sidebar, toast and calendar period changes: same duration and
-     easing, no travel. */
-  .animate-sheet-up,
-  .animate-slide-in-left,
+  /* Toast and calendar period changes: same duration and easing, no travel. */
   .animate-toast-in,
   .cal-enter-next,
   .cal-enter-prev {
     animation-name: reduced-fade-in;
+  }
+
+  /* Sheets and the sidebar (G4). Same lifecycle, same duration, same exit —
+     they just fade in and out instead of travelling. The backdrop and the
+     confirm dialog already only change opacity and are left exactly as they
+     are. Written as full re-declarations of the two travelling classes so the
+     overrides land at the same specificity as the rules above. */
+  .ov-panel-sheet,
+  .ov-panel-left {
+    transform: none;
+    opacity: 0;
+    transition: opacity var(--ov-dur, 300ms) ease-out;
+  }
+  .ov-panel-sheet[data-phase='open'],
+  .ov-panel-left[data-phase='open'] {
+    transform: none;
+    opacity: 1;
   }
 
   /* Completing a task keeps its 300ms fade (the list still waits for it before

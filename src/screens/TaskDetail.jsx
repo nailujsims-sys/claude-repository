@@ -178,14 +178,13 @@ export default function TaskDetail() {
         </div>
       </div>
 
-      {confirmOpen && (
-        <ConfirmDialog
-          title="Aufgabe löschen?"
-          message="Diese Aufgabe wird in den Papierkorb verschoben."
-          onCancel={() => setConfirmOpen(false)}
-          onConfirm={handleDelete}
-        />
-      )}
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Aufgabe löschen?"
+        message="Diese Aufgabe wird in den Papierkorb verschoben."
+        onCancel={() => setConfirmOpen(false)}
+        onConfirm={handleDelete}
+      />
     </div>
   )
 }

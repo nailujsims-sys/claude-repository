@@ -1,6 +1,6 @@
 # Known gaps — current app vs. design system
 
-Status: G1, G2 and G3 implemented (2026-08); G4–G12 still open.
+Status: G1, G2, G3 and G4 implemented (2026-08); G5–G11 open, G13–G15 newly filed.
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -11,18 +11,6 @@ issues again and do not start an unrequested refactor.
   user explicitly asks for it (see SKILL.md → Rule 0).
 - When a gap is closed, move it to *Closed* with the commit/date.
 - When a new deviation is found, add it here instead of fixing it opportunistically.
-
----
-
-## High impact (systemic, affects every module)
-
-### G4 · Overlays animate in but never out — §11 spatial consistency, §7
-`Overlay.jsx` returns `null` when `open` is false, so `BottomSheet`, `Sidebar`,
-`ActionSheet`, `FilterSheet`, `EventDetailSheet` and `ConfirmDialog` slide/fade in
-and then **disappear instantly**. A panel that enters from the right/bottom must
-leave the same way. Also means no interruptible open→close reversal.
-*Direction:* add an exit phase in `Overlay.jsx` only — every sheet inherits it.
-Touches one shared file; verify all five consumers.
 
 ---
 
@@ -82,10 +70,23 @@ them.
 Not a bug; documented so it is not copied into new modules until a material
 system is decided.
 
-### G12 · `ConfirmDialog` bypasses `Overlay` — §2 consistency
-It renders its own `fixed inset-0` backdrop at `z-[55]` instead of reusing
-`Overlay.jsx`, so it does not inherit Esc handling or the phone-frame column, and
-it will not inherit the G4 exit animation.
+### G13 · No focus trap in any overlay — §22
+Tab from an open sheet walks straight out of it into the page behind, which stays
+reachable. Pre-existing and unchanged by G4 (verified A/B against `ebdd4ce`), and
+deliberately left open: it is an accessibility concern in its own right, not a
+motion one. `Overlay.jsx` is now the obvious single place to solve it — the
+presence phase already knows exactly when a panel is the active one and when it
+is on its way out.
+
+### G14 · No scroll lock behind an open overlay — §22
+The page behind a sheet still scrolls. Same story as G13: pre-existing, out of
+G4's scope, and belongs in `Overlay.jsx` when it is picked up.
+
+### G15 · The task-detail menu popover has no motion — §11
+`TaskDetail.jsx` renders its own `absolute … z-20` menu with no enter or exit
+animation, so it appears and vanishes instantly. It is a small anchored popover
+rather than a modal overlay, so it deliberately stayed outside G4; if it is given
+motion later it should originate from its trigger (§11), not slide like a sheet.
 
 ---
 
@@ -101,6 +102,73 @@ it will not inherit the G4 exit animation.
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G4 · Overlay exit animations — closed 2026-08 (`src/lib/overlayPresence.js`, `src/components/Overlay.jsx`, `src/index.css`)
+Solved centrally, as the direction asked: one presence machine, one lifecycle,
+every overlay inherits it.
+
+`overlayPresence.js` holds a pure state machine —
+`closed → entering → open → exiting → closed` — and `Overlay.jsx` mounts on any
+phase but `closed`. Two edges carry the whole fix: `exiting + open → open`
+returns to the open state **without passing through `closed`**, so the panel is
+never remounted and the form inside it keeps its state; and
+`entering + close → closed` unmounts immediately, because `entering` lasts only
+until the closed position has been painted and nothing has moved yet.
+
+**Keyframes became transitions.** That is the part that makes interruption work
+at all. A keyframe always restarts from its `from` value, so re-triggering one
+mid-flight jumps back to the start; a transition interpolates from the current
+computed value, so retargeting simply reverses out of wherever the panel
+currently is. Durations and easing are unchanged — 300ms sheets, 250ms sidebar,
+`cubic-bezier(0.16, 1, 0.3, 1)`, 200ms for the dialog fade. No new animation was
+introduced: closing is the opening movement played the other way.
+
+The open state is `transform: none`, not `translateY(0)`. Any transform value
+creates a containing block and would re-anchor `position: fixed` descendants —
+the confirm dialog inside a sheet is exactly that case, and on desktop its
+backdrop would have shrunk to the 430px frame.
+
+Exit completion is driven by `transitionend`, filtered to the panel itself
+(`e.target !== e.currentTarget` rejects a nested dialog's or a toggle knob's
+event) and to `transform`/`opacity`, with a `duration + 120ms` timeout as a
+fallback. Measured: the exit ends on the event at ~317ms, not on the timeout.
+
+A leaving overlay is `inert` (React 18 needs the empty-string form) and
+`pointer-events: none` — on the **root**, not just the backdrop, so it does not
+block the app behind it either. Without that, reopening mid-exit was impossible
+because the trigger was still covered; that was caught in the browser, not in
+review.
+
+`useRetained` (`src/lib/useRetained.js`) holds the last non-null value so an exit
+still shows what the user was looking at: `TaskForm`/`EventForm` keep saying
+"… bearbeiten" instead of flipping to "Neue …" halfway down, and
+`EventDetailSheet` does not empty out while still visible.
+
+Also folded in, because it was the same shared file: **the Escape stack**.
+Previously every mounted overlay listened for Escape independently, so one press
+closed an `EventDetailSheet` *and* the `ConfirmDialog` on top of it (reproduced
+on `ebdd4ce`). Now registration order decides — only the topmost overlay acts,
+and the event itself is marked claimed, so the outcome does not depend on
+listener order or on when React flushes. An overlay that has started exiting
+deregisters, so it cannot fire a second close.
+
+**Interaction with G1, G2, G3.** Reduced motion is still exactly one block:
+sheets and the sidebar re-declare their two classes there to fade instead of
+travel, same duration, same lifecycle, same exit — the backdrop and the dialog
+already only changed opacity and were left alone. G2 and G3 are untouched;
+verified in Chromium that press feedback still arms on pointer-down inside a
+sheet and cancels on drag-off, and that controls inside an overlay still show the
+2px accent ring. Overlay geometry is byte-identical to `ebdd4ce` at 390px and
+1280px.
+
+`tools/overlayLogic.mjs` unit-tests the machine and the Escape stack (35 cases)
+as part of `npm run test:logic`.
+
+### G12 · `ConfirmDialog` bypasses `Overlay` — closed 2026-08 (with G4)
+It now renders through `Overlay` (`duration={200}`, `z="z-[55]"`), so it inherits
+the Escape stack and the presence lifecycle. Its own look is unchanged and
+deliberately so — centred, 320px, `bg-elevated`, card radius, fade only, no
+travel and no scaling; verified pixel-wise against `ebdd4ce`.
 
 ### G2 · Press feedback — closed 2026-08 (`src/lib/pressFeedback.js`, `src/index.css`)
 Solved centrally, as the direction asked: one delegated pointer listener

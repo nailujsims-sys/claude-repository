@@ -27,6 +27,7 @@ import MonthView from './calendar/MonthView'
 import EventDetailSheet from '../components/EventDetailSheet'
 import { useSwipe } from './calendar/useSwipe'
 import IconButton from '../components/IconButton'
+import { usePresence } from '../components/Overlay'
 
 const VIEWS = [
   { id: 'day', label: 'Tag' },
@@ -209,16 +210,15 @@ export default function Kalender() {
         )}
       </div>
 
-      {searchOpen && (
-        <SearchOverlay
-          events={events}
-          onClose={() => setSearchOpen(false)}
-          onOpenEvent={(ev) => {
-            setSearchOpen(false)
-            setSelectedEvent(ev)
-          }}
-        />
-      )}
+      <SearchOverlay
+        open={searchOpen}
+        events={events}
+        onClose={() => setSearchOpen(false)}
+        onOpenEvent={(ev) => {
+          setSearchOpen(false)
+          setSelectedEvent(ev)
+        }}
+      />
       <EventDetailSheet event={selectedEvent} onClose={() => setSelectedEvent(null)} />
     </div>
   )
@@ -240,13 +240,24 @@ function hitTime(ev) {
 
 // Full-screen calendar search. Searches Titel / Ort / Notizen and reacts on every
 // keystroke; each hit shows title, date and time and opens the event on tap.
-function SearchOverlay({ events, onClose, onOpenEvent }) {
+//
+// It deliberately keeps its own chrome — it covers the calendar rather than
+// dimming it, so it has no backdrop and no phone-frame column and does not go
+// through <Overlay>. It does share the presence lifecycle (G4), so it fades out
+// on close instead of vanishing, and the results stay visible while it does.
+function SearchOverlay({ open, events, onClose, onOpenEvent }) {
   const [query, setQuery] = useState('')
+  const { mounted, style, panel } = usePresence(open, { duration: 200 })
   const results = useMemo(() => searchEvents(events, query), [events, query])
   const trimmed = query.trim()
 
+  if (!mounted) return null
+
   return (
-    <div className="absolute inset-0 z-30 flex flex-col bg-bg-base animate-fade-in">
+    <div
+      {...panel('ov-panel-fade', 'absolute inset-0 z-30 flex flex-col bg-bg-base')}
+      style={style}
+    >
       <header className="flex items-center gap-2 px-4 pt-4 pb-2">
         <IconButton onClick={onClose} aria-label="Zurück" className="-ml-1 text-text-primary">
           <ChevronLeft size={24} />
