@@ -1,4 +1,5 @@
-import { Menu, Lock } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Menu, Lock, Info, ChevronRight } from 'lucide-react'
 import IconButton from '../components/IconButton'
 import { useUI } from '../context/UIContext'
 import { futureModules } from '../config/navigation'
@@ -15,7 +16,20 @@ export default function Mehr() {
         <h1 className="text-[28px] font-bold text-text-primary">Mehr</h1>
       </header>
 
-      <p className="mt-2 mb-3 text-[14px] text-text-secondary">
+      {/* Built and usable today — kept above the "Demnächst" list so the two
+          are not read as one group. */}
+      <Link
+        to="/version"
+        className="press-tint mt-4 flex items-center gap-3 rounded-card border border-subtle bg-bg-card px-4 py-4"
+      >
+        <span className="grid h-9 w-9 place-items-center rounded-btn bg-bg-elevated text-text-secondary">
+          <Info size={18} />
+        </span>
+        <span className="flex-1 text-[15px] font-medium text-text-primary">Version</span>
+        <ChevronRight size={18} className="text-text-muted" />
+      </Link>
+
+      <p className="mt-6 mb-3 text-[14px] text-text-secondary">
         Weitere Module sind in Arbeit.
       </p>
 

@@ -89,6 +89,7 @@ async function run() {
     ['Home (/)', '#/'],
     ['Aufgaben (/aufgaben)', '#/aufgaben'],
     ['Mehr (/mehr)', '#/mehr'],
+    ['Version (/version)', '#/version'],
     ['Kalender (/kalender)', '#/kalender'],
   ]) {
     const window = makeDom(hash)
@@ -101,6 +102,14 @@ async function run() {
     // The seed has a 2-days-overdue task, so the list must render the overdue label.
     if (name.startsWith('Aufgaben') && !text.includes('Überfällig')) {
       errors.push(`[${name}] overdue task label "Überfällig" not rendered`)
+    }
+    // The version screen must show a version, a build time and a commit. Under
+    // esbuild the vite `define`s are absent, so it renders its dev fallback —
+    // which is exactly the path that must not crash (see src/lib/version.js).
+    if (name.startsWith('Version')) {
+      for (const needle of ['v0.0.0-dev', 'Build', 'Commit', 'unbekannt']) {
+        if (!text.includes(needle)) errors.push(`[${name}] missing "${needle}"`)
+      }
     }
   }
 

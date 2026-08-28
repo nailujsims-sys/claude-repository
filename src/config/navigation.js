@@ -14,6 +14,7 @@ import {
   LineChart,
   ClipboardList,
   CalendarPlus,
+  Info,
 } from 'lucide-react'
 
 // ── Bottom navigation ──────────────────────────────────────────────────────
@@ -34,6 +35,7 @@ export const sidebarNav = [
   { id: 'tasks', label: 'Aufgaben', icon: CheckSquare, to: '/aufgaben', enabled: true },
   { id: 'calendar', label: 'Kalender', icon: Calendar, to: '/kalender', enabled: true },
   { id: 'more', label: 'Mehr', icon: MoreHorizontal, to: '/mehr', enabled: true },
+  { id: 'version', label: 'Version', icon: Info, to: '/version', enabled: true },
 ]
 
 // ── Future modules (preview of where the app is going) ──────────────────────

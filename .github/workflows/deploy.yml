@@ -1,7 +1,10 @@
 name: Deploy Mind Whiteboard to GitHub Pages
 
-# Builds the Vite app and publishes dist/ to GitHub Pages.
-# One-time setup: repo Settings → Pages → Build and deployment → Source: "GitHub Actions".
+# Tests, builds and publishes the app to GitHub Pages, then verifies that the
+# live URL really serves the commit this run just built.
+#
+# One-time setup: repo Settings → Pages → Build and deployment → Source:
+# "GitHub Actions".
 #
 # Optional Supabase wiring: set repository variables (Settings → Secrets and
 # variables → Actions → Variables) VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.
@@ -10,8 +13,11 @@ name: Deploy Mind Whiteboard to GitHub Pages
 # fine — a secret works too.
 
 on:
+  # Only the default branch. The `github-pages` environment refuses deployments
+  # from any other branch, so listing feature branches here produced a failing
+  # run on every feature push — noise that made real failures easy to miss.
   push:
-    branches: [main, master, "claude/zen-mayer-bKTbe", "claude/pensive-einstein-cegoj4"]
+    branches: [main, master, "claude/zen-mayer-bKTbe"]
   workflow_dispatch:
 
 permissions:
@@ -21,7 +27,9 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  # Deployments queue instead of cancelling: cancelling one mid-publish can
+  # leave the site on a half-updated state, and every commit deserves to land.
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -42,11 +50,32 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Gate the deployment on the same checks a contributor runs locally, so
+      # "deployed" means "passed", not just "compiled".
+      - name: Logic tests
+        run: npm run test:logic
+
+      - name: Smoke test
+        run: npm run smoke
+
       - name: Build
         env:
+          # vite.config.js stamps this into the bundle and into version.json.
+          GITHUB_SHA: ${{ github.sha }}
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
         run: npm run build
+
+      - name: Check the build stamped the right commit
+        run: |
+          set -euo pipefail
+          echo "dist/version.json:"
+          cat dist/version.json
+          built=$(node -p "require('./dist/version.json').commit")
+          if [ "$built" != "${{ github.sha }}" ]; then
+            echo "::error::Build stamped $built, expected ${{ github.sha }}"
+            exit 1
+          fi
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -59,3 +88,26 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      # The deploy step reporting success only means GitHub accepted the
+      # artifact. This asks the public URL what it is actually serving, and
+      # fails the run if it is not this commit — so a green run is proof the
+      # live site is current. Pages needs a moment to propagate, hence retries.
+      - name: Verify the live URL serves this commit
+        run: |
+          set -euo pipefail
+          url="${{ steps.deployment.outputs.page_url }}version.json"
+          echo "Polling $url"
+          for attempt in $(seq 1 12); do
+            live=$(curl -fsSL --max-time 20 -H 'Cache-Control: no-cache' "$url" \
+                   | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).commit" 2>/dev/null || echo "")
+            if [ "$live" = "${{ github.sha }}" ]; then
+              echo "OK — live site serves ${{ github.sha }} (attempt $attempt)"
+              curl -fsSL "$url"
+              exit 0
+            fi
+            echo "attempt $attempt: live=${live:-<unreachable>} expected=${{ github.sha }}"
+            sleep 10
+          done
+          echo "::error::Live URL did not serve ${{ github.sha }} within ~2 minutes"
+          exit 1

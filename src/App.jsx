@@ -18,6 +18,7 @@ import TasksList from './screens/TasksList'
 import TaskDetail from './screens/TaskDetail'
 import Kalender from './screens/Kalender'
 import Mehr from './screens/Mehr'
+import Version from './screens/Version'
 import Login from './screens/Login'
 
 export default function App() {
@@ -77,6 +78,7 @@ function AppShell() {
           <Route path="/aufgaben/:id" element={<TaskDetail />} />
           <Route path="/kalender" element={<Kalender />} />
           <Route path="/mehr" element={<Mehr />} />
+          <Route path="/version" element={<Version />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
