@@ -177,6 +177,25 @@ body {
   transform: none;
 }
 
+/* Drag-to-dismiss (G5). While the finger is down the sheet is driven by
+   `--ov-drag` with the transition switched off, so it tracks 1:1 — the same
+   thing `[data-pressed]` does for the press feedback, and for the same reason:
+   an interpolation between two positions is exactly what direct manipulation
+   must not have.
+
+   Releasing is where this stays a small change. Snapping back just removes the
+   attribute: the rule above takes over again, and because the panel is still
+   mounted and still `open`, the transition interpolates from wherever the
+   finger left it back to `none` — the ordinary 300ms and easing, no second
+   motion system. Dismissing keeps `data-drag` (now `exit`) and lets G4's
+   presence lifecycle move the phase to `exiting`, at which point the base rule
+   above carries the sheet the rest of the way down. Closing by drag and
+   closing by backdrop end up on the identical path. */
+.ov-panel-sheet[data-drag='live'] {
+  transform: translateY(var(--ov-drag, 0px));
+  transition: none;
+}
+
 .ov-panel-left {
   transform: translateX(-100%);
   transition: transform var(--ov-dur, 250ms) var(--ov-ease);
@@ -371,6 +390,21 @@ body {
   .ov-panel-left[data-phase='open'] {
     transform: none;
     opacity: 1;
+  }
+
+  /* A drag is the user's own finger, not an animation — removing it would
+     remove feedback rather than motion, the same call G1 already made for the
+     calendar drag and the task reorder. So the live gesture still tracks, and a
+     sheet dismissed by one fades out from exactly where the finger left it:
+     travelling back up to its resting position first, only to fade from there,
+     would be the one thing this block exists to prevent. Re-declared here
+     because the rules above match at the same specificity and would otherwise
+     win on source order. What *does* lose its movement is everything automatic
+     — the snap-back and the exit both fall through to the transform-less rules
+     above and simply arrive. */
+  .ov-panel-sheet[data-drag='live'],
+  .ov-panel-sheet[data-drag='exit'] {
+    transform: translateY(var(--ov-drag, 0px));
   }
 
   /* Completing a task keeps its 300ms fade (the list still waits for it before

@@ -1,6 +1,6 @@
 # Known gaps — current app vs. design system
 
-Status: G1, G2, G3 and G4 implemented (2026-08); G5–G11 open, G13–G15 newly filed.
+Status: G1, G2, G3, G4 and G5 implemented (2026-08); G6–G11 open, G13–G15 newly filed.
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -15,14 +15,6 @@ issues again and do not start an unrequested refactor.
 ---
 
 ## Medium impact (single interaction)
-
-### G5 · Sheets cannot be dragged to dismiss — §6, §7, §13
-`BottomSheet.jsx` renders a grabber bar (`h-1 w-9 rounded-full bg-white/15`) that
-is purely decorative: there is no drag handling, no rubber-banding, no velocity
-dismissal. The affordance promises direct manipulation the component does not
-deliver.
-*Direction:* either implement drag-to-dismiss (reusing the pointer-capture
-approach of `useTimedGesture.js`) or drop the grabber. Do not leave it decorative.
 
 ### G6 · Swipe navigation is discrete, not continuous — §10, §12
 `useSwipe.js` reads only the net delta on `touchend` (threshold 48px, ratio 1.4)
@@ -102,6 +94,78 @@ motion later it should originate from its trigger (§11), not slide like a sheet
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G5 · Drag-to-dismiss for sheets — closed 2026-08 (`src/lib/sheetDrag.js`, `src/lib/useSheetDrag.js`, `src/components/BottomSheet.jsx`, `src/index.css`)
+The grabber does what it always promised. Pull the strip at the top of a
+grabber-style sheet and the sheet follows the finger 1:1; let go past the
+threshold, or flick it, and it carries on out.
+
+**Scope is the three grabber sheets** — `ActionSheet`, `FilterSheet`,
+`EventDetailSheet`. `TaskForm` and `EventForm` (`full`) are deliberately
+untouched: they never drew a grabber, so there was no promise to keep, and their
+× button stays the way a form is dismissed. Their geometry is byte-identical to
+`498e7f6` at 390px and 1280px, as is that of all three drag sheets.
+
+**The drag joins the existing movement instead of adding one.** `--ov-drag` on
+the panel plus `data-drag="live"` (transition off) is the whole live gesture —
+the same shape as G2's `[data-pressed]`, and for the same reason: interpolation
+between two positions is exactly what direct manipulation must not have. On
+release nothing new animates. Snapping back only *removes* the attribute, and
+because the panel is still mounted and still `open`, G4's transition carries it
+from wherever the finger left it back to `transform: none`. Dismissing keeps the
+attribute (as `exit`), calls `onClose`, and lets the presence machine move to
+`exiting`, where the base rule takes the sheet the rest of the way down. Closing
+by drag and closing by backdrop end up on one path, at 300ms and
+`cubic-bezier(0.16, 1, 0.3, 1)`. No new token, no spring system, and
+`Overlay.jsx` / `overlayPresence.js` were not touched at all.
+
+**Distance or velocity, and direction beats both.** The threshold is 30% of the
+sheet's own height, clamped to 56–140px, so a short sheet and a tall one take
+the same *gesture*; a downward flick at 0.6px/ms dismisses well short of it, and
+an upward flick at that speed keeps the sheet even when it was already past it —
+the user is visibly pulling it back. Velocity is read over a 100ms window rather
+than the final two points, because a finger is usually decelerating by the time
+it lifts and every deliberate throw would otherwise read as a slow drag.
+Upward drags rubber-band (§13) on the UIScrollView resistance curve against the
+sheet's own height: soft, and it never opens.
+
+**The handle is the grabber strip and the title, never the body.** The body
+scrolls, and one surface cannot be both a scroller and a drag target without one
+of them guessing. That strip carries `touch-none` — the only place in the app
+that claims a gesture this way, so page scrolling, `useSwipe` and the dnd-kit
+reorder keep the budget G2 was careful to leave them.
+
+`select-none` on that strip is **not** cosmetic, and it was found in the browser,
+not in review: dragging across the title selects it, and the *next* drag over the
+now-selected text becomes a native drag of that selection, which Chromium
+announces by cancelling the pointer mid-gesture. The sheet snapped back for no
+reason the user could see, and only ever on the second drag.
+
+**A ConfirmDialog above a sheet needs no new mechanism.** It renders through
+`Overlay` at `z-[55]` (G12), so its backdrop already covers the handle: the
+pointer never reaches it. Verified by hit-test rather than assumed.
+
+Reduced motion keeps the split G1 established. The drag itself is the user's own
+finger — feedback, not motion — so it still tracks, re-declared inside the block
+because the rules above it match at the same specificity. What loses its movement
+is everything automatic: the snap-back simply arrives, and a dismissed sheet
+fades out from exactly where the finger left it rather than travelling back up
+first only to fade from there.
+
+*One known consequence.* While a sheet is being dragged, and for the 300ms a
+snap-back takes, the panel carries a real transform — so it is a containing block,
+and a `position: fixed` descendant would anchor to it (the case G4's
+`transform: none` was chosen to avoid). Opening the confirm dialog inside that
+window would mis-anchor it. It is inherent to animating the panel at all,
+self-heals when the transform returns to `none`, and needs a deliberate tap
+during a 300ms snap-back to reach; not worth a mechanism.
+
+`tools/sheetDragLogic.mjs` unit-tests the thresholds, the rubber-band curve, the
+velocity window and the release decision (42 cases) as part of
+`npm run test:logic`. The gesture itself was driven in Chromium across all three
+sheets — tracking, snap-back, slow dismiss, flick, rubber-band, backdrop, Escape,
+tap, scroll containment, the dialog case, Tab order and reduced motion (72
+assertions).
 
 ### G4 · Overlay exit animations — closed 2026-08 (`src/lib/overlayPresence.js`, `src/components/Overlay.jsx`, `src/index.css`)
 Solved centrally, as the direction asked: one presence machine, one lifecycle,

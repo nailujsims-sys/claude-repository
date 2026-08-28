@@ -9,7 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "smoke": "node tools/smoke.mjs",
-    "test:logic": "node tools/calendarLogic.mjs && node tools/pressLogic.mjs && node tools/overlayLogic.mjs"
+    "test:logic": "node tools/calendarLogic.mjs && node tools/pressLogic.mjs && node tools/overlayLogic.mjs && node tools/sheetDragLogic.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",
