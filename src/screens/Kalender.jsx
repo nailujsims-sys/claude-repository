@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Menu, CalendarDays, Search, ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { useUI } from '../context/UIContext'
 import { useEvents } from '../context/EventsContext'
@@ -34,6 +34,10 @@ const VIEWS = [
   { id: 'week', label: 'Woche' },
   { id: 'month', label: 'Monat' },
 ]
+
+// How far the incoming period starts off to its own side — the distance the
+// keyframe this replaced always used.
+const ENTER_FROM = 24
 
 // The calendar module: a fixed-height shell (header + view switch) hosting the
 // three views, which each manage their own internal scrolling. Events come from
@@ -96,7 +100,18 @@ export default function Kalender() {
 
   const selectEvent = useCallback((ev) => setSelectedEvent(ev), [])
 
-  const swipe = useSwipe(go)
+  const trackRef = useRef(null)
+  // Set for exactly one period change: the one a swipe just committed. It tells
+  // the slide below that the track is already positioned by the finger.
+  const gestureNav = useRef(false)
+  const goBySwipe = useCallback(
+    (d) => {
+      gestureNav.current = true
+      go(d)
+    },
+    [go]
+  )
+  const swipe = useSwipe(goBySwipe, trackRef)
 
   // Is the current anchor showing the real "today" period? Drives the Heute
   // button accent (it lights up only when tapping it would actually move you).
@@ -108,15 +123,48 @@ export default function Kalender() {
         ? isInCurrentWeek(toISODate(anchor))
         : anchor.getFullYear() === now.getFullYear() && anchor.getMonth() === now.getMonth()
 
-  // Key changes whenever the shown period changes → the wrapper remounts and
-  // replays the directional slide.
+  // Key changes whenever the shown period changes → the view remounts, which is
+  // what re-anchors its scroll position and collapses anything it had expanded.
+  // It sits on the views rather than on their wrapper (G6): the wrapper is what
+  // animates, and an element that is replaced on every period change can only
+  // ever restart its movement from a fixed offset — which is exactly the jump
+  // G4 removed everywhere else. Switching views replaces the element anyway, so
+  // the remount behaviour is unchanged.
   const periodKey =
     view === 'day'
       ? toISODate(anchor)
       : view === 'week'
         ? toISODate(monday)
         : `${anchor.getFullYear()}-${anchor.getMonth()}`
-  const animClass = dir > 0 ? 'cal-enter-next' : dir < 0 ? 'cal-enter-prev' : ''
+
+  // Play the directional slide by priming the track at its starting offset and
+  // letting go, rather than by replaying a keyframe. The forced reflow makes
+  // that offset the value the transition starts from; without it the browser
+  // would only ever see the end state and nothing would move.
+  //
+  // Where that offset comes from is the whole point. A committed swipe arrives
+  // here with the track still trailing the finger, and it keeps that position:
+  // the movement continues from where the user left it instead of jumping to a
+  // fixed 24px first, which is exactly what the keyframe used to do on every
+  // re-trigger. Only navigation with no gesture behind it — the arrows — needs
+  // a starting offset invented for it, and there 24px is the distance this
+  // always used.
+  useLayoutEffect(() => {
+    const el = trackRef.current
+    const fromGesture = gestureNav.current
+    gestureNav.current = false
+    if (!el || !dir) return
+    // After a swipe `--cal-drag` is already where the finger left it, so only
+    // the arrows need one written for them. The phase is set either way —
+    // that is what reduced motion keys its fade off.
+    if (!fromGesture) {
+      el.style.setProperty('--cal-drag', `translateX(${dir * ENTER_FROM}px)`)
+    }
+    el.dataset.cal = 'enter'
+    void el.offsetWidth
+    delete el.dataset.cal
+    el.style.removeProperty('--cal-drag')
+  }, [periodKey, dir])
 
   return (
     <div
@@ -182,16 +230,25 @@ export default function Kalender() {
       {/* Active view — wrapped so a period change slides in from its direction.
           Swipe left/right anywhere here navigates periods too. */}
       <div
-        key={`${view}:${periodKey}`}
-        className={`flex min-h-0 flex-1 flex-col ${animClass}`}
+        ref={trackRef}
+        className="cal-track flex min-h-0 flex-1 flex-col"
         onTouchStart={swipe.onTouchStart}
+        onTouchMove={swipe.onTouchMove}
         onTouchEnd={swipe.onTouchEnd}
+        onTouchCancel={swipe.onTouchCancel}
       >
         {view === 'day' && (
-          <DayView date={anchor} events={events} tasks={tasks} onSelectEvent={selectEvent} />
+          <DayView
+            key={periodKey}
+            date={anchor}
+            events={events}
+            tasks={tasks}
+            onSelectEvent={selectEvent}
+          />
         )}
         {view === 'week' && (
           <WeekView
+            key={periodKey}
             weekMonday={monday}
             events={events}
             tasks={tasks}
@@ -201,6 +258,7 @@ export default function Kalender() {
         )}
         {view === 'month' && (
           <MonthView
+            key={periodKey}
             monthDate={anchor}
             events={events}
             tasks={tasks}

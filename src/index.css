@@ -92,34 +92,32 @@ body {
   }
 }
 
-/* Calendar period navigation: the incoming view slides in from the side it's
-   coming from (next = from the right, previous = from the left) with a short
-   fade. Transform-only + fade so it stays smooth on the tall day/week grids. */
-.cal-enter-next {
-  animation: cal-enter-next 220ms cubic-bezier(0.16, 1, 0.3, 1);
+/* ── Calendar period navigation (G6) ─────────────────────────────────
+   The incoming period arrives from the side it comes from — next from the
+   right, previous from the left — over the same 220ms and easing this always
+   used. What changed is that it is a transition on a track that stays mounted,
+   not a keyframe on a view that is replaced.
+
+   That is the same lesson G4 learned for overlays: a keyframe always restarts
+   from its `from` value, so a second swipe during the first slide jumped back
+   to a fixed 24px instead of continuing. A transition interpolates from
+   whatever is currently on screen, so it simply retargets.
+
+   The property carries the whole transform rather than a bare length, so the
+   resting state is `transform: none` and not `translateX(0px)`: any transform
+   value at all leaves a containing block behind and would re-anchor a
+   `position: fixed` descendant — the trap G4 documented.
+
+   `live` is the swipe trailing the finger, `enter` is the primed start of a
+   period change; both switch the transition off, because both are positions
+   being set rather than animated to. */
+.cal-track {
+  transform: var(--cal-drag, none);
+  transition: transform 220ms var(--ov-ease);
 }
-.cal-enter-prev {
-  animation: cal-enter-prev 220ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-@keyframes cal-enter-next {
-  from {
-    opacity: 0;
-    transform: translateX(24px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-@keyframes cal-enter-prev {
-  from {
-    opacity: 0;
-    transform: translateX(-24px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
+.cal-track[data-cal='live'],
+.cal-track[data-cal='enter'] {
+  transition: none;
 }
 
 /* ── Overlay presence (G4) ───────────────────────────────────────────
@@ -368,11 +366,24 @@ body {
    target — removing it would remove feedback, not motion.
 --------------------------------------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
-  /* Toast and calendar period changes: same duration and easing, no travel. */
-  .animate-toast-in,
-  .cal-enter-next,
-  .cal-enter-prev {
+  /* Toast: same duration and easing, no travel. */
+  .animate-toast-in {
     animation-name: reduced-fade-in;
+  }
+
+  /* Calendar period changes keep exactly the treatment they had — a 220ms fade
+     and no travel at all. The swipe's live hint goes with it: unlike the sheet
+     drag, which is the finger holding the object it moves, the hint is a damped
+     echo of the gesture rather than direct manipulation, so here it is movement
+     rather than feedback. The gesture itself still works and still navigates.
+     `transform` is neutralised for every state, so `--cal-drag` is simply
+     ignored; only the primed opacity is left to fade back in. */
+  .cal-track {
+    transform: none;
+    transition: opacity 220ms ease-out;
+  }
+  .cal-track[data-cal='enter'] {
+    opacity: 0;
   }
 
   /* Sheets and the sidebar (G4). Same lifecycle, same duration, same exit —

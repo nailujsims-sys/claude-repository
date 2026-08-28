@@ -1,6 +1,6 @@
 # Known gaps — current app vs. design system
 
-Status: G1, G2, G3, G4 and G5 implemented (2026-08); G6–G11 open, G13–G15 newly filed.
+Status: G1–G6 implemented (2026-08); G7–G11 open, G13–G15 newly filed.
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -15,15 +15,6 @@ issues again and do not start an unrequested refactor.
 ---
 
 ## Medium impact (single interaction)
-
-### G6 · Swipe navigation is discrete, not continuous — §10, §12
-`useSwipe.js` reads only the net delta on `touchend` (threshold 48px, ratio 1.4)
-and then plays a fixed 220ms `cal-enter-*` animation. The design system asks for
-continuous feedback during the gesture and for release velocity to influence the
-result; §12 explicitly warns against relying solely on a final "swipe detected"
-event. The user gets no feedback while dragging and no momentum.
-*Direction:* deferred — a continuous pager is a real rework of the calendar
-views. Candidate for the polish phase (§26), not for incidental changes.
 
 ### G7 · Task completion is a blocking 300ms timer — §5, §7, §19
 `TaskRow.jsx` sets `completing` and commits via `setTimeout(…, 300)`. The
@@ -94,6 +85,69 @@ motion later it should originate from its trigger (§11), not slide like a sheet
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G6 · Swipe navigation: feedback and velocity — closed 2026-08 (`src/lib/swipeNav.js`, `src/screens/calendar/useSwipe.js`, `src/screens/Kalender.jsx`, `src/index.css`)
+The swipe now shows that it was understood while the finger is down, and a flick
+navigates. **Deliberately not a pager** — the direction this gap carried was to
+defer that, and it still stands: no neighbouring period is mounted, the three
+views are untouched, and the calendar shell is not restructured.
+
+Measured on `498e7f6` before the change, and the numbers are why this was worth
+doing at all: a 40px flick at ~1.3px/ms did **nothing**, a 60px crawl over 1.5s
+navigated, and `transform` stayed `none` for the entire gesture. Distance was the
+only input, and §10 names calendar navigation as its first example.
+
+**Feedback is a damped hint, not a page.** While the gesture reads as
+horizontal, the view trails the finger through `--cal-drag` with the transition
+switched off — G5's `--ov-drag` / `data-drag` pattern, one axis over. The whole
+range rubber-bands against `SWIPE_HINT_MAX` (48px), so at the distance that
+commits the view has moved ~17px: obviously alive, obviously not a pager, and it
+cannot run away no matter how far the finger goes.
+
+**The axis is locked once, past an 8px slop.** A gesture that reads vertical is
+locked out of navigation for the rest of its life, so a scroll can never drag the
+calendar sideways halfway through, and the view never twitches during one.
+Nothing calls `preventDefault` and nothing sets `touch-action`: vertical
+scrolling measured +255px before and +254px after, with `touch-action: auto`
+unchanged on the scroller.
+
+**Distance or velocity, and direction beats both** — the same shape as G5's
+`shouldDismiss`, reusing G5's own `trackSample` / `velocityFrom` / `rubberBand`
+rather than a second implementation. The 48px distance and the 1.4 ratio guard
+are unchanged. A flick at 0.5px/ms navigates below that distance; a fast pull
+back the other way keeps the period even when the finger had already travelled
+past it.
+
+**Keyframes became a transition, and the key moved.** `cal-enter-*` was the last
+keyframe movement in the app, and it had exactly the problem G4 documented: it
+always restarts from its `from` value. The wrapper now stays mounted and carries
+the transition, and `key={periodKey}` moved onto the views themselves — the same
+remount, so the scroll re-anchoring and the collapse-on-day-change still happen,
+but the animating element survives.
+
+That alone was not enough, and the browser said so: priming every period change
+at a fixed ±24px reproduced the very jump the keyframe made — two consecutive
+swipes measured 4.91px and 4.90px, the baseline's own numbers. So the starting
+offset is now **whatever the gesture left behind**. A committed swipe continues
+from the finger's position (measured: finger left the track at -24.1px, the slide
+started at -26.8px, nowhere near +24); only the arrows, which have no gesture
+behind them, get a starting offset invented for them, and there it is the 24px
+this always used. Grabbing a running slide takes it over from its current
+position without a snap.
+
+Reduced motion keeps exactly the treatment it had: a 220ms fade, no travel. The
+live hint goes with it — unlike G5's sheet, where the finger holds the object it
+moves, this is a damped echo of the gesture rather than direct manipulation, so
+here it is movement rather than feedback. The gesture still navigates.
+
+Desktop is untouched: there is still no mouse swipe, and the arrows remain the
+pointer and keyboard path.
+
+`tools/swipeLogic.mjs` unit-tests the axis lock, the hint curve and clamping, the
+distance/velocity/direction decision and the sampling (52 cases). The gesture was
+driven in Chromium with real touch events through CDP (47 assertions), and
+calendar geometry is identical to `b7e9103` at 390px and 1280px in all three
+views.
 
 ### G5 · Drag-to-dismiss for sheets — closed 2026-08 (`src/lib/sheetDrag.js`, `src/lib/useSheetDrag.js`, `src/components/BottomSheet.jsx`, `src/index.css`)
 The grabber does what it always promised. Pull the strip at the top of a
