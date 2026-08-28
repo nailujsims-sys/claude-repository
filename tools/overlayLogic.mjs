@@ -11,9 +11,10 @@ const TEST = `
 import {
   CLOSED, ENTERING, OPEN, EXITING,
   OPEN_EVENT, CLOSE_EVENT, PRIMED, EXITED,
-  nextPhase, isMounted, acceptsEscape,
-  createEscapeStack,
+  nextPhase, isMounted, isActive,
+  createTopmostStack,
 } from './src/lib/overlayPresence.js'
+import { wrapTab } from './src/lib/focusTrap.js'
 
 let pass = 0, fail = 0
 const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log('  ✗ ' + name) } }
@@ -66,13 +67,13 @@ ok('an unknown phase is a no-op', nextPhase('bogus', OPEN_EVENT) === 'bogus')
 ok('closed is the only unmounted phase',
    !isMounted(CLOSED) && isMounted(ENTERING) && isMounted(OPEN) && isMounted(EXITING))
 ok('an overlay on its way out no longer answers Escape',
-   acceptsEscape(ENTERING) && acceptsEscape(OPEN) && !acceptsEscape(EXITING) && !acceptsEscape(CLOSED))
+   isActive(ENTERING) && isActive(OPEN) && !isActive(EXITING) && !isActive(CLOSED))
 
 // ── Escape stack ────────────────────────────────────────────────────────────
 // The bug this replaces: an EventDetailSheet with a ConfirmDialog on top of it
 // closed BOTH on a single Escape, because each listened for itself.
 {
-  const stack = createEscapeStack()
+  const stack = createTopmostStack()
   const sheet = { name: 'sheet' }
   const dialog = { name: 'dialog' }
   const popSheet = stack.push(sheet)
@@ -103,7 +104,7 @@ ok('an overlay on its way out no longer answers Escape',
 }
 
 {
-  const stack = createEscapeStack()
+  const stack = createTopmostStack()
   const a = {}, b = {}, c = {}
   const popA = stack.push(a), popB = stack.push(b), popC = stack.push(c)
   // Overlays do not necessarily unmount in the order they were opened.
@@ -113,6 +114,55 @@ ok('an overlay on its way out no longer answers Escape',
   ok('the one below becomes top again', stack.isTop(a))
   popA()
   ok('removing twice is harmless', (popA(), stack.size() === 0))
+}
+
+// ── focus trap: where Tab lands (G13) ───────────────────────────────────────
+const tab = (o) => wrapTab({ ...o, shiftKey: false })
+const shift = (o) => wrapTab({ ...o, shiftKey: true })
+
+// Moving through the middle costs nothing — the browser is left alone.
+ok('tab in the middle is not redirected', tab({ count: 5, index: 2 }) === null)
+ok('shift+tab in the middle is not redirected', shift({ count: 5, index: 2 }) === null)
+ok('tab off the last element wraps to the first', tab({ count: 5, index: 4 }) === 'first')
+ok('shift+tab off the first element wraps to the last', shift({ count: 5, index: 0 }) === 'last')
+ok('tab up to the last element is not redirected', tab({ count: 5, index: 3 }) === null)
+ok('shift+tab down to the first element is not redirected', shift({ count: 5, index: 1 }) === null)
+
+// The container holds focus on open; it sits before everything inside it.
+ok('tab from the container falls into the panel by itself',
+   tab({ count: 5, index: -1, onPanel: true }) === null)
+ok('shift+tab from the container wraps to the last element',
+   shift({ count: 5, index: -1, onPanel: true }) === 'last')
+
+// A single control must still cycle rather than let Tab out.
+ok('tab with one control wraps onto itself', tab({ count: 1, index: 0 }) === 'first')
+ok('shift+tab with one control wraps onto itself', shift({ count: 1, index: 0 }) === 'last')
+
+// Nothing focusable inside: focus is parked on the container, not released.
+ok('tab in an empty panel holds the container', tab({ count: 0, index: -1 }) === 'panel')
+ok('shift+tab in an empty panel holds the container', shift({ count: 0, index: -1 }) === 'panel')
+ok('an empty panel holds the container even from the container',
+   tab({ count: 0, index: -1, onPanel: true }) === 'panel')
+
+// Focus that ended up outside the panel is pulled back in either direction.
+ok('tab from outside the panel returns to the first element',
+   tab({ count: 5, index: -1 }) === 'first')
+ok('shift+tab from outside the panel returns to the last element',
+   shift({ count: 5, index: -1 }) === 'last')
+
+// The focus stack answers "who traps?" exactly as the Escape stack answers
+// "whose Escape is this?" — the nested ConfirmDialog case.
+{
+  const focus = createTopmostStack()
+  const sheet = {}, dialog = {}
+  const popSheet = focus.push(sheet)
+  ok('a lone sheet owns the trap', focus.isTop(sheet))
+  const popDialog = focus.push(dialog)
+  ok('a dialog on top takes the trap', focus.isTop(dialog) && !focus.isTop(sheet))
+  popDialog()
+  ok('closing the dialog hands the trap back to the sheet', focus.isTop(sheet))
+  popSheet()
+  ok('nothing owns the trap once every overlay is gone', focus.size() === 0)
 }
 
 console.log(\`  \${pass} passed, \${fail} failed\`)

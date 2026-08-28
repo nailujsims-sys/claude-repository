@@ -9,9 +9,11 @@ import {
   EXITED,
   nextPhase,
   isMounted,
-  acceptsEscape,
+  isActive,
   escapeStack,
+  focusStack,
 } from '../lib/overlayPresence'
+import { focusablesIn, wrapTab } from '../lib/focusTrap'
 
 // How long after the nominal duration we stop waiting for `transitionend`.
 // The event is the primary signal; this only covers the cases where it never
@@ -36,8 +38,15 @@ const OverlayContext = createContext(null)
 export function usePresence(open, { duration = 300, onEscape = null } = {}) {
   const [phase, setPhase] = useState(CLOSED)
   const send = (event) => setPhase((p) => nextPhase(p, event))
+  const panelRef = useRef(null)
+  const restoreRef = useRef(null)
 
   useEffect(() => {
+    // Remember what to hand focus back to (G13). This runs on the render where
+    // `open` flipped true, and at that point `phase` is still `closed`, so the
+    // panel is not mounted yet and nothing — including an `autoFocus` field
+    // inside it — has moved focus away from the trigger.
+    if (open) restoreRef.current = document.activeElement
     send(open ? OPEN_EVENT : CLOSE_EVENT)
   }, [open])
 
@@ -71,7 +80,7 @@ export function usePresence(open, { duration = 300, onEscape = null } = {}) {
   if (entryRef.current === null) entryRef.current = {}
 
   const hasEscape = !!onEscape
-  const listens = acceptsEscape(phase)
+  const listens = isActive(phase)
   useEffect(() => {
     if (!hasEscape || !listens) return
     const entry = entryRef.current
@@ -88,6 +97,89 @@ export function usePresence(open, { duration = 300, onEscape = null } = {}) {
     }
   }, [hasEscape, listens])
 
+  // ── Focus (G13) ───────────────────────────────────────────────────────────
+  //
+  // Ownership follows the same "topmost wins" rule as Escape, through a second
+  // instance of the same stack: while a ConfirmDialog is up, the sheet beneath
+  // it stops trapping, and gets its trap back the moment the dialog leaves.
+  // An overlay on its way out has already handed control back — `isActive`.
+  const focusEntryRef = useRef(null)
+  if (focusEntryRef.current === null) focusEntryRef.current = {}
+
+  useEffect(() => {
+    if (!listens) return
+    return focusStack.push(focusEntryRef.current)
+  }, [listens])
+
+  // Initial focus goes to the panel container, never to the first control.
+  // On a phone, focusing a control would open the on-screen keyboard where no
+  // keyboard opens today; the container gives a keyboard user a starting point
+  // and costs a touch user nothing. The three deliberate `autoFocus` fields
+  // (TaskForm, EventForm, calendar search) have already claimed focus by now,
+  // and the `contains` check leaves them alone.
+  useEffect(() => {
+    if (phase !== ENTERING) return
+    const panel = panelRef.current
+    if (!panel || panel.contains(document.activeElement)) return
+    panel.focus({ preventScroll: true })
+  }, [phase])
+
+  useEffect(() => {
+    if (!listens) return
+    const onKey = (e) => {
+      if (e.key !== 'Tab') return
+      if (!focusStack.isTop(focusEntryRef.current)) return
+      const panel = panelRef.current
+      if (!panel) return
+      const nodes = focusablesIn(panel)
+      const active = document.activeElement
+      const target = wrapTab({
+        count: nodes.length,
+        index: nodes.indexOf(active),
+        onPanel: active === panel,
+        shiftKey: e.shiftKey,
+      })
+      if (!target) return
+      e.preventDefault()
+      const el =
+        target === 'panel' ? panel : target === 'first' ? nodes[0] : nodes[nodes.length - 1]
+      el?.focus({ preventScroll: true })
+    }
+    // Capture, so the wrap is decided before anything inside the panel sees
+    // the key — the trap only ever redirects Tab, it never swallows a keypress
+    // a control was going to act on.
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [listens])
+
+  // Hand focus back once the overlay is gone, so it lands on the trigger rather
+  // than on a detached node. For a nested overlay the trigger is the panel of
+  // the overlay underneath, which is how focus returns into a sheet after its
+  // ConfirmDialog closes.
+  //
+  // Only when nobody else has claimed focus in the meantime. One overlay can
+  // hand straight over to another — the action sheet closes as the task form
+  // opens — and the sheet's exit finishes last. Restoring unconditionally would
+  // pull focus off the form's `autoFocus` field and back onto the button that
+  // opened the sheet. Focus resting on `body` is the signal that the closing
+  // overlay is still the one holding it.
+  const wasActiveRef = useRef(false)
+  useEffect(() => {
+    if (listens) {
+      wasActiveRef.current = true
+      return
+    }
+    if (phase !== CLOSED || !wasActiveRef.current) return
+    wasActiveRef.current = false
+    const el = restoreRef.current
+    restoreRef.current = null
+    const active = document.activeElement
+    if (active && active !== document.body) return
+    if (el && el.isConnected && typeof el.focus === 'function') {
+      el.focus({ preventScroll: true })
+    }
+  }, [listens, phase])
+
   const handleTransitionEnd = (e) => {
     // Only the panel's own movement ends the exit — never a transition
     // bubbling up from inside it (a toggle knob, a nested dialog's panel).
@@ -97,6 +189,12 @@ export function usePresence(open, { duration = 300, onEscape = null } = {}) {
   }
 
   const panel = (motion, className = '') => ({
+    ref: panelRef,
+    // Focusable only programmatically: it takes the initial focus and is the
+    // wrap target when a panel holds no controls, but never joins the tab
+    // order — and G3's focus ring deliberately skips `[tabindex="-1"]`, so
+    // taking focus here paints nothing.
+    tabIndex: -1,
     className: `ov-panel ${motion} ${className}`.trim(),
     'data-phase': phase,
     // React 18 doesn't know `inert`; an empty string renders the bare

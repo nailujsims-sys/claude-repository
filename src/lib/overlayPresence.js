@@ -53,12 +53,13 @@ export function isMounted(phase) {
 }
 
 // An overlay on its way out has already handed control back, so it must not
-// answer Escape a second time.
-export function acceptsEscape(phase) {
+// answer Escape — or hold the focus trap (G13) — a second time. Both questions
+// have the same answer, so they ask it through the same predicate.
+export function isActive(phase) {
   return phase === ENTERING || phase === OPEN
 }
 
-// ── Escape stack ────────────────────────────────────────────────────────────
+// ── Topmost-wins stack ──────────────────────────────────────────────────────
 //
 // Overlays nest — a ConfirmDialog on top of an EventDetailSheet — and until now
 // each mounted overlay listened for Escape on its own, so a single keypress
@@ -69,7 +70,11 @@ export function acceptsEscape(phase) {
 // stack. Checking the top alone would leave the outcome depending on the order
 // the window listeners happen to fire in and on when React flushes the state
 // update that pops the entry; claiming the event settles it either way.
-export function createEscapeStack() {
+//
+// Two instances exist: `escapeStack` decides who answers Escape, `focusStack`
+// (G13) decides who owns the focus trap. Same bookkeeping, separate ordering —
+// the calendar search takes part in the focus stack but has no Escape handler.
+export function createTopmostStack() {
   const entries = []
   const claimed = new WeakSet()
 
@@ -96,4 +101,5 @@ export function createEscapeStack() {
   }
 }
 
-export const escapeStack = createEscapeStack()
+export const escapeStack = createTopmostStack()
+export const focusStack = createTopmostStack()

@@ -1,6 +1,7 @@
 # Known gaps — current app vs. design system
 
-Status: G1, G2, G3, G4, G10 and G11 implemented (2026-08); G5–G9, G13–G16 open.
+Status: G1, G2, G3, G4, G10, G11 and G13 implemented (2026-08); G5–G9, G14–G16
+open.
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -56,14 +57,6 @@ actions.
 `setTimeout(() => setPop(false), 220)`; rapid re-taps restart rather than
 continue from the current visual state. Minor.
 
-### G13 · No focus trap in any overlay — §22
-Tab from an open sheet walks straight out of it into the page behind, which stays
-reachable. Pre-existing and unchanged by G4 (verified A/B against `ebdd4ce`), and
-deliberately left open: it is an accessibility concern in its own right, not a
-motion one. `Overlay.jsx` is now the obvious single place to solve it — the
-presence phase already knows exactly when a panel is the active one and when it
-is on its way out.
-
 ### G14 · No scroll lock behind an open overlay — §22
 The page behind a sheet still scrolls. Same story as G13: pre-existing, out of
 G4's scope, and belongs in `Overlay.jsx` when it is picked up.
@@ -112,6 +105,84 @@ motion later it should originate from its trigger (§11), not slide like a sheet
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G13 · No focus trap in any overlay — closed 2026-08 (`src/lib/focusTrap.js`, `src/components/Overlay.jsx`, `src/lib/overlayPresence.js`)
+Solved centrally, like G4: `usePresence` owns the whole focus lifecycle, so all
+eight overlays inherit it and a future one gets it for free.
+
+**The gap was bigger than filed.** Measured across every overlay, there were two
+defects, not one. Tab left the panel after a single press in six of eight cases
+and Shift+Tab left in all eight — 464 escapes over 80 keypresses per overlay.
+And five of eight never moved focus into the panel at all: it stayed on the
+trigger now hidden behind the overlay, or, for `ConfirmDialog`, on `body`. The
+delete confirmation had no focus whatsoever.
+
+Not theoretical: with the filter sheet open, two Tabs and Enter switched the task
+category from "Alle" to "Privat" behind it, invisibly, while the sheet stayed
+open. `BottomSheet` and `ConfirmDialog` had declared
+`role="dialog" aria-modal="true"` all along — the promise was already in the
+code, only the behaviour was missing.
+
+**Three parts, one owner.**
+
+*Initial focus goes to the panel container, never to the first control.* The
+container carries `tabindex="-1"`, so it can take focus without joining the tab
+order — and G3's ring rule deliberately excludes `[tabindex="-1"]`, so nothing is
+painted. On a phone, focusing a control would open the on-screen keyboard where
+none opens today. The three deliberate `autoFocus` fields (TaskForm, EventForm,
+calendar search) claim focus first and a `contains` check leaves them alone.
+
+*Tab wraps.* A capture-phase listener redirects only at the edges; moving through
+a panel's middle returns `null` and the browser is left alone. The decision is
+pure (`src/lib/focusTrap.js` → `wrapTab`), so it is unit-tested without a DOM;
+only `focusablesIn` touches the document, skipping zero-size elements and
+anything inside an `inert` subtree — which is how a closing ConfirmDialog's
+buttons stay out of the list of the sheet underneath it while it fades.
+
+*Focus is handed back on close.* The trigger is captured in the `[open]` effect,
+which runs while the phase is still `closed` and the panel is therefore not
+mounted, so nothing inside it has moved focus yet.
+
+**Ownership reuses G4's stack rather than inventing one.** `createEscapeStack`
+was already a factory; it is now `createTopmostStack` with two instances —
+`escapeStack` for Escape, `focusStack` for the trap. Separate ordering matters:
+the calendar search takes part in the focus stack but has no Escape handler at
+all. `acceptsEscape` became `isActive`, since the same predicate now gates both.
+
+**One measurement changed the design.** Restoring focus unconditionally broke
+`TaskForm` and `EventForm`: opening them closes the action sheet, whose exit
+finishes last, and its restore then pulled focus off the form's `autoFocus` field
+back onto the button that had opened the sheet — a regression the plan did not
+foresee. Restore now only fires while focus rests on `body`, which is the signal
+that the closing overlay still holds it. Verified over a 1.8s sample: the title
+field keeps focus for the whole handover.
+
+**Verification against `50f425f`.**
+- Focus: **464 escapes → 0** over 80 keypresses in each of the eight overlays;
+  8/8 now focus into the panel on open.
+- The filter-sheet case: the category stays "Alle"; focus never reaches it.
+- Nested (ConfirmDialog inside EventDetailSheet): focus enters the sheet, then
+  the dialog; the dialog traps with 0 escapes; Escape returns focus to the
+  "Löschen" button *inside the sheet*, and a second Escape returns it to the
+  calendar event that opened the sheet.
+- Geometry: 40 states × 390px and 1280px, **8134 elements, 0 differences**, 0
+  computed-style differences, and **all 40 screenshots byte-identical** — the
+  container focus paints nothing.
+- G1–G3 on the five overlay-free screens: 101 Tab stops with identical rings,
+  press feedback unchanged.
+- `tools/overlayLogic.mjs` grew from 34 to 53 cases (wrap decisions at both
+  edges, the container, a single control, an empty panel, focus that got out, and
+  the nested hand-back). `build`, `smoke`, `test:logic` pass.
+
+**One case is left as it is, deliberately.** A `ConfirmDialog` opened from
+`TaskDetail`'s popover menu restores focus to `body`, because its trigger is a
+menu item that unmounts together with the menu. Focus is left alone rather than
+sent somewhere arbitrary — baseline landed on an unrelated button. Fixing it
+properly means keeping the "Mehr" button as the logical trigger, which is a
+change to `TaskDetail.jsx` and belongs with G15, not here.
+
+G14 (no scroll lock behind an overlay) was deliberately **not** folded in,
+although it shares this file and hook.
 
 ### G11 · `BottomNav` blur is an ad-hoc material — closed 2026-08 (`src/components/BottomNav.jsx`)
 The bar was `background: rgba(8, 12, 20, 0.92)` plus `backdropFilter: blur(20px)`,
