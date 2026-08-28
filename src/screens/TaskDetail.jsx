@@ -38,7 +38,7 @@ export default function TaskDetail() {
         <IconButton onClick={() => navigate('/aufgaben')} className="-ml-1 text-text-primary" aria-label="Zurück">
           <ArrowLeft size={24} />
         </IconButton>
-        <p className="mt-20 text-center text-[15px] text-text-secondary">
+        <p className="mt-20 text-center text-body text-text-secondary">
           {loading ? 'Lädt…' : 'Aufgabe nicht gefunden.'}
         </p>
       </div>
@@ -80,7 +80,7 @@ export default function TaskDetail() {
                       setMenuOpen(false)
                       openTaskForm({ mode: 'edit', taskId: task.id })
                     }}
-                    className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-text-primary"
+                    className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-body text-text-primary"
                   >
                     <Pen size={16} /> Bearbeiten
                   </button>
@@ -89,7 +89,7 @@ export default function TaskDetail() {
                       setMenuOpen(false)
                       setConfirmOpen(true)
                     }}
-                    className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-danger"
+                    className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-body text-danger"
                   >
                     <Trash2 size={16} /> Löschen
                   </button>
@@ -102,8 +102,9 @@ export default function TaskDetail() {
 
       {/* Title */}
       <div className="mt-4">
+        {/* 24px: one-off display size, not part of the type scale (G10). */}
         <h1 className="text-[24px] font-bold leading-tight text-text-primary">{task.title}</h1>
-        {subtitle && <p className="mt-1 text-[12px] text-text-secondary">{subtitle}</p>}
+        {subtitle && <p className="mt-1 text-meta text-text-secondary">{subtitle}</p>}
       </div>
 
       {/* Due / time / created */}
@@ -136,22 +137,22 @@ export default function TaskDetail() {
 
       {/* Details */}
       <section className="mt-6">
-        <h2 className="mb-2 text-[18px] font-bold text-text-primary">Details</h2>
+        <h2 className="mb-2 text-section-title font-bold text-text-primary">Details</h2>
         {task.details ? (
-          <p className="whitespace-pre-wrap rounded-card border border-subtle bg-bg-card p-4 text-[15px] leading-relaxed text-text-secondary">
+          <p className="whitespace-pre-wrap rounded-card border border-subtle bg-bg-card p-4 text-body leading-relaxed text-text-secondary">
             {task.details}
           </p>
         ) : (
-          <p className="text-[15px] text-text-muted">Keine Details</p>
+          <p className="text-body text-text-muted">Keine Details</p>
         )}
       </section>
 
       {/* Project (coming soon) */}
       <section className="mt-6">
-        <h2 className="mb-2 text-[18px] font-bold text-text-primary">Projekt</h2>
+        <h2 className="mb-2 text-section-title font-bold text-text-primary">Projekt</h2>
         <div className="flex items-center gap-3 rounded-card border border-subtle bg-bg-card px-4 py-3.5 opacity-60">
           <Folder size={18} className="text-text-muted" />
-          <span className="flex-1 text-[15px] text-text-secondary">Kein Projekt</span>
+          <span className="flex-1 text-body text-text-secondary">Kein Projekt</span>
           <ChevronRight size={18} className="text-text-muted" />
         </div>
       </section>
@@ -164,13 +165,13 @@ export default function TaskDetail() {
         <div className="w-full max-w-app space-y-3 px-5 pb-3 pt-6 bg-gradient-to-t from-bg-base via-bg-base to-transparent">
           <button
             onClick={() => openTaskForm({ mode: 'edit', taskId: task.id })}
-            className="press-tint flex w-full items-center justify-center gap-2 rounded-btn border-[1.5px] border-accent py-3.5 text-[15px] font-semibold text-accent"
+            className="press-tint flex w-full items-center justify-center gap-2 rounded-btn border-[1.5px] border-accent py-3.5 text-body font-semibold text-accent"
           >
             <Pencil size={18} /> Bearbeiten
           </button>
           <button
             onClick={() => setConfirmOpen(true)}
-            className="press-tint flex w-full items-center justify-center gap-2 rounded-btn py-3.5 text-[15px] font-semibold text-danger"
+            className="press-tint flex w-full items-center justify-center gap-2 rounded-btn py-3.5 text-body font-semibold text-danger"
             style={{ background: 'rgba(239, 68, 68, 0.12)' }}
           >
             <Trash2 size={18} /> Löschen
@@ -199,8 +200,8 @@ function InfoRow({ icon: Icon, label, value, onClick, muted, chevron = true, bor
       }`}
     >
       <Icon size={18} className="text-text-secondary" />
-      <span className="text-[15px] text-text-primary">{label}</span>
-      <span className={`ml-auto text-[15px] ${muted ? 'text-text-muted' : 'text-text-secondary'}`}>
+      <span className="text-body text-text-primary">{label}</span>
+      <span className={`ml-auto text-body ${muted ? 'text-text-muted' : 'text-text-secondary'}`}>
         {value}
       </span>
       {chevron && onClick && <ChevronRight size={18} className="text-text-muted" />}

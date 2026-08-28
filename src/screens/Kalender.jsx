@@ -133,10 +133,12 @@ export default function Kalender() {
             <Menu size={26} />
           </IconButton>
           <div className="min-w-0 flex-1">
+            {/* 19px: one-off, the compact sticky header's own title size —
+                not the scale's `title` step (G10). */}
             <h1 className="truncate text-[19px] font-bold leading-[24px] text-text-primary">
               {primary}
             </h1>
-            <p className="truncate text-[12px] leading-[16px] text-text-secondary">
+            <p className="truncate text-meta leading-[16px] text-text-secondary">
               {sub || '\u00A0'}
             </p>
           </div>
@@ -161,7 +163,7 @@ export default function Kalender() {
               key={v.id}
               onClick={() => switchView(v.id)}
               aria-pressed={view === v.id}
-              className={`press-tint rounded-chip px-4 py-1.5 text-[13px] font-medium transition-colors ${
+              className={`press-tint rounded-chip px-4 py-1.5 text-label font-medium transition-colors ${
                 view === v.id ? 'bg-accent text-white' : 'text-text-secondary'
               }`}
             >
@@ -269,7 +271,7 @@ function SearchOverlay({ open, events, onClose, onOpenEvent }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Termine durchsuchen"
-            className="flex-1 bg-transparent text-[15px] text-text-primary placeholder:text-text-muted outline-none"
+            className="flex-1 bg-transparent text-body text-text-primary placeholder:text-text-muted outline-none"
           />
           {query && (
             <button onClick={() => setQuery('')} aria-label="Suche leeren" className="press-fade">
@@ -285,15 +287,15 @@ function SearchOverlay({ open, events, onClose, onOpenEvent }) {
             <div className="grid h-14 w-14 place-items-center rounded-card bg-bg-card text-text-secondary">
               <Search size={26} />
             </div>
-            <p className="mt-4 text-[15px] font-semibold text-text-primary">Terminsuche</p>
-            <p className="mt-1 text-[13px] text-text-secondary">
+            <p className="mt-4 text-body font-semibold text-text-primary">Terminsuche</p>
+            <p className="mt-1 text-label text-text-secondary">
               Suche in Titel, Ort und Notizen.
             </p>
           </div>
         ) : results.length === 0 ? (
           <div className="flex flex-col items-center justify-center px-8 pt-24 text-center">
-            <p className="text-[15px] font-semibold text-text-secondary">Keine Termine gefunden</p>
-            <p className="mt-1 text-[13px] text-text-secondary">
+            <p className="text-body font-semibold text-text-secondary">Keine Termine gefunden</p>
+            <p className="mt-1 text-label text-text-secondary">
               Für „{trimmed}“ gibt es keinen Treffer.
             </p>
           </div>
@@ -306,12 +308,12 @@ function SearchOverlay({ open, events, onClose, onOpenEvent }) {
                 className="press-tint flex w-full items-center gap-3 px-4 py-3 text-left"
               >
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[15px] font-medium text-text-primary">
+                  <p className="truncate text-body font-medium text-text-primary">
                     {eventDisplayTitle(ev)}
                   </p>
-                  <p className="truncate text-[12px] text-text-secondary">{hitDate(ev)}</p>
+                  <p className="truncate text-meta text-text-secondary">{hitDate(ev)}</p>
                 </div>
-                <span className="shrink-0 text-[12px] tabular-nums text-text-secondary">
+                <span className="shrink-0 text-meta tabular-nums text-text-secondary">
                   {hitTime(ev)}
                 </span>
               </button>

@@ -79,6 +79,7 @@ export default function EventDetailSheet({ event, onClose }) {
     <BottomSheet open={!!event} onClose={onClose} title="Termin">
       {ev && (
         <div className="px-5 pb-6 pt-1">
+          {/* 22px: one-off display size, not part of the type scale (G10). */}
           <h3 className="text-[22px] font-bold leading-tight text-text-primary">
             {eventDisplayTitle(ev)}
           </h3>
@@ -115,8 +116,8 @@ export default function EventDetailSheet({ event, onClose }) {
           {/* Notes */}
           {ev.description && (
             <section className="mt-5">
-              <h4 className="mb-2 text-[15px] font-bold text-text-primary">Notizen</h4>
-              <p className="whitespace-pre-wrap rounded-card border border-subtle bg-bg-card p-4 text-[15px] leading-relaxed text-text-secondary">
+              <h4 className="mb-2 text-body font-bold text-text-primary">Notizen</h4>
+              <p className="whitespace-pre-wrap rounded-card border border-subtle bg-bg-card p-4 text-body leading-relaxed text-text-secondary">
                 {ev.description}
               </p>
             </section>
@@ -126,13 +127,13 @@ export default function EventDetailSheet({ event, onClose }) {
           <div className="mt-6 space-y-3">
             <button
               onClick={handleEdit}
-              className="press-tint flex w-full items-center justify-center gap-2 rounded-btn border-[1.5px] border-accent py-3.5 text-[15px] font-semibold text-accent"
+              className="press-tint flex w-full items-center justify-center gap-2 rounded-btn border-[1.5px] border-accent py-3.5 text-body font-semibold text-accent"
             >
               <Pencil size={18} /> Bearbeiten
             </button>
             <button
               onClick={() => setConfirmOpen(true)}
-              className="press-tint flex w-full items-center justify-center gap-2 rounded-btn py-3.5 text-[15px] font-semibold text-danger"
+              className="press-tint flex w-full items-center justify-center gap-2 rounded-btn py-3.5 text-body font-semibold text-danger"
               style={{ background: 'rgba(239, 68, 68, 0.12)' }}
             >
               <Trash2 size={18} /> Löschen
@@ -156,9 +157,9 @@ function InfoRow({ icon: Icon, label, value, muted = false }) {
   return (
     <div className="flex w-full items-center gap-3 px-4 py-3.5">
       <Icon size={18} className="shrink-0 text-text-secondary" />
-      <span className="text-[15px] text-text-primary">{label}</span>
+      <span className="text-body text-text-primary">{label}</span>
       <span
-        className={`ml-auto pl-3 text-right text-[15px] ${
+        className={`ml-auto pl-3 text-right text-body ${
           muted ? 'text-text-muted' : 'text-text-secondary'
         }`}
       >

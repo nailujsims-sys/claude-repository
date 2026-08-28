@@ -98,6 +98,7 @@ Reuse these before inventing anything:
 | Need | Use |
 |---|---|
 | Design tokens | `tailwind.config.js` (`bg-base`, `bg-card`, `bg-elevated`, `bg-input`, `accent`, `accent-dim`, `text-primary/secondary/muted`, `danger`, `success`, `border-subtle`, radii `card/btn/input/chip`) |
+| Type scale (§15) | `tailwind.config.js` (`fontSize`) — see the table below. **Never write `text-[Npx]` in new code.** |
 | Global motion / keyframes | `tailwind.config.js` (`animation`) + `src/index.css` (`page`, `cal-enter-*`, `task-completing`, `press-tint`, `skeleton-shimmer`) |
 | Press feedback on icon buttons | `.press-tint` (`src/index.css`) — touch-safe, `:hover` only on real pointers |
 | Modal / panel scaffolding | `src/components/Overlay.jsx` (backdrop, Esc, phone-frame column) |
@@ -114,6 +115,38 @@ Reuse these before inventing anything:
 | Navigation entries | `src/config/navigation.js` (config arrays — no component edits needed) |
 
 Layout is mobile-first (~390px), capped at `max-width: 430px` (`.app-frame`).
+
+### Type scale (§15)
+
+Pick by **role**, not by pixel size. These are the sizes the app already used;
+G10 only gave them names.
+
+| Token | Size | Use it for |
+|---|---|---|
+| `text-title` | 28px | The screen title (`<h1>`) |
+| `text-section-title` | 18px | A section heading inside a screen |
+| `text-panel-title` | 17px | The title of a sheet, dialog or the sidebar |
+| `text-card-title` | 16px | The heading of a card |
+| `text-field` | 16px | A form's primary text field |
+| `text-body` | 15px | Default text and controls — the app's workhorse |
+| `text-body-sm` | 14px | Quieter body text, compact controls |
+| `text-label` | 13px | Form labels, chips, hints, inline errors |
+| `text-meta` | 12px | Metadata next to primary content |
+| `text-caption` | 11px | Tab labels, weekday headers, section labels |
+| `text-micro` | 10px | Micro labels in the calendar grid |
+
+Rules:
+
+- **Never write `text-[Npx]` in new code.** If no token fits the role, that is a
+  design decision — raise it, do not invent a size.
+- The tokens set **font-size only**. Line-height stays inherited (1.5) plus the
+  existing local `leading-*` overrides. Adding line-heights to the scale is a
+  separate, visible design change (see G16 in `reference/known-gaps.md`).
+- `text-card-title` and `text-field` are both 16px on purpose: two roles that
+  happen to share a size today. Pick the one that describes what you are
+  building, so the two can diverge later without a hunt.
+- Six one-off display sizes stay literals (9, 19, 22, 24, 26, 34px) and are
+  marked with a comment at their call site. Do not copy them into new code.
 
 ## Definition of Done — UX/UI
 

@@ -36,8 +36,8 @@ function Panel({ onClose: closeSidebar }) {
             <User size={24} />
           </div>
           <div>
-            <p className="text-[17px] font-bold text-text-primary">{displayName}</p>
-            <p className="text-[12px] text-text-secondary">Mind Whiteboard</p>
+            <p className="text-panel-title font-bold text-text-primary">{displayName}</p>
+            <p className="text-meta text-text-secondary">Mind Whiteboard</p>
           </div>
         </div>
         <IconButton
@@ -59,7 +59,7 @@ function Panel({ onClose: closeSidebar }) {
                 className="flex items-center gap-3 rounded-btn px-3 py-3 text-text-muted"
               >
                 <Icon size={20} />
-                <span className="text-[15px] font-medium">{item.label}</span>
+                <span className="text-body font-medium">{item.label}</span>
                 <Lock size={14} className="ml-auto" />
               </div>
             )
@@ -71,7 +71,7 @@ function Panel({ onClose: closeSidebar }) {
               end={item.to === '/'}
               onClick={closeSidebar}
               className={({ isActive }) =>
-                `press-tint flex items-center gap-3 rounded-btn px-3 py-3 text-[15px] font-medium ${
+                `press-tint flex items-center gap-3 rounded-btn px-3 py-3 text-body font-medium ${
                   isActive ? 'bg-accent/15 text-accent' : 'text-text-primary'
                 }`
               }
@@ -83,7 +83,7 @@ function Panel({ onClose: closeSidebar }) {
         })}
 
         <div className="my-3 border-t border-subtle" />
-        <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-section-label">
+        <p className="px-3 pb-2 text-caption font-semibold uppercase tracking-[0.08em] text-section-label">
           Demnächst
         </p>
         {futureModules.map((m) => {
@@ -94,7 +94,7 @@ function Panel({ onClose: closeSidebar }) {
               className="flex items-center gap-3 rounded-btn px-3 py-2.5 text-text-muted"
             >
               <Icon size={18} />
-              <span className="text-[14px] font-medium">{m.label}</span>
+              <span className="text-body-sm font-medium">{m.label}</span>
               <Lock size={13} className="ml-auto" />
             </div>
           )

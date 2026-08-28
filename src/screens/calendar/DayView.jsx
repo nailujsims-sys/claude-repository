@@ -148,7 +148,7 @@ function TasksCollapsible({ tasks }) {
         className="press-tint flex w-full items-center justify-between px-5 py-3"
         aria-expanded={open}
       >
-        <span className="text-[15px] font-bold text-text-primary">
+        <span className="text-body font-bold text-text-primary">
           Aufgaben ({tasks.length})
         </span>
         <ChevronDown
@@ -159,7 +159,7 @@ function TasksCollapsible({ tasks }) {
       {open && (
         <div className="max-h-[34vh] overflow-y-auto px-3 pb-3">
           {tasks.length === 0 ? (
-            <p className="px-2 py-2 text-[14px] text-text-secondary">
+            <p className="px-2 py-2 text-body-sm text-text-secondary">
               Keine Aufgaben an diesem Tag.
             </p>
           ) : (

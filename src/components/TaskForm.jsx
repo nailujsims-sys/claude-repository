@@ -84,7 +84,7 @@ export default function TaskForm() {
     <button
       onClick={handleSave}
       disabled={!canSave}
-      className={`press-fade text-[15px] font-semibold ${
+      className={`press-fade text-body font-semibold ${
         canSave ? 'text-accent' : 'text-text-muted'
       }`}
     >
@@ -107,7 +107,7 @@ export default function TaskForm() {
           value={form.title}
           onChange={(e) => set({ title: e.target.value })}
           placeholder="Titel der Aufgabe"
-          className="w-full rounded-input bg-bg-input px-4 py-3.5 text-[16px] text-text-primary placeholder:text-text-muted outline-none ring-1 ring-transparent focus:ring-accent"
+          className="w-full rounded-input bg-bg-input px-4 py-3.5 text-field text-text-primary placeholder:text-text-muted outline-none ring-1 ring-transparent focus:ring-accent"
         />
 
         {/* Category */}
@@ -117,7 +117,7 @@ export default function TaskForm() {
               <button
                 key={cat}
                 onClick={() => set({ category: cat })}
-                className={`press-tint flex-1 rounded-chip py-2 text-[14px] font-medium transition-colors ${
+                className={`press-tint flex-1 rounded-chip py-2 text-body-sm font-medium transition-colors ${
                   form.category === cat
                     ? 'bg-accent text-white'
                     : 'text-text-secondary'
@@ -135,7 +135,7 @@ export default function TaskForm() {
             value={form.details}
             onChange={(e) => set({ details: e.target.value })}
             placeholder="Details hinzufügen (optional)"
-            className="min-h-[80px] w-full resize-none rounded-input bg-bg-input px-4 py-3 text-[15px] text-text-primary placeholder:text-text-muted outline-none ring-1 ring-transparent focus:ring-accent"
+            className="min-h-[80px] w-full resize-none rounded-input bg-bg-input px-4 py-3 text-body text-text-primary placeholder:text-text-muted outline-none ring-1 ring-transparent focus:ring-accent"
           />
         </Field>
 
@@ -152,7 +152,7 @@ export default function TaskForm() {
                 type="time"
                 value={form.due_time}
                 onChange={(e) => set({ due_time: e.target.value })}
-                className="flex-1 bg-transparent text-[15px] text-text-primary outline-none [color-scheme:dark]"
+                className="flex-1 bg-transparent text-body text-text-primary outline-none [color-scheme:dark]"
               />
               {form.due_time && (
                 <button
@@ -174,7 +174,7 @@ export default function TaskForm() {
             title="Demnächst"
           >
             <Folder size={18} className="text-text-muted" />
-            <span className="flex-1 text-[15px] text-text-secondary">Kein Projekt</span>
+            <span className="flex-1 text-body text-text-secondary">Kein Projekt</span>
             <ChevronRight size={18} className="text-text-muted" />
           </div>
         </Field>
@@ -186,7 +186,7 @@ export default function TaskForm() {
 function Field({ label, children }) {
   return (
     <div>
-      <label className="mb-2 block text-[13px] font-semibold text-text-secondary">
+      <label className="mb-2 block text-label font-semibold text-text-secondary">
         {label}
       </label>
       {children}

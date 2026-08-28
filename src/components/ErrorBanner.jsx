@@ -8,7 +8,7 @@ export default function ErrorBanner() {
 
   return (
     <div className="px-5 pt-2">
-      <div className="flex items-center gap-2 rounded-btn border border-danger/30 bg-danger/10 px-3 py-2 text-[13px] text-danger">
+      <div className="flex items-center gap-2 rounded-btn border border-danger/30 bg-danger/10 px-3 py-2 text-label text-danger">
         <AlertTriangle size={16} className="shrink-0" />
         <span>Verbindungsfehler. Bitte überprüfe deine Internetverbindung.</span>
       </div>

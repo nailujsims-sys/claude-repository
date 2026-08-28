@@ -16,20 +16,21 @@ export default function Version() {
         <IconButton onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 text-text-primary">
           <Menu size={26} />
         </IconButton>
-        <h1 className="text-[28px] font-bold text-text-primary">Version</h1>
+        <h1 className="text-title font-bold text-text-primary">Version</h1>
       </header>
 
-      <p className="mt-2 mb-3 text-[14px] text-text-secondary">
+      <p className="mt-2 mb-3 text-body-sm text-text-secondary">
         Dieser Stand läuft gerade.
       </p>
 
       {/* The product version, as the one thing worth reading from across the
           room. The technical identity sits below it, deliberately quieter. */}
       <div className="rounded-card border border-subtle bg-bg-card px-5 py-6">
+        {/* 34px: one-off display size, not part of the type scale (G10). */}
         <p className="text-[34px] font-bold leading-none text-text-primary">
           v{APP_VERSION}
         </p>
-        <p className="mt-2 text-[13px] text-text-secondary">Mind Whiteboard</p>
+        <p className="mt-2 text-label text-text-secondary">Mind Whiteboard</p>
       </div>
 
       <div className="mt-4 divide-y divide-subtle overflow-hidden rounded-card border border-subtle bg-bg-card">
@@ -45,7 +46,7 @@ export default function Version() {
         </Row>
       </div>
 
-      <p className="mt-4 text-[13px] leading-relaxed text-text-muted">
+      <p className="mt-4 text-label leading-relaxed text-text-muted">
         Die Version steht für den Produktstand, der Commit für den exakt
         gebauten Code.
       </p>
@@ -58,8 +59,8 @@ function Row({ icon: Icon, label, children }) {
   return (
     <div className="flex items-center gap-3 px-4 py-4">
       <Icon size={18} className="shrink-0 text-text-secondary" />
-      <span className="text-[15px] text-text-primary">{label}</span>
-      <span className="ml-auto truncate pl-3 text-[15px] text-text-secondary">
+      <span className="text-body text-text-primary">{label}</span>
+      <span className="ml-auto truncate pl-3 text-body text-text-secondary">
         {children}
       </span>
     </div>

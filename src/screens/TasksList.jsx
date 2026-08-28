@@ -205,7 +205,7 @@ export default function TasksList() {
           <IconButton onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 text-text-primary">
             <Menu size={26} />
           </IconButton>
-          <h1 className="flex-1 text-[28px] font-bold text-text-primary">Aufgaben</h1>
+          <h1 className="flex-1 text-title font-bold text-text-primary">Aufgaben</h1>
           <IconButton
             onClick={() => {
               setSearchOpen((v) => !v)
@@ -231,7 +231,7 @@ export default function TasksList() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Aufgaben durchsuchen"
-                className="flex-1 bg-transparent text-[15px] text-text-primary placeholder:text-text-muted outline-none"
+                className="flex-1 bg-transparent text-body text-text-primary placeholder:text-text-muted outline-none"
               />
               {search && (
                 <button onClick={() => setSearch('')} aria-label="Suche leeren" className="press-fade">
@@ -251,7 +251,7 @@ export default function TasksList() {
             <button
               key={tab}
               onClick={() => setCategory(tab)}
-              className={`press-tint shrink-0 rounded-chip px-4 py-1.5 text-[14px] font-medium transition-colors ${
+              className={`press-tint shrink-0 rounded-chip px-4 py-1.5 text-body-sm font-medium transition-colors ${
                 category === tab ? 'bg-accent text-white' : 'text-text-secondary'
               }`}
             >
@@ -314,7 +314,7 @@ function Section({ section, rowHandlers }) {
 
   return (
     <div className="mb-1">
-      <p className="px-1 pb-2 pt-4 text-[11px] font-semibold uppercase tracking-[0.08em] text-section-label">
+      <p className="px-1 pb-2 pt-4 text-caption font-semibold uppercase tracking-[0.08em] text-section-label">
         {section.label}
       </p>
       <div ref={setNodeRef} className="overflow-hidden rounded-card border border-subtle bg-bg-card">
@@ -383,8 +383,8 @@ function SortableTaskRow({ task, ...rest }) {
 function EmptyState() {
   return (
     <div className="flex flex-col items-center justify-center py-24 text-center">
-      <p className="text-[18px] font-semibold text-text-secondary">Keine Aufgaben 🎉</p>
-      <p className="mt-1 text-[14px] text-text-secondary">
+      <p className="text-section-title font-semibold text-text-secondary">Keine Aufgaben 🎉</p>
+      <p className="mt-1 text-body-sm text-text-secondary">
         Tippe auf + um eine neue Aufgabe zu erstellen
       </p>
     </div>

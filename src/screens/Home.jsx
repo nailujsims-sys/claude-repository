@@ -53,12 +53,12 @@ export default function Home() {
 
       {/* Greeting */}
       <section className="mb-5 mt-2">
-        <h1 className="text-[28px] font-bold leading-tight text-text-primary">
+        <h1 className="text-title font-bold leading-tight text-text-primary">
           {greeting()}, {displayName}
         </h1>
         <div className="mt-2 flex gap-2">
           <Quote size={20} className="mt-0.5 shrink-0 fill-accent-dim text-accent-dim" />
-          <p className="text-[15px] leading-snug text-text-secondary">
+          <p className="text-body leading-snug text-text-secondary">
             Disziplin ist der Schlüssel zwischen Zielen und Erreichen.
           </p>
         </div>
@@ -81,14 +81,14 @@ export default function Home() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Sparkles size={18} className="text-white" />
-              <h2 className="text-[16px] font-bold text-text-primary">Morning Briefing</h2>
+              <h2 className="text-card-title font-bold text-text-primary">Morning Briefing</h2>
             </div>
-            <span className="text-[12px] text-text-secondary">07:30 Uhr</span>
+            <span className="text-meta text-text-secondary">07:30 Uhr</span>
           </div>
-          <p className="mt-2 max-w-[80%] text-[14px] leading-snug text-text-secondary">
+          <p className="mt-2 max-w-[80%] text-body-sm leading-snug text-text-secondary">
             EZB-Sitzung 14:15 Uhr · DAX leicht im Plus · Nvidia-Zahlen nachbörslich.
           </p>
-          <button className="press-fade mt-3 flex items-center gap-1 text-[14px] font-semibold text-accent">
+          <button className="press-fade mt-3 flex items-center gap-1 text-body-sm font-semibold text-accent">
             Briefing öffnen <ArrowRight size={16} />
           </button>
         </div>
@@ -97,19 +97,19 @@ export default function Home() {
       {/* Heute im Überblick (static) */}
       <section className="mb-3 rounded-card border border-subtle bg-bg-card p-4">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-[16px] font-bold text-text-primary">Heute im Überblick</h2>
-          <button className="press-fade text-[13px] font-semibold text-accent">Mehr anzeigen</button>
+          <h2 className="text-card-title font-bold text-text-primary">Heute im Überblick</h2>
+          <button className="press-fade text-label font-semibold text-accent">Mehr anzeigen</button>
         </div>
         <div className="space-y-3">
           {SCHEDULE.map((e) => (
             <div key={e.time} className="flex gap-3">
-              <span className="w-12 shrink-0 text-[14px] font-medium text-text-secondary">
+              <span className="w-12 shrink-0 text-body-sm font-medium text-text-secondary">
                 {e.time}
               </span>
               <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-accent" />
               <div className="min-w-0">
-                <p className="text-[15px] font-semibold text-text-primary">{e.title}</p>
-                <p className="truncate text-[13px] text-text-secondary">{e.sub}</p>
+                <p className="text-body font-semibold text-text-primary">{e.title}</p>
+                <p className="truncate text-label text-text-secondary">{e.sub}</p>
               </div>
             </div>
           ))}
@@ -124,8 +124,8 @@ export default function Home() {
       >
         <div className="mb-3 flex items-center justify-between">
           <div>
-            <h2 className="text-[16px] font-bold text-text-primary">Aufgaben</h2>
-            <p className="text-[12px] text-text-secondary">{openCount} offen</p>
+            <h2 className="text-card-title font-bold text-text-primary">Aufgaben</h2>
+            <p className="text-meta text-text-secondary">{openCount} offen</p>
           </div>
           <div
             className="flex rounded-chip bg-bg-input p-1"
@@ -138,7 +138,7 @@ export default function Home() {
               <button
                 key={t.id}
                 onClick={() => setScope(t.id)}
-                className={`press-tint rounded-chip px-3 py-1 text-[13px] font-medium transition-colors ${
+                className={`press-tint rounded-chip px-3 py-1 text-label font-medium transition-colors ${
                   scope === t.id ? 'bg-accent text-white' : 'text-text-secondary'
                 }`}
               >
@@ -155,7 +155,7 @@ export default function Home() {
             ))}
           </div>
         ) : preview.length === 0 ? (
-          <p className="py-2 text-[14px] text-text-secondary">
+          <p className="py-2 text-body-sm text-text-secondary">
             Keine offenen Aufgaben {scope === 'today' ? 'heute' : 'diese Woche'}.
           </p>
         ) : (
@@ -163,12 +163,12 @@ export default function Home() {
             {preview.map((task) => (
               <div key={task.id} className="flex items-center gap-3 py-1.5">
                 <span className="h-[18px] w-[18px] shrink-0 rounded-md border-2 border-text-muted" />
-                <span className="min-w-0 flex-1 truncate text-[15px] text-text-primary">
+                <span className="min-w-0 flex-1 truncate text-body text-text-primary">
                   {task.title}
                 </span>
                 {task.due_time && (
                   <span
-                    className={`text-[12px] ${
+                    className={`text-meta ${
                       isToday(task.due_date) ? 'text-accent' : 'text-text-secondary'
                     }`}
                   >

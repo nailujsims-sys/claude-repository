@@ -13,7 +13,7 @@ export default function Mehr() {
         <IconButton onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 text-text-primary">
           <Menu size={26} />
         </IconButton>
-        <h1 className="text-[28px] font-bold text-text-primary">Mehr</h1>
+        <h1 className="text-title font-bold text-text-primary">Mehr</h1>
       </header>
 
       {/* Built and usable today — kept above the "Demnächst" list so the two
@@ -25,11 +25,11 @@ export default function Mehr() {
         <span className="grid h-9 w-9 place-items-center rounded-btn bg-bg-elevated text-text-secondary">
           <Info size={18} />
         </span>
-        <span className="flex-1 text-[15px] font-medium text-text-primary">Version</span>
+        <span className="flex-1 text-body font-medium text-text-primary">Version</span>
         <ChevronRight size={18} className="text-text-muted" />
       </Link>
 
-      <p className="mt-6 mb-3 text-[14px] text-text-secondary">
+      <p className="mt-6 mb-3 text-body-sm text-text-secondary">
         Weitere Module sind in Arbeit.
       </p>
 
@@ -46,10 +46,10 @@ export default function Mehr() {
               <span className="grid h-9 w-9 place-items-center rounded-btn bg-bg-elevated text-text-muted">
                 <Icon size={18} />
               </span>
-              <span className="flex-1 text-[15px] font-medium text-text-secondary">
+              <span className="flex-1 text-body font-medium text-text-secondary">
                 {m.label}
               </span>
-              <span className="flex items-center gap-1 rounded-chip bg-bg-elevated px-2 py-0.5 text-[11px] font-semibold text-text-muted">
+              <span className="flex items-center gap-1 rounded-chip bg-bg-elevated px-2 py-0.5 text-caption font-semibold text-text-muted">
                 <Lock size={11} /> Demnächst
               </span>
             </div>

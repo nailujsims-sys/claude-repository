@@ -23,7 +23,7 @@ export function HourGutter() {
       {HOURS.map((h) => (
         <div
           key={h}
-          className="absolute right-2 -translate-y-1/2 text-[10px] tabular-nums text-text-muted"
+          className="absolute right-2 -translate-y-1/2 text-micro tabular-nums text-text-muted"
           style={{ top: h * HOUR_HEIGHT }}
         >
           {h === 0 ? '' : `${p2(h)}:00`}
@@ -61,6 +61,7 @@ export function NowLine({ showLabel = false }) {
       <span className="absolute -left-[3px] -top-[3px] h-[7px] w-[7px] rounded-full bg-danger" />
       <div className="border-t border-danger" />
       {showLabel && (
+        // 9px: one-off, smaller than the scale's `micro` step on purpose (G10).
         <span className="absolute -top-[8px] left-1 rounded bg-danger px-1 text-[9px] font-semibold leading-4 text-white tabular-nums">
           {p2(now.getHours())}:{p2(now.getMinutes())}
         </span>
@@ -194,7 +195,7 @@ export function TimedBlock({ item, columnWidth = 0, compact = false, editing = f
         <>
           {/* Time readout while adjusting */}
           {!compact && (
-            <span className="pointer-events-none absolute -top-6 left-0 whitespace-nowrap rounded bg-accent px-1.5 py-0.5 text-[10px] font-semibold text-white tabular-nums">
+            <span className="pointer-events-none absolute -top-6 left-0 whitespace-nowrap rounded bg-accent px-1.5 py-0.5 text-micro font-semibold text-white tabular-nums">
               {eventRangeLabel(draft || ev)}
             </span>
           )}
@@ -307,8 +308,8 @@ export function CalendarEmpty({ title, hint }) {
       <div className="grid h-14 w-14 place-items-center rounded-card bg-bg-card text-text-secondary">
         <CalendarDays size={26} />
       </div>
-      <p className="mt-4 text-[15px] font-semibold text-text-primary">{title}</p>
-      {hint && <p className="mt-1 text-[13px] text-text-secondary">{hint}</p>}
+      <p className="mt-4 text-body font-semibold text-text-primary">{title}</p>
+      {hint && <p className="mt-1 text-label text-text-secondary">{hint}</p>}
     </div>
   )
 }

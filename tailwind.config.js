@@ -30,6 +30,31 @@ export default {
           'sans-serif',
         ],
       },
+      // Type scale (G10). These are the sizes the app already used as inline
+      // literals; naming them is the whole change — every value is unchanged.
+      //
+      // Deliberately font-size ONLY (string form, not the [size, {...}] tuple):
+      // line-height stays inherited from Tailwind's preflight (1.5) plus the
+      // handful of local `leading-*` overrides, exactly as before. Adding
+      // per-step line-heights here would move 72–99% of all elements — that is
+      // a design decision, not a token migration.
+      //
+      // Two names share 16px on purpose: they are two different roles that
+      // happen to have the same size today, and the design system asks us to
+      // name roles, not pixels.
+      fontSize: {
+        title: '28px', // screen title (h1)
+        'section-title': '18px', // heading of a section inside a screen
+        'panel-title': '17px', // title of a sheet, dialog or the sidebar
+        'card-title': '16px', // heading of a card
+        field: '16px', // a form's primary text field
+        body: '15px', // default text and controls
+        'body-sm': '14px', // quieter body text, compact controls
+        label: '13px', // form labels, chips, hints, inline errors
+        meta: '12px', // metadata next to primary content
+        caption: '11px', // tab labels, weekday headers, section labels
+        micro: '10px', // micro labels in the calendar grid
+      },
       borderRadius: {
         card: '16px',
         btn: '12px',

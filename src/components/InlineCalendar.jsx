@@ -79,7 +79,7 @@ export default function InlineCalendar({ value, onChange }) {
       <div className="mb-2 flex items-center justify-between">
         <button
           onClick={selectMonth}
-          className={`press-tint rounded-chip px-2 py-1 text-[16px] font-bold ${
+          className={`press-tint rounded-chip px-2 py-1 text-card-title font-bold ${
             monthSelected ? 'bg-accent text-white' : 'text-text-primary'
           }`}
         >
@@ -98,11 +98,11 @@ export default function InlineCalendar({ value, onChange }) {
       {/* Weekday + KW header */}
       <div className="grid grid-cols-8 gap-0.5 pb-1">
         {WEEKDAYS_DE.map((d) => (
-          <div key={d} className="text-center text-[11px] font-medium text-text-muted">
+          <div key={d} className="text-center text-caption font-medium text-text-muted">
             {d}
           </div>
         ))}
-        <div className="text-center text-[11px] font-semibold text-section-label">
+        <div className="text-center text-caption font-semibold text-section-label">
           KW
         </div>
       </div>
@@ -120,7 +120,7 @@ export default function InlineCalendar({ value, onChange }) {
                 const state = dayState(day)
                 const isToday = isSameDay(day.date, today)
                 let cls =
-                  'press-tint relative grid h-9 place-items-center rounded-full text-[14px] '
+                  'press-tint relative grid h-9 place-items-center rounded-full text-body-sm '
                 if (state === 'day') cls += 'bg-accent text-white font-semibold'
                 else if (state === 'week') cls += 'bg-accent/30 text-white'
                 else if (state === 'month') cls += 'bg-accent/20 text-white'
@@ -139,7 +139,7 @@ export default function InlineCalendar({ value, onChange }) {
               <button
                 onClick={() => selectWeek(week.days[0].date)}
                 aria-label={`Kalenderwoche ${week.weekNumber} auswählen`}
-                className={`press-tint grid h-9 place-items-center rounded-full text-[13px] font-semibold ${
+                className={`press-tint grid h-9 place-items-center rounded-full text-label font-semibold ${
                   weekSelected ? 'bg-accent text-white' : 'text-section-label'
                 }`}
               >

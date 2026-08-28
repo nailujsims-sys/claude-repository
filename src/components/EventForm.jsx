@@ -161,7 +161,7 @@ export default function EventForm() {
     <button
       onClick={handleSave}
       disabled={!canSave}
-      className={`press-fade text-[15px] font-semibold ${canSave ? 'text-accent' : 'text-text-muted'}`}
+      className={`press-fade text-body font-semibold ${canSave ? 'text-accent' : 'text-text-muted'}`}
     >
       {editing ? 'Speichern' : 'Erstellen'}
     </button>
@@ -184,13 +184,13 @@ export default function EventForm() {
             value={form.title}
             onChange={(e) => set({ title: e.target.value })}
             placeholder="Titel des Termins"
-            className="w-full bg-transparent text-[16px] text-text-primary placeholder:text-text-muted outline-none"
+            className="w-full bg-transparent text-field text-text-primary placeholder:text-text-muted outline-none"
           />
         </div>
 
         {/* Terminart */}
         <div>
-          <label className="mb-2 block text-[13px] font-semibold text-text-secondary">
+          <label className="mb-2 block text-label font-semibold text-text-secondary">
             Terminart
           </label>
           <div className="flex gap-2">
@@ -204,7 +204,7 @@ export default function EventForm() {
                   key={o.v}
                   type="button"
                   onClick={() => set({ kind: o.v })}
-                  className={`press-tint flex flex-1 items-center gap-2 rounded-input border px-3 py-2.5 text-[14px] font-medium transition-colors ${
+                  className={`press-tint flex flex-1 items-center gap-2 rounded-input border px-3 py-2.5 text-body-sm font-medium transition-colors ${
                     sel
                       ? 'border-accent bg-accent/10 text-text-primary'
                       : 'border-subtle bg-bg-input text-text-secondary'
@@ -229,7 +229,7 @@ export default function EventForm() {
           {/* Ganztägig */}
           <div className="flex items-center gap-3 px-4 py-3">
             <Clock size={18} className="shrink-0 text-text-secondary" />
-            <span className="flex-1 text-[15px] text-text-primary">Ganztägig</span>
+            <span className="flex-1 text-body text-text-primary">Ganztägig</span>
             <Toggle
               checked={allDay}
               disabled={isBirthday}
@@ -324,7 +324,7 @@ export default function EventForm() {
                 value={form.location}
                 onChange={(e) => set({ location: e.target.value })}
                 placeholder="Ort"
-                className="w-full bg-transparent text-[15px] text-text-primary placeholder:text-text-muted outline-none"
+                className="w-full bg-transparent text-body text-text-primary placeholder:text-text-muted outline-none"
               />
               {form.location && (
                 <button
@@ -350,7 +350,7 @@ export default function EventForm() {
               value={form.description}
               onChange={(e) => set({ description: e.target.value })}
               placeholder="Notizen"
-              className="min-h-[44px] w-full resize-none bg-transparent text-[15px] text-text-primary placeholder:text-text-muted outline-none"
+              className="min-h-[44px] w-full resize-none bg-transparent text-body text-text-primary placeholder:text-text-muted outline-none"
             />
           </div>
         ) : (
@@ -401,11 +401,11 @@ function DateTimeRow({
   return (
     <div className="px-4 py-2.5">
       <div className="flex items-center gap-3">
-        <span className="w-12 shrink-0 text-[15px] text-text-primary">{label}</span>
+        <span className="w-12 shrink-0 text-body text-text-primary">{label}</span>
         <button
           type="button"
           onClick={onToggleDate}
-          className={`press-tint flex-1 rounded-input px-3 py-2 text-left text-[14px] transition-colors ${
+          className={`press-tint flex-1 rounded-input px-3 py-2 text-left text-body-sm transition-colors ${
             pickerOpen ? 'bg-accent/15 text-accent' : 'bg-bg-input text-text-primary'
           }`}
         >
@@ -416,7 +416,7 @@ function DateTimeRow({
             type="time"
             value={time}
             onChange={(e) => onTimeChange(e.target.value)}
-            className="w-[92px] shrink-0 rounded-input bg-bg-input px-2 py-2 text-center text-[14px] text-text-primary outline-none [color-scheme:dark]"
+            className="w-[92px] shrink-0 rounded-input bg-bg-input px-2 py-2 text-center text-body-sm text-text-primary outline-none [color-scheme:dark]"
           />
         )}
       </div>
@@ -435,8 +435,8 @@ function PickerRow({ icon: Icon, label, value, open, onToggle, disabled = false,
         className="press-tint flex w-full items-center gap-3 px-4 py-3 text-left disabled:opacity-60"
       >
         <Icon size={18} className="shrink-0 text-text-secondary" />
-        <span className="flex-1 text-[15px] text-text-primary">{label}</span>
-        <span className="text-[14px] text-text-secondary">{value}</span>
+        <span className="flex-1 text-body text-text-primary">{label}</span>
+        <span className="text-body-sm text-text-secondary">{value}</span>
         <ChevronRight
           size={16}
           className={`text-text-muted transition-transform ${open ? 'rotate-90' : ''}`}
@@ -457,7 +457,7 @@ function OptionList({ options, value, onSelect }) {
             key={String(o.value)}
             type="button"
             onClick={() => onSelect(o.value)}
-            className={`press-tint flex w-full items-center justify-between px-3 py-2.5 text-left text-[14px] ${
+            className={`press-tint flex w-full items-center justify-between px-3 py-2.5 text-left text-body-sm ${
               i > 0 ? 'border-t border-subtle' : ''
             } ${sel ? 'font-medium text-accent' : 'text-text-primary'}`}
           >
@@ -478,7 +478,7 @@ function RevealRow({ icon: Icon, label, onClick }) {
       className="press-tint flex w-full items-center gap-3 rounded-input bg-bg-input px-4 py-3 text-left"
     >
       <Icon size={18} className="shrink-0 text-text-muted" />
-      <span className="text-[15px] text-text-secondary">{label}</span>
+      <span className="text-body text-text-secondary">{label}</span>
     </button>
   )
 }

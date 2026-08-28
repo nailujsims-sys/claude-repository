@@ -87,18 +87,18 @@ function WeekView({ weekMonday, events, tasks, onSelectEvent, onSelectDay }) {
                     t ? 'bg-white/[0.03]' : ''
                   }`}
                 >
-                  <span className="text-[11px] font-medium text-text-secondary">
+                  <span className="text-caption font-medium text-text-secondary">
                     {WEEKDAYS_DE[i]}
                   </span>
                   <span
-                    className={`grid h-7 w-7 place-items-center rounded-full text-[14px] font-semibold ${
+                    className={`grid h-7 w-7 place-items-center rounded-full text-body-sm font-semibold ${
                       t ? 'bg-accent text-white' : 'text-text-primary'
                     }`}
                   >
                     {day.getDate()}
                   </span>
                   <span
-                    className={`min-w-[18px] rounded-chip px-1 text-center text-[10px] font-medium tabular-nums ${
+                    className={`min-w-[18px] rounded-chip px-1 text-center text-micro font-medium tabular-nums ${
                       count === 0
                         ? 'text-text-muted'
                         : t

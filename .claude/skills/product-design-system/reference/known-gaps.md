@@ -1,6 +1,7 @@
 # Known gaps — current app vs. design system
 
-Status: G1, G2, G3 and G4 implemented (2026-08); G5–G11 open, G13–G15 newly filed.
+Status: G1, G2, G3, G4 and G10 implemented (2026-08); G5–G9, G11, G13–G15 open,
+G16 newly filed.
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -56,14 +57,6 @@ actions.
 `setTimeout(() => setPop(false), 220)`; rapid re-taps restart rather than
 continue from the current visual state. Minor.
 
-### G10 · Typography values are literals, not tokens — §15
-Sizes are written inline as `text-[15px]`, `text-[17px]`, `text-[12px]`,
-`text-[11px]` across screens and components. The scale is *de facto* consistent
-but is not defined as a system, so each new module re-invents it.
-*Direction:* define the scale in `tailwind.config.js` (`fontSize` extension) and
-adopt it in new code first; migrate existing call sites only when already editing
-them.
-
 ### G11 · `BottomNav` blur is an ad-hoc material — §25
 `BottomNav.jsx` sets `backdropFilter: blur(20px)` with an inline rgba background
 — the one translucency in the app, while §25 defers a glass/material system.
@@ -81,6 +74,30 @@ is on its way out.
 ### G14 · No scroll lock behind an open overlay — §22
 The page behind a sheet still scrolls. Same story as G13: pre-existing, out of
 G4's scope, and belongs in `Overlay.jsx` when it is picked up.
+
+### G16 · The type scale is named but not yet coherent — §15, §17
+Filed while closing G10, which deliberately renamed sizes without changing any
+of them. Two things are now visible that were hidden inside the literals:
+
+1. *Same role, different size.* Filter/category chips are `text-body-sm` in
+   Aufgaben but `text-label` in Kalender and on the Startseite. Card and section
+   headings are `text-card-title` (Startseite), `text-section-title`
+   (TaskDetail) and `text-body` (EventDetailSheet). Empty-state headlines are
+   `text-section-title` in `TasksList.jsx` but `text-body` in
+   `calendar/parts.jsx`. Sheet titles are `text-panel-title`, except
+   `EventDetailSheet`, which uses a 22px literal.
+2. *Line-height is not part of the scale.* Every size inherits Tailwind
+   preflight's 1.5; only 13 of 137 call sites override it. 1.5 is loose on the
+   large steps — `leading-tight` at four title call sites already compensates by
+   hand. §15 asks for line-height to be part of the system.
+
+*Direction:* both halves are **visible** changes and need a design decision, not
+a migration. Measured on the pre-G10 code: giving each step a tuned line-height
+moves 72–99% of all elements per route, up to 34.8px on the Startseite. So this
+belongs in the polish phase (§26) or in a dedicated task — never folded into
+unrelated work. When it is picked up, the `fontSize` tuple form
+(`['15px', { lineHeight: '20px' }]`) is the mechanism, and the tokens from G10
+are the place to put it.
 
 ### G15 · The task-detail menu popover has no motion — §11
 `TaskDetail.jsx` renders its own `absolute … z-20` menu with no enter or exit
@@ -102,6 +119,61 @@ motion later it should originate from its trigger (§11), not slide like a sheet
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G10 · Typography literals → named tokens — closed 2026-08 (`tailwind.config.js`, 26 files under `src/`)
+The scale existed; it just had no names. 137 inline `text-[Npx]` literals across
+26 files, 16 distinct sizes, and — measurably — no Tailwind size utility in use
+anywhere. The cost was not how it looked but that every new module had to guess:
+the same filter chip is 14px in Aufgaben and 13px in Kalender, the same kind of
+heading is 15, 16 or 18px depending on which screen it sits on.
+
+**The whole change is a rename.** `fontSize` in `tailwind.config.js` names the
+sizes the app already used, and 131 of the 137 call sites now use those names.
+Written in Tailwind's *string* form (`body: '15px'`), which emits exactly
+`font-size: 15px` — byte-identical to what `text-[15px]` emitted. Nothing else
+was allowed to change.
+
+**Deliberately font-size only.** The tuple form
+(`['15px', { lineHeight: '20px' }]`) would have been the "proper" type scale, and
+it was rejected on evidence: injecting tuned line-heights into the pre-change app
+moved 72–99% of all elements per route, up to 34.8px on the Startseite. Line
+height stays inherited (preflight's 1.5) plus the 13 existing `leading-*`
+overrides, untouched. Filed as G16 together with the size/role outliers the
+rename made visible — both are design decisions, not migrations.
+
+**Roles, not pixels.** `title` (28) · `section-title` (18) · `panel-title` (17) ·
+`card-title` (16) · `field` (16) · `body` (15) · `body-sm` (14) · `label` (13) ·
+`meta` (12) · `caption` (11) · `micro` (10). Two names share 16px on purpose:
+`text-field` is a form's primary text input, `text-card-title` is a card heading.
+They are one value today and two different decisions, so they get two names — a
+future change to one must not silently drag the other.
+
+Six one-off display sizes stayed literals rather than inflating the scale to 16
+steps: 9px (the calendar's now-line time), 19px (the Kalender header title),
+22px (`EventDetailSheet`), 24px (`TaskDetail`), 26px (`Login`), 34px (the version
+number). Each carries a one-line comment marking it intentional, so a future
+`grep` for `text-[` finds no *unmarked* literal.
+
+**Verification — the point of the exercise was proving nothing moved.**
+- Reverse-mapping the 131 token usages back to literals reproduces `498e7f6`
+  byte-for-byte in all 26 files; the only diff is the 7 comment lines above. No
+  call site was cross-mapped.
+- Emitted CSS: the multiset of `font-size` values is identical before and after;
+  only selectors were renamed.
+- Browser A/B against `498e7f6` (Chromium, clock pinned, build timestamp pinned):
+  18 states × 390px and 1280px — all four routes plus TaskDetail, its menu,
+  ConfirmDialog, Sidebar, ActionSheet, TaskForm, EventForm, FilterSheet, both
+  search fields, EventDetailSheet, Version and the Tag/Woche/Monat views.
+  **7158 elements and 1612 text nodes compared: 0 geometry differences, 0
+  computed-style differences** (font-size, line-height, font-weight,
+  letter-spacing). All 36 full-page screenshots are byte-identical.
+- G1–G3 regression: 99 Tab stops across five screens keep identical focus rings
+  (style, width, colour, offset, geometry), and press feedback still writes
+  `data-pressed` with the same inset wash.
+- `npm run build && npm run smoke && npm run test:logic` pass.
+
+`Login.jsx` is unreachable in local mode (it needs Supabase), so it is covered by
+the byte-for-byte source proof and the CSS diff rather than by the browser A/B.
 
 ### G4 · Overlay exit animations — closed 2026-08 (`src/lib/overlayPresence.js`, `src/components/Overlay.jsx`, `src/index.css`)
 Solved centrally, as the direction asked: one presence machine, one lifecycle,

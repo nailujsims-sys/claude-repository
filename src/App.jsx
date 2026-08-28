@@ -39,7 +39,7 @@ function Gate() {
   if (loading) {
     return (
       <div className="app-frame grid min-h-screen place-items-center bg-bg-base">
-        <p className="text-[14px] text-text-secondary">Lädt…</p>
+        <p className="text-body-sm text-text-secondary">Lädt…</p>
       </div>
     )
   }

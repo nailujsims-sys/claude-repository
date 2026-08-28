@@ -37,7 +37,7 @@ export default function MiniCalendar({ value, onChange }) {
     <div className="mt-2 rounded-input bg-bg-input p-3">
       {/* Month header */}
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-[15px] font-bold text-text-primary">
+        <span className="text-body font-bold text-text-primary">
           {MONTHS_DE[view.month]} {view.year}
         </span>
         <div className="flex items-center gap-1">
@@ -53,7 +53,7 @@ export default function MiniCalendar({ value, onChange }) {
       {/* Weekday header */}
       <div className="grid grid-cols-7 gap-0.5 pb-1">
         {WEEKDAYS_DE.map((d) => (
-          <div key={d} className="text-center text-[11px] font-medium text-text-muted">
+          <div key={d} className="text-center text-caption font-medium text-text-muted">
             {d}
           </div>
         ))}
@@ -66,7 +66,7 @@ export default function MiniCalendar({ value, onChange }) {
             {week.days.map((day) => {
               const isSel = selected && isSameDay(day.date, selected)
               const isTod = isSameDay(day.date, today)
-              let cls = 'press-tint grid h-9 place-items-center rounded-full text-[14px] '
+              let cls = 'press-tint grid h-9 place-items-center rounded-full text-body-sm '
               if (isSel) cls += 'bg-accent text-white font-semibold'
               else if (isTod) cls += 'text-accent font-bold'
               else cls += day.inMonth ? 'text-text-primary' : 'text-text-muted'

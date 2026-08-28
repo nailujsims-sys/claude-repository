@@ -41,20 +41,20 @@ function Dialog({ title, message, confirmLabel, cancelLabel, onCancel, onConfirm
 
   return (
     <div {...panel} role="dialog" aria-modal="true">
-      <h3 className="text-[17px] font-bold text-text-primary">{title}</h3>
+      <h3 className="text-panel-title font-bold text-text-primary">{title}</h3>
       {message && (
-        <p className="mt-2 text-[14px] leading-snug text-text-secondary">{message}</p>
+        <p className="mt-2 text-body-sm leading-snug text-text-secondary">{message}</p>
       )}
       <div className="mt-5 flex gap-3">
         <button
           onClick={onCancel}
-          className="press-tint flex-1 rounded-btn border border-subtle py-2.5 text-[15px] font-semibold text-text-secondary"
+          className="press-tint flex-1 rounded-btn border border-subtle py-2.5 text-body font-semibold text-text-secondary"
         >
           {cancelLabel}
         </button>
         <button
           onClick={onConfirm}
-          className="press-tint flex-1 rounded-btn bg-danger py-2.5 text-[15px] font-semibold text-white"
+          className="press-tint flex-1 rounded-btn bg-danger py-2.5 text-body font-semibold text-white"
         >
           {confirmLabel}
         </button>

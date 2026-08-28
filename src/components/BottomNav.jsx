@@ -53,7 +53,7 @@ export default function BottomNav() {
                   return (
                     <>
                       <Icon size={20} className={color} />
-                      <span className={`text-[11px] font-medium ${color}`}>
+                      <span className={`text-caption font-medium ${color}`}>
                         {item.label}
                       </span>
                     </>

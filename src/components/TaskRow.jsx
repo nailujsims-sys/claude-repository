@@ -81,7 +81,7 @@ export default function TaskRow({
       {/* Title + subtitle */}
       <div className="min-w-0 flex-1 py-2">
         <p
-          className={`truncate text-[15px] font-medium ${
+          className={`truncate text-body font-medium ${
             deleted
               ? 'text-text-muted line-through'
               : completed
@@ -93,7 +93,7 @@ export default function TaskRow({
         </p>
         {(subtitle || overdue) && (
           <p
-            className={`truncate text-[12px] ${
+            className={`truncate text-meta ${
               overdue ? 'text-danger' : 'text-text-secondary'
             }`}
           >
@@ -108,7 +108,7 @@ export default function TaskRow({
 
       {/* Right: due time (if any) then star */}
       {task.due_time && variant === 'active' && (
-        <span className="shrink-0 text-[12px] text-text-secondary">
+        <span className="shrink-0 text-meta text-text-secondary">
           {formatTime(task.due_time)}
         </span>
       )}

@@ -48,7 +48,7 @@ function Panel({ full, title, headerRight, onClose, children }) {
           >
             <X size={24} />
           </IconButton>
-          <h2 className="text-[17px] font-semibold text-text-primary">{title}</h2>
+          <h2 className="text-panel-title font-semibold text-text-primary">{title}</h2>
           <div className="min-w-[24px] text-right">{headerRight}</div>
         </div>
       ) : (
@@ -57,7 +57,7 @@ function Panel({ full, title, headerRight, onClose, children }) {
             <div className="h-1 w-9 rounded-full bg-white/15" />
           </div>
           {title && (
-            <h2 className="px-5 pb-2 text-[17px] font-semibold text-text-primary">
+            <h2 className="px-5 pb-2 text-panel-title font-semibold text-text-primary">
               {title}
             </h2>
           )}

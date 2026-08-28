@@ -26,8 +26,9 @@ export default function Login() {
         <div className="mx-auto grid h-14 w-14 place-items-center rounded-card bg-accent/15 text-accent">
           <Sparkles size={26} />
         </div>
+        {/* 26px: one-off display size, not part of the type scale (G10). */}
         <h1 className="mt-4 text-[26px] font-bold text-text-primary">Mind Whiteboard</h1>
-        <p className="mt-1 text-[14px] text-text-secondary">Willkommen zurück</p>
+        <p className="mt-1 text-body-sm text-text-secondary">Willkommen zurück</p>
       </div>
 
       <form onSubmit={submit} className="space-y-3">
@@ -37,7 +38,7 @@ export default function Login() {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="E-Mail"
-          className="w-full rounded-input bg-bg-input px-4 py-3.5 text-[16px] text-text-primary placeholder:text-text-muted outline-none ring-1 ring-transparent focus:ring-accent"
+          className="w-full rounded-input bg-bg-input px-4 py-3.5 text-field text-text-primary placeholder:text-text-muted outline-none ring-1 ring-transparent focus:ring-accent"
         />
         <input
           type="password"
@@ -45,13 +46,13 @@ export default function Login() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Passwort"
-          className="w-full rounded-input bg-bg-input px-4 py-3.5 text-[16px] text-text-primary placeholder:text-text-muted outline-none ring-1 ring-transparent focus:ring-accent"
+          className="w-full rounded-input bg-bg-input px-4 py-3.5 text-field text-text-primary placeholder:text-text-muted outline-none ring-1 ring-transparent focus:ring-accent"
         />
-        {error && <p className="text-[13px] text-danger">{error}</p>}
+        {error && <p className="text-label text-danger">{error}</p>}
         <button
           type="submit"
           disabled={busy || !email || !password}
-          className={`press-tint w-full rounded-btn py-3.5 text-[15px] font-semibold ${
+          className={`press-tint w-full rounded-btn py-3.5 text-body font-semibold ${
             busy || !email || !password
               ? 'bg-bg-input text-text-muted'
               : 'bg-accent text-white'

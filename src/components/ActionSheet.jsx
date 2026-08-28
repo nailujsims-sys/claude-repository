@@ -28,7 +28,7 @@ export default function ActionSheet() {
               <span className="grid h-10 w-10 place-items-center rounded-btn bg-accent/15 text-accent">
                 <Icon size={20} />
               </span>
-              <span className="flex-1 text-[15px] font-medium text-text-primary">
+              <span className="flex-1 text-body font-medium text-text-primary">
                 {item.label}
               </span>
               <ChevronRight size={18} className="text-text-muted" />

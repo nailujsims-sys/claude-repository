@@ -46,7 +46,7 @@ function MonthView({ monthDate, events, tasks, onSelectDay, onSelectEvent }) {
       {/* Weekday header */}
       <div className="grid grid-cols-7 border-b border-subtle">
         {WEEKDAYS_DE.map((d) => (
-          <div key={d} className="py-2 text-center text-[11px] font-medium text-text-secondary">
+          <div key={d} className="py-2 text-center text-caption font-medium text-text-secondary">
             {d}
           </div>
         ))}
@@ -105,7 +105,7 @@ const WeekRow = memo(function WeekRow({
           >
             <div className="flex flex-col items-center" style={{ height: NUMBER_BLOCK_H, paddingTop: 4 }}>
               <span
-                className={`grid h-6 w-6 place-items-center rounded-full text-[12px] font-semibold ${
+                className={`grid h-6 w-6 place-items-center rounded-full text-meta font-semibold ${
                   t
                     ? 'bg-accent text-white'
                     : day.inMonth
