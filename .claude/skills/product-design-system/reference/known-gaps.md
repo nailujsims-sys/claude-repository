@@ -1,6 +1,6 @@
 # Known gaps — current app vs. design system
 
-Status: G1, G2, G3 and G4 implemented (2026-08); G5–G11 open, G13–G15 newly filed.
+Status: G1–G5 implemented (2026-08); G6–G11 open, G13–G16 open (G16 newly filed with G5).
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -15,14 +15,6 @@ issues again and do not start an unrequested refactor.
 ---
 
 ## Medium impact (single interaction)
-
-### G5 · Sheets cannot be dragged to dismiss — §6, §7, §13
-`BottomSheet.jsx` renders a grabber bar (`h-1 w-9 rounded-full bg-white/15`) that
-is purely decorative: there is no drag handling, no rubber-banding, no velocity
-dismissal. The affordance promises direct manipulation the component does not
-deliver.
-*Direction:* either implement drag-to-dismiss (reusing the pointer-capture
-approach of `useTimedGesture.js`) or drop the grabber. Do not leave it decorative.
 
 ### G6 · Swipe navigation is discrete, not continuous — §10, §12
 `useSwipe.js` reads only the net delta on `touchend` (threshold 48px, ratio 1.4)
@@ -88,6 +80,19 @@ animation, so it appears and vanishes instantly. It is a small anchored popover
 rather than a modal overlay, so it deliberately stayed outside G4; if it is given
 motion later it should originate from its trigger (§11), not slide like a sheet.
 
+### G16 · A sheet that is already leaving cannot be caught — §7
+§7 names both directions: "A sheet is opening → the user can immediately drag it
+back. A panel is closing → the user can reverse it." G5 delivered the first — a
+drag takes over mid-enter and continues from the visible position — but not the
+second: `.ov-panel[data-phase='exiting']` is `pointer-events: none` and `inert`,
+so a finger cannot grab a sheet on its way out. That is G4's deliberate choice
+and it is what makes reopening from the trigger work at all (without it the
+leaving panel still covered its own trigger).
+*Direction:* only worth revisiting together with G4's exit semantics — the panel
+would have to stay hit-testable while leaving without covering the app behind
+it. Reopening through the trigger already works and lands correctly (verified
+with G5), so this is polish, not a defect.
+
 ---
 
 ## Explicitly conformant (do not "fix")
@@ -102,6 +107,72 @@ motion later it should originate from its trigger (§11), not slide like a sheet
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G5 · Sheet drag-to-dismiss — closed 2026-08 (`src/lib/sheetDrag.js`, `src/lib/useSheetDrag.js`, `src/components/BottomSheet.jsx`, `src/index.css`)
+Implemented rather than removed: the grabber is now the visible part of a real
+handle. Scope is the three sheets that draw one — `ActionSheet`, `FilterSheet`,
+`EventDetailSheet`. `TaskForm` and `EventForm` never drew a grabber, promise no
+gesture, and are untouched; they still close through their × button, which also
+keeps an accidental swipe from silently discarding a half-filled form.
+
+**The drag adds no motion of its own.** That is what kept it small. G4 had
+already put every sheet on one CSS transition that interpolates from whatever is
+currently on screen, so the gesture only ever changes that transition's target:
+
+- `data-drag="live"` + `--ov-drag` — transition off, panel follows the finger 1:1
+- released short → both removed, and the G4 transition carries the panel from
+  where the finger left it back to `transform: none`
+- released past the threshold → `data-drag="exit"` plus the ordinary `onClose()`,
+  so the movement continues downwards while the presence machine unmounts
+
+Closing by drag and closing by backdrop therefore end on the same path, at the
+same 300ms and `cubic-bezier(0.16, 1, 0.3, 1)`. No new duration, no new easing,
+no new colour, no spring system. `Overlay.jsx` and `overlayPresence.js` are not
+touched, and the backdrop is deliberately not coupled to the drag.
+
+**`transform: none` stayed the resting state.** When the attribute goes away the
+panel is back to `none`, never `translateY(0)` — the invariant G4 established,
+because any transform value creates a containing block and would re-anchor the
+`position: fixed` ConfirmDialog that `EventDetailSheet` renders inside itself.
+Measured before implementing: a `translateY(40px)` on the panel collapses that
+dialog's full-screen root to 390×644 at (0, 200) on mobile and to 430×644 at
+(425, 256) on desktop. Verified after: 390×844 and 1280×900 at (0, 0), unchanged.
+The press feedback is colour-only for the same reason — a press that turns out to
+be a tap must not move anything.
+
+**`data-drag="exit"` is redundant while motion is on and decisive without it.**
+Under `prefers-reduced-motion` the panel's resting transform is `none` in every
+phase, so merely dropping the drag would snap the sheet back to the top and only
+then fade it out — a jump in the middle of a dismissal. Both drag rules are
+therefore re-declared inside the one existing reduced-motion block: the drag
+itself stays (it is the user's own finger, §6, the same reasoning that keeps the
+calendar drag and the task reorder), while the automatic half — the snap-back —
+arrives instantly, exactly as movement transitions do there.
+
+**The handle claims the gesture, nothing else does.** Without `touch-action` the
+browser reads the first millimetre as a page pan and sends `pointercancel` after
+one or two moves; measured on both a scrollable and a non-scrollable sheet. So
+`.ov-sheet-handle` carries `touch-action: none` — the only one in the app, on a
+54px strip (grabber row plus title). The body is deliberately not part of it: it
+scrolls, and one surface cannot be both (§12). `TaskForm`'s 811/788px scroll is
+untouched, and page scrolling, `useSwipe` and the dnd-kit reorder keep the
+gesture budget G2 was careful to leave them.
+
+**Distance or velocity decides, direction beats both.** 25% of the sheet's own
+height (proportional: 215px action sheet vs 645px event detail), a downward
+flick at 0.5px/ms dismisses well short of it, an upward flick at that speed keeps
+the sheet even past it. Velocity is read over the last 80ms rather than the final
+two points, because a finger is usually already slowing as it lifts. Upward drags
+rubber-band asymptotically to 40px — resistance, not a frozen edge (§13).
+
+The 8px slop is the app's existing one (`PRESS_SLOP`, `TAP_SLOP`), and it is
+absorbed rather than applied: the origin is taken at the moment the gesture
+engages, so the sheet starts from where it is instead of jumping the threshold.
+
+`tools/sheetLogic.mjs` unit-tests the pure decisions (41 cases) as part of
+`npm run test:logic`; the DOM side was verified in Chromium with real
+touch/pointer events, including mid-enter interruption, reopen mid-exit and a
+pixel-identical A/B of all sheets against `498e7f6`.
 
 ### G4 · Overlay exit animations — closed 2026-08 (`src/lib/overlayPresence.js`, `src/components/Overlay.jsx`, `src/index.css`)
 Solved centrally, as the direction asked: one presence machine, one lifecycle,
