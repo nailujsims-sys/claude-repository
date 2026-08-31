@@ -110,6 +110,15 @@ export function TasksProvider({ children }) {
     [updateTask]
   )
 
+  // The exact inverse of softDeleteTask, and the whole of "undo" (G8). It is a
+  // patch rather than a restored snapshot on purpose: a task edited during the
+  // undo window keeps that edit, and `sort_order` was never touched by the
+  // delete, so the row returns to the position it left.
+  const restoreTask = useCallback(
+    (task) => updateTask(task.id, { is_deleted: false, deleted_at: null }),
+    [updateTask]
+  )
+
   const reorderTasks = useCallback(
     async (updates) => {
       // updates: [{ id, sort_order?, due_date?, due_type? }]
@@ -145,6 +154,7 @@ export function TasksProvider({ children }) {
       completeTask,
       uncompleteTask,
       softDeleteTask,
+      restoreTask,
       reorderTasks,
     }),
     [
@@ -159,6 +169,7 @@ export function TasksProvider({ children }) {
       completeTask,
       uncompleteTask,
       softDeleteTask,
+      restoreTask,
       reorderTasks,
     ]
   )

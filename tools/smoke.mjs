@@ -142,6 +142,57 @@ async function run() {
     }
   }
 
+  // 2b) Delete + undo (G8). Deleting a task is reversible, so it commits on
+  //     press with no confirmation and the toast carries the way back. Checks
+  //     the whole round trip: no dialog, row gone, toast + action, row back.
+  {
+    const now = new Date().toISOString()
+    const task = {
+      id: 'seed-del', user_id: 'local-julian', title: 'Löschbare Aufgabe',
+      category: 'Privat', subcategory: null, details: null,
+      due_date: null, due_time: null, due_type: 'day',
+      is_favorite: false, is_completed: false, is_deleted: false,
+      completed_at: null, deleted_at: null, sort_order: 0,
+      created_at: now, updated_at: now,
+    }
+    const window = makeDom('#/aufgaben/seed-del', {
+      'mw.tasks.local-julian': JSON.stringify([task]),
+    })
+    mount(window, code, 'Undo')
+    await wait(250)
+
+    // The live region must exist before any toast does, or it is not announced.
+    const region = window.document.querySelector('[role="status"][aria-live="polite"]')
+    if (!region) errors.push('[Undo] toast live region missing before the first toast')
+
+    if (!click(window, (el) => el.textContent.trim() === 'Löschen'))
+      errors.push('[Undo] "Löschen" button not found')
+    await wait(150)
+    let text = txt(window)
+    console.log(`\n=== Undo (nach Löschen) ===\n  ${text.slice(0, 170)}`)
+    if (text.includes('Aufgabe löschen?'))
+      errors.push('[Undo] a confirm dialog still appears for a reversible delete')
+    if (!text.includes('Aufgabe gelöscht'))
+      errors.push('[Undo] toast "Aufgabe gelöscht" not shown')
+    if (!text.includes('Rückgängig'))
+      errors.push('[Undo] toast action "Rückgängig" not shown')
+    if (text.includes('Löschbare Aufgabe'))
+      errors.push('[Undo] the deleted task is still listed')
+
+    if (!click(window, (el) => el.textContent.trim() === 'Rückgängig'))
+      errors.push('[Undo] "Rückgängig" not clickable')
+    await wait(150)
+    window.__restoreConsole?.()
+    text = txt(window)
+    console.log(`=== Undo (nach Rückgängig) ===\n  ${text.slice(0, 170)}`)
+    if (!text.includes('Löschbare Aufgabe'))
+      errors.push('[Undo] the task did not come back')
+    if (!text.includes('Aufgabe wiederhergestellt'))
+      errors.push('[Undo] follow-up toast "Aufgabe wiederhergestellt" not shown')
+    if (text.includes('Rückgängig'))
+      errors.push('[Undo] the undo toast was not retired after use')
+  }
+
   // 3) Open the Neue Aufgabe form via the Plus button → mounts the calendar.
   {
     const window = makeDom('#/aufgaben')
@@ -220,11 +271,20 @@ async function run() {
       errors.push('[EventDetail] event bar "Familientreffen" not found')
     await wait(150)
     window.__restoreConsole?.()
-    const text = txt(window)
+    let text = txt(window)
     console.log(`\n=== EventDetail ===\n  ${text.slice(0, 170)}`)
     for (const needle of ['Datum', 'Wiederholung', 'Erinnerung', 'Bearbeiten', 'Löschen']) {
       if (!text.includes(needle)) errors.push(`[EventDetail] missing "${needle}"`)
     }
+
+    // Deleting a Termin is permanent — no Papierkorb, no undo — so this one
+    // keeps its confirmation (G8 deliberately stops at reversible actions).
+    if (!click(window, (el) => el.textContent.trim() === 'Löschen'))
+      errors.push('[EventDetail] "Löschen" button not clickable')
+    await wait(150)
+    text = txt(window)
+    if (!text.includes('Termin löschen?'))
+      errors.push('[EventDetail] the confirm dialog for a permanent delete is gone')
   }
 
   // 7) Calendar search: open it, confirm the empty hint, type a query that only
