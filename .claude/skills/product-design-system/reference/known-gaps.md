@@ -1,6 +1,7 @@
 # Known gaps — current app vs. design system
 
-Status: G1–G5 implemented (2026-08); G6–G11 open, G13–G16 open (G16 newly filed with G5).
+Status: G1–G5, G8 and G12 implemented (2026-08); G6, G7, G9–G11 open, G13–G18 open
+(G17 and G18 newly filed with G8).
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -29,16 +30,12 @@ views. Candidate for the polish phase (§26), not for incidental changes.
 `TaskRow.jsx` sets `completing` and commits via `setTimeout(…, 300)`. The
 animation is not interruptible, the action cannot be cancelled once the circle is
 tapped, and there is no undo afterwards.
-*Direction:* pair with G8 (undo in the toast) before touching the timing.
-
-### G8 · No undo anywhere; deletes always confirm — §18, §19
-`ToastContext`/`ToastHost` support message-only toasts (2s, no action slot).
-Every destructive path instead opens `ConfirmDialog` ("Are you sure?"), which the
-design system asks us to avoid where an action can reasonably be reversed. Task
-deletion is already a *soft* delete (Papierkorb) — the ideal undo candidate.
-*Direction:* add an optional action to the toast, then replace the soft-delete
-confirmation with delete + undo. Keep `ConfirmDialog` for genuinely irreversible
-actions.
+*Direction:* the mechanism it was waiting for now exists — G8 gave the toast an
+action slot, and `TasksContext` an explicit `restoreTask` inverse. Completion has
+its own inverse already (`uncompleteTask`), so the same shape applies. Still open
+for its own commit, and with one question of its own: a toast on *every*
+completion would be noise (§18 "unobtrusive"), which the delete path does not
+have to answer because deleting is rare.
 
 ---
 
@@ -95,6 +92,31 @@ with G5), so this is polish, not a defect.
 
 ---
 
+### G17 · The Papierkorb has no restore path once the toast is gone — §19
+A deleted task keeps living in the data (`is_deleted`, `deleted_at`) and can be
+*seen* again through the filter "Gelöschte Aufgaben anzeigen", where it renders
+muted and struck through with an inert circle (`TaskRow` `variant="deleted"`).
+Nothing can bring it back: the row's only handler is `onOpen`, and `TaskDetail`
+does not branch on `is_deleted`, so it offers "Löschen" for a task that is
+already deleted. Found while implementing G8 — which is why undo mattered enough
+to build: **it is currently the app's only way back from a delete.**
+*Direction:* a restore affordance on the deleted rows (and the matching branch in
+`TaskDetail`), reusing `TasksContext.restoreTask`, which G8 already added and
+which is exactly this operation. Deliberately not folded into G8: that would have
+been a new feature on the Aufgaben list, not the closing of the gap.
+
+### G18 · The toast has no exit — §7, §11
+`ToastHost` remounts on every new message (`key={toast.id}`) and plays
+`animate-toast-in`; when the timer runs out the element is simply dropped, so the
+toast blinks away instead of leaving. Pre-existing, and untouched by G8.
+*Direction:* the machinery exists — `usePresence` is exported and already used
+outside `<Overlay>` by the calendar search (`Kalender.jsx`). The catch, measured
+while scoping G8: one `open`-driven presence machine per host would kill the
+re-announce, because a *replacing* toast would swap its text with no motion at
+all instead of remounting into `toast-in`. Keeping both needs presence **per
+toast**, not per host. That is a real piece of machinery for a small gain, so it
+was left out of G8 on purpose rather than half-built.
+
 ## Explicitly conformant (do not "fix")
 
 - `src/screens/calendar/useTimedGesture.js` — long-press grab, pointer capture,
@@ -107,6 +129,82 @@ with G5), so this is polish, not a defect.
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G8 · Undo instead of "Bist du sicher?" — closed 2026-08 (`src/context/ToastContext.jsx`, `src/components/ToastHost.jsx`, `src/context/TasksContext.jsx`, `src/screens/TaskDetail.jsx`)
+The app already did the hard part twice, which is why this stayed small:
+deleting a task was **already** a soft delete, and every view **already** derives
+from one `tasks` array through one predicate (`taskSelectors.isActive`). What was
+missing was an action slot on the toast and the willingness to stop asking.
+
+**One rule, and it generalises: reversible ⇒ undo toast; permanent ⇒ confirm.**
+Deleting a task moves it to the Papierkorb, so it now commits on press and the
+toast carries the way back — "Aufgabe gelöscht · Rückgängig", then "Aufgabe
+wiederhergestellt" (§18/§19). Deleting a Termin is a hard delete with no
+Papierkorb behind it, so it keeps `ConfirmDialog`. That asymmetry between two
+deliberately identical detail screens is the point rather than an oversight: the
+two dialogs already said the difference out loud — *"wird in den Papierkorb
+verschoben"* versus *"wird dauerhaft gelöscht"* — and only the second is a
+meaningful mistake to protect someone from. `ConfirmDialog` keeps that one call
+site and gains a sharper meaning: it no longer means "delete", it means **this
+cannot be taken back**.
+
+**Undo is an inverse patch, never a deferred deletion.** `restoreTask` writes
+`{is_deleted: false, deleted_at: null}` and nothing else, so a task edited during
+the undo window keeps that edit, and `sort_order` — untouched by the delete —
+returns the row to the position it left. The alternative, holding the delete back
+until the toast expires, was measured against this and lost on every count: a
+pending map, a timer holding data, a flush on unmount, filtering pending rows out
+of every selector, and a reload mid-window silently aborting the delete. For a
+state change that is *already* reversible it buys nothing.
+
+**The extension to the toast is four additive lines of behaviour**, and every one
+of the six existing call sites is untouched:
+
+- `showToast(msg, { actionLabel, onAction })` — second argument optional
+- the duration follows from the payload (2s plain, 5s actionable), because 2s
+  cannot be read, decided on and reached; a per-call number would have made a
+  system value a literal
+- `pointer-events-auto` **only** when there is an action, so a plain toast still
+  lets a tap through to the header it sits over
+- `dismissToast()`, so pressing the action retires the toast
+
+`ToastHost` dismisses *before* invoking the action: both land in one React batch,
+so the caller's follow-up toast wins over the dismiss. And the wrapper now stays
+mounted while idle — a `role="status"` that appears together with its own content
+is not reliably announced (§22). That live region is new; the toast had none.
+
+**It adds no CSS.** No keyframe, no token, no duration, no easing: `index.css` and
+`tailwind.config.js` are untouched, which is also why reduced motion needed no
+work — `.animate-toast-in` was already remapped to `reduced-fade-in` by G1, and
+G8 introduces no motion for that block to catch. Verified: the plain toast is
+pixel-identical to `3302641` (geometry, computed style and a clipped screenshot),
+as are the Aufgaben list, the task detail and the calendar.
+
+**The undo outlives the screen that created it.** `ToastProvider` sits above the
+router, so the toast survives the `navigate('/aufgaben')` that follows the delete;
+the callback closes over the task and over context callbacks whose providers stay
+mounted, never over screen state. Deleting, routing to the Kalender and pressing
+Rückgängig there restores the row — verified in Chromium.
+
+**One toast, newest wins.** No queue and no "3 gelöscht" aggregation (§20): every
+deletion is independently committed and independently recoverable from the
+Papierkorb, so a superseded toast costs a convenience, not data. Verified that
+undoing after two deletes restores only the second.
+
+Two deviations found on the way and filed rather than fixed: **G17** (the
+Papierkorb has no restore path once the toast is gone — which is what made undo
+the app's only way back) and **G18** (the toast still has no exit).
+
+`tools/smoke.mjs` covers the round trip in jsdom — no confirm, row gone, toast
+plus action, row back, toast retired — and guards the calendar with the opposite
+assertion, that deleting a Termin still raises "Termin löschen?". No new
+`tools/*Logic.mjs`: G2, G4 and G5 each had a pure decision worth pinning (slop,
+phase table, dismiss threshold); G8's only "decision" is a constant lookup, and
+its real risk is behavioural. Chromium verified the rest at 390×844 and 1280×900:
+press feedback on the action (arms on down, 8px slop, cancels on drag-off,
+re-arms), Tab reach and Space/Enter activation with the `data-pressed="key"` wash
+and the G3 ring, the 5s window and what expiry leaves behind, reduced motion, and
+the accent label at 4.60:1 on `bg-elevated` (AA) with a 44px target.
 
 ### G5 · Sheet drag-to-dismiss — closed 2026-08 (`src/lib/sheetDrag.js`, `src/lib/useSheetDrag.js`, `src/components/BottomSheet.jsx`, `src/index.css`)
 Implemented rather than removed: the grabber is now the visible part of a real
