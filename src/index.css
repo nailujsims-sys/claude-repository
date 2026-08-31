@@ -177,6 +177,69 @@ body {
   transform: none;
 }
 
+/* ── Sheet drag-to-dismiss (G5) ──────────────────────────────────────
+   The grabber used to be a decorative bar: it promised direct manipulation
+   (§6) and the component delivered none. Now the head of the sheet is a drag
+   handle, and the gesture rides on the transition above instead of adding a
+   second kind of movement.
+
+   Two states, written by src/lib/useSheetDrag.js in the same shape G2 uses for
+   `[data-pressed]` and G4 for `[data-phase]` — an attribute plus, here, one
+   value:
+
+     live  the finger is moving the sheet. The transition is off so the panel
+           follows 1:1 (a transition would lag the finger by its own duration),
+           and `--ov-drag` carries the offset — downwards the raw distance,
+           upwards a damped one (§13), computed in src/lib/sheetDrag.js.
+     exit  released past the threshold. The transition is back on and the
+           target is the closed position, so the movement continues from
+           wherever the finger left it. Redundant while motion is on — the
+           base rule says the same thing — but decisive under reduced motion,
+           where the resting transform is `none` and the sheet would otherwise
+           snap back up before fading out.
+
+   Both rules must stay *after* `[data-phase='open']`: same specificity, so
+   source order is what lets a drag override the open position.
+
+   Nothing is declared for the resting sheet on purpose. When the attribute
+   goes away the panel is back to `transform: none`, never `translateY(0)` —
+   any transform value would create a containing block and re-anchor the
+   `position: fixed` ConfirmDialog that EventDetailSheet renders inside itself
+   (the reason G4 chose `none` in the first place). */
+.ov-panel-sheet[data-drag='live'] {
+  transform: translateY(var(--ov-drag, 0px));
+  transition: none;
+}
+.ov-panel-sheet[data-drag='exit'] {
+  transform: translateY(100%);
+}
+
+/* The handle claims the vertical gesture — otherwise the browser reads the
+   first millimetre as a page pan, takes the gesture over and sends
+   `pointercancel` before the drag can start (measured: the pointer stream dies
+   after one or two moves without this). It is the only `touch-action` in the
+   app and it sits on a 36×4 strip plus its title, so page scrolling, the
+   sheet's own scrolling body, useSwipe and the dnd-kit reorder keep exactly
+   the gesture budget they had. `user-select` keeps a mouse drag from painting
+   the title blue on the way down. */
+.ov-sheet-handle {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Feedback on pointer down (§5), on the grabber alone: the press is not
+   allowed to move anything until the gesture has actually engaged, so this is
+   the app's existing white wash rather than anything geometric. Same colour
+   and the same 120ms release easing the press classes use. */
+.ov-sheet-grabber {
+  transition: background-color 120ms ease;
+}
+.ov-sheet-handle[data-grab] .ov-sheet-grabber {
+  background-color: rgba(255, 255, 255, 0.3);
+  transition-duration: 0s;
+}
+
 .ov-panel-left {
   transform: translateX(-100%);
   transition: transform var(--ov-dur, 250ms) var(--ov-ease);
@@ -371,6 +434,26 @@ body {
   .ov-panel-left[data-phase='open'] {
     transform: none;
     opacity: 1;
+  }
+
+  /* A sheet drag (G5) is the user's own finger, so it stays — same reasoning
+     as the calendar drag and the task reorder below: the sheet following the
+     hand *is* the feedback, and there is no elastic overshoot to remove (the
+     upward resistance only ever runs while the finger is down, and the release
+     never travels past its target). What does change is the automatic half:
+     with `transform` out of the transition list above, a snap-back arrives
+     instantly instead of easing, exactly as movement transitions do here.
+
+     Re-declared rather than left to specificity so the intent is visible in
+     this block — `exit` in particular has to keep pointing at the closed
+     position, or the resting `transform: none` two rules up would yank the
+     sheet back to the top before the fade. */
+  .ov-panel-sheet[data-drag='live'] {
+    transform: translateY(var(--ov-drag, 0px));
+    transition: none;
+  }
+  .ov-panel-sheet[data-drag='exit'] {
+    transform: translateY(100%);
   }
 
   /* Completing a task keeps its 300ms fade (the list still waits for it before
