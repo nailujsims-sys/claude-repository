@@ -1,7 +1,7 @@
 # Known gaps — current app vs. design system
 
-Status: G1–G5, G7, G8 and G12 implemented (2026-08); G6, G9–G11 open, G13–G18 open
-(G17 and G18 newly filed with G8).
+Status: G1–G5, G7, G8, G12 and G19 implemented (2026-08/09); G6, G9–G11 open,
+G13–G18 and G20 open (G17/G18 newly filed with G8, G20 with G19).
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -81,6 +81,18 @@ with G5), so this is polish, not a defect.
 
 ---
 
+### G20 · Bottom sheets sit against the layout viewport too — §22
+`Overlay.jsx` panels are `fixed` and end at `bottom: 0`, so on any browser that
+lays a bar over the bottom of the page a sheet's last row — the primary button
+in `TaskForm`/`EventForm` — is behind it until the bar retracts. Exactly the
+case G19 fixed for the bottom navigation, on a different surface. Found while
+measuring G19 and deliberately left: a sheet is a transient surface the user
+opens deliberately, the navigation is permanent chrome, and G19 was scoped to
+what was reported.
+*Direction:* the mechanism already exists — `--browser-bottom-inset`. Whether it
+belongs on the panel or on its content padding needs a look at drag-to-dismiss
+(G5), which measures against the panel's own height.
+
 ### G17 · The Papierkorb has no restore path once the toast is gone — §19
 A deleted task keeps living in the data (`is_deleted`, `deleted_at`) and can be
 *seen* again through the filter "Gelöschte Aufgaben anzeigen", where it renders
@@ -118,6 +130,78 @@ was left out of G8 on purpose rather than half-built.
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G19 · The bottom navigation sits behind the browser's own bottom bar — closed 2026-09 (`src/index.css`, `src/components/BottomNav.jsx`, `src/screens/TaskDetail.jsx`)
+Reported from an iPad: in Chrome the navigation was invisible until the page was
+scrolled, in Safari it was fine. Same device, and on iPadOS every browser is
+WKWebView — so the CSS renders identically and the difference could only come
+from how much of the page each browser covers with its own UI.
+
+**What was wrong.** `position: fixed` resolves against the *layout* viewport,
+which on iOS is always the large one (`lvh`) — the height with browser bars
+retracted. It does not shrink when a browser lays a bar over the bottom, so
+`bottom: 0` puts the navigation underneath that bar. iPad Safari has nothing
+there, which is why the app looked correct on the exact device that reported it
+broken. `env(safe-area-inset-bottom)`, the only compensation the bar had, cannot
+help: it describes device hardware (home indicator, notch), never browser
+chrome. Verified structurally first — `position: fixed` really is against the
+viewport, no ancestor creates a containing block, and the `backdrop-filter` of
+G11 is a child rather than an ancestor, so it is not the cause.
+
+**The fix is one number, expressed in the two units that name it.** `100lvh` is
+what `fixed` measures against, `100dvh` is what is actually visible, so their
+difference *is* the overlay:
+
+```css
+--browser-bottom-inset: 0px;
+@supports (height: 100dvh) and (height: 100lvh) {
+  --browser-bottom-inset: calc(100lvh - 100dvh);
+}
+```
+
+No JavaScript, no resize listener, no user-agent sniffing, no new component. The
+`@supports` guard is not decoration: custom properties are not validated while
+parsing, so without it a browser lacking the units would drop the value only at
+computed-value time and `bottom` would fall back to `auto`, not to `0` — broken
+instead of unchanged.
+
+Two call sites carry it: the navigation itself, and the fixed action bar in
+`TaskDetail` stacked directly on top of it, so the pair keeps its spacing either
+way. **`Kalender.jsx` deliberately does not**, and this is the part worth
+remembering: its container is already `height: 100dvh`, so it ends at the visible
+bottom on its own and the existing `padding-bottom` reserve lands exactly on the
+navigation's new position. Adding the offset there would have re-opened the same
+gap, inverted. Measured: reserve 64px against a 57.5px bar, no gap, content above
+the bar.
+
+**A negative result, recorded so it is not re-attempted.** The obvious follow-up
+question — the page can still be scrolled past its content into an empty strip —
+looks like a height problem and is not one. The document has a hard floor at the
+initial containing block: forcing `html`, `body`, `#root` and `.app-frame` to
+200px leaves `scrollHeight` at the full 1180. So changing the `100%` chain to
+`100dvh`, or `min-h-screen` to `min-h-dvh`, cannot shorten the document by a
+single pixel — both were implemented, measured against the unfixed build and
+reverted. On every route the app is already exactly viewport-height with **0px**
+of document scroll; the travel a user feels is the browser retracting its own
+bar, which iPad Safari does not have because there is no bar to retract. And
+because `--browser-bottom-inset` is dynamic, the navigation follows that
+retraction down instead of leaving a hole.
+
+Verified in Chromium at 820×1180, 1180×820, 390×844 and 1280×900 across all
+routes: the offset resolves to `0px` where nothing overlaps, the navigation and
+action-bar rects are identical to `15c99a8` and 12 screenshots are pixel-equal,
+so iPad Safari and desktop are untouched. With an 88px overlay modelled
+arithmetically (variable set, every `100dvh` box shortened to match) the bar ends
+exactly on the visible edge, the action bar keeps its distance, and a 30-row list
+still scrolls with the last row reachable above it. Press feedback (G2), keyboard
+activation, the focus ring (G3), the action sheet and `prefers-reduced-motion`
+are unchanged — the fix introduces no motion.
+
+Known trade-off: where a browser bar does overlay, the navigation now travels
+with it as it retracts. A static alternative (`calc(100lvh - 100svh)`) would hold
+it still but leave a gap once the bar is gone; the moving bar was preferred
+because it always ends flush. Filed rather than fixed: **G20**, the same
+structural case for bottom sheets.
 
 ### G7 · Task completion is a blocking 300ms timer — closed 2026-08 (`src/components/TaskRow.jsx`, `src/index.css`, `src/screens/TasksList.jsx`, `src/screens/calendar/DayView.jsx`)
 The timer is gone: `onComplete` now runs from the circle's own click, and the
