@@ -223,6 +223,29 @@ body {
   transform: translateY(100%);
 }
 
+/* ── Catching a sheet on its way out (G16) ───────────────────────────
+   §7 names both directions; G5 delivered one. A sheet can be grabbed while it
+   slides *in*, but not while it leaves: G4 gives a leaving panel
+   `pointer-events: none` and `inert` so its trigger is free again the moment
+   the exit starts, and that is worth keeping.
+
+   So exactly one exit is opened back up, and only on the handle: the one the
+   user threw away themselves. `data-drag='exit'` is written by the dismissal in
+   src/lib/useSheetDrag.js and by nothing else — the backdrop, Escape, Löschen,
+   Bearbeiten and an action-sheet row all close without it. Everything else
+   stays as transparent to taps as G4 made it (the panel body, the backdrop, the
+   root), so a press next to the handle still reaches the app and the trigger
+   behind it. `inert` has to come off for this window too — an inert subtree
+   ignores pointer input even where a descendant opts back in — which
+   BottomSheet.jsx does, for this window only.
+
+   Nothing is needed under reduced motion: `[data-drag='exit']` above puts the
+   sheet at `translateY(100%)` in the same frame there, so the handle is already
+   off-screen and there is no travel to catch. */
+.ov-panel-sheet[data-drag='exit'] .ov-sheet-handle {
+  pointer-events: auto;
+}
+
 /* The handle claims the vertical gesture — otherwise the browser reads the
    first millimetre as a page pan, takes the gesture over and sends
    `pointercancel` before the drag can start (measured: the pointer stream dies

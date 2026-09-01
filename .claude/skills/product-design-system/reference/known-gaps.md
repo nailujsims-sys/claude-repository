@@ -1,7 +1,7 @@
 # Known gaps — current app vs. design system
 
-Status: G1–G5, G7, G8, G12, G17, G19 and G20 implemented (2026-08/09); G6,
-G9–G11 open, G13–G16 and G18 open (G18 newly filed with G8).
+Status: G1–G5, G7, G8, G12, G16, G17, G19 and G20 implemented (2026-08/09);
+G6, G9–G11 open, G13–G15 and G18 open (G18 newly filed with G8).
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -66,19 +66,6 @@ animation, so it appears and vanishes instantly. It is a small anchored popover
 rather than a modal overlay, so it deliberately stayed outside G4; if it is given
 motion later it should originate from its trigger (§11), not slide like a sheet.
 
-### G16 · A sheet that is already leaving cannot be caught — §7
-§7 names both directions: "A sheet is opening → the user can immediately drag it
-back. A panel is closing → the user can reverse it." G5 delivered the first — a
-drag takes over mid-enter and continues from the visible position — but not the
-second: `.ov-panel[data-phase='exiting']` is `pointer-events: none` and `inert`,
-so a finger cannot grab a sheet on its way out. That is G4's deliberate choice
-and it is what makes reopening from the trigger work at all (without it the
-leaving panel still covered its own trigger).
-*Direction:* only worth revisiting together with G4's exit semantics — the panel
-would have to stay hit-testable while leaving without covering the app behind
-it. Reopening through the trigger already works and lands correctly (verified
-with G5), so this is polish, not a defect.
-
 ---
 
 ### G18 · The toast has no exit — §7, §11
@@ -105,6 +92,55 @@ was left out of G8 on purpose rather than half-built.
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G16 · A sheet that is already leaving could not be caught — closed 2026-09 (`src/lib/useSheetDrag.js`, `src/components/BottomSheet.jsx`, `src/index.css`, call sites)
+§7 names both directions; G5 delivered only the first. The second was blocked
+twice over, and both blockers were measured in Chromium before anything was
+written: `.ov-panel[data-phase='exiting']` is `pointer-events: none`, **and** the
+panel is `inert` — and an inert subtree ignores pointer input even where a
+descendant sets `pointer-events: auto`, so relaxing the CSS alone changes
+nothing. Either one alone is enough to swallow the press.
+
+**What ships.** Only the exit the user threw away themselves is catchable, and
+only on the handle. The marker was already in the DOM: `data-drag="exit"` is
+written by the drag dismissal and by nothing else, so the backdrop, Escape,
+Löschen, Bearbeiten and an action-sheet row all stay uncatchable — which is what
+keeps a catch from reviving a deleted event or overtaking a form that is already
+opening. A press pins the panel at its current visible offset and calls
+`onReopen`, so the owner's state goes back to `open` for real and G4's own
+`exiting + open → open` edge does the rest (and cancels its exit timer with it).
+From there it is G5's drag, unchanged: released without moving the sheet stays
+open, pulled up it stays open, pushed down it dismisses again on the same
+`shouldDismiss` rule.
+
+**Deliberately untouched:** `overlayPresence.js`, `Overlay.jsx` and
+`sheetDrag.js` — no new phase, no new event, no new constant. No presence-state
+hack: a phase faked without the owner would leave a sheet that can never be
+closed again, because `usePresence`'s effect only re-fires when `open` changes.
+The full-screen form sheets pass `enabled: false` and are not part of this.
+Reduced motion needs no special case at all — `[data-drag='exit']` puts the
+sheet at `translateY(100%)` in the same frame there, so the handle is already
+off-screen and there is no travel to catch.
+
+Opt-in per sheet: `ActionSheet`, `FilterSheet` and `EventDetailSheet` pass
+`onReopen`; anything else keeps the old behaviour by simply not passing it.
+
+Verified in Chromium at 390×844, 80 assertions across mouse and real touch
+(CDP touch events): the catch pins with no jump (offset identical before and
+after, then unchanged while held), the reopen is a real phase change, focus
+lands exactly where a plain G5 drag leaves it, and every non-drag exit stays
+inert with a dead handle. Deleting an event then pressing the leaving sheet
+leaves it deleted; Bearbeiten does not let the detail sheet overtake the form;
+reopening from the trigger during a self-thrown exit still works (G4); Escape
+still peels a stacked ConfirmDialog one layer at a time; and after rapid
+open/close cycles nothing is left mounted and no `data-drag` survives.
+
+**Known residual, accepted:** the action sheet's handle travels across the Plus
+button during its exit, so within the ~300ms after a *self-thrown* dismissal a
+tap on the trigger can land on the handle and catch the sheet instead of
+reopening it from the trigger. Both bring the sheet back; only the timing of the
+commit differs. Every other way of closing leaves the trigger exactly as
+reachable as G4 made it.
 
 ### G20 · Overlays sat against the layout viewport too — closed 2026-09 (`src/components/Overlay.jsx`)
 G19's case on a second surface: `.ov-root` is `fixed inset-0`, so the column

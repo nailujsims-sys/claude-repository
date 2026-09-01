@@ -6,7 +6,8 @@ import { actionSheetItems } from '../config/navigation'
 // The Plus-button action sheet. Maps each config item's `action` to a handler;
 // today only "Neue Aufgabe" exists, but adding rows is a config-only change.
 export default function ActionSheet() {
-  const { actionSheetOpen, closeActionSheet, openTaskForm, openEventForm } = useUI()
+  const { actionSheetOpen, openActionSheet, closeActionSheet, openTaskForm, openEventForm } =
+    useUI()
 
   const handle = (action) => {
     closeActionSheet()
@@ -15,7 +16,12 @@ export default function ActionSheet() {
   }
 
   return (
-    <BottomSheet open={actionSheetOpen} onClose={closeActionSheet} title="Erstellen">
+    <BottomSheet
+      open={actionSheetOpen}
+      onClose={closeActionSheet}
+      onReopen={openActionSheet}
+      title="Erstellen"
+    >
       <div className="px-3 pb-6">
         {actionSheetItems.map((item) => {
           const Icon = item.icon
