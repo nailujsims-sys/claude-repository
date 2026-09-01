@@ -57,8 +57,15 @@ function dueForSection(key) {
 
 export default function TasksList() {
   const { openSidebar } = useUI()
-  const { tasks, loading, toggleFavorite, completeTask, uncompleteTask, reorderTasks } =
-    useTasks()
+  const {
+    tasks,
+    loading,
+    toggleFavorite,
+    completeTask,
+    uncompleteTask,
+    restoreTask,
+    reorderTasks,
+  } = useTasks()
   const navigate = useNavigate()
   const { showToast } = useToast()
 
@@ -206,11 +213,28 @@ export default function TasksList() {
     })
   }
 
+  // Restoring from the Papierkorb (G17). It reuses G8's `restoreTask` — the
+  // same inverse patch the undo toast already runs — so a restored task keeps
+  // every property it had, `sort_order` included, and returns to the position
+  // it left.
+  //
+  // The confirmation follows the same rule completion does (G7): the row does
+  // not leave the view here, but it does move out of the deleted group, so a
+  // short toast names what happened. It carries no action: nothing was lost,
+  // and the ordinary way back is the delete the user just reversed. The
+  // wording is deliberately the one G8's undo already uses, so the operation
+  // says the same thing wherever it is reached from.
+  const handleRestore = (task) => {
+    restoreTask(task).catch(() => {})
+    showToast('Aufgabe wiederhergestellt')
+  }
+
   const rowHandlers = {
     onOpen: (t) => navigate(`/aufgaben/${t.id}`),
     onToggleFavorite: toggleFavorite,
     onComplete: handleComplete,
     onUncomplete: uncompleteTask,
+    onRestore: handleRestore,
   }
 
   const isEmpty = !loading && renderSections.length === 0
@@ -366,7 +390,7 @@ function Section({ section, rowHandlers }) {
           />
         ))}
 
-        {/* Soft-deleted (muted) */}
+        {/* Soft-deleted (muted, with the way back — G17) */}
         {section.deleted.map((task, i) => (
           <TaskRow
             key={task.id}
@@ -374,6 +398,7 @@ function Section({ section, rowHandlers }) {
             variant="deleted"
             showBorder={i < section.deleted.length - 1}
             onOpen={rowHandlers.onOpen}
+            onRestore={rowHandlers.onRestore}
           />
         ))}
       </div>
