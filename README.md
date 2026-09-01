@@ -190,5 +190,22 @@ All tokens live in `tailwind.config.js` and are used as Tailwind classes
 | `danger` | `#EF4444` | destructive |
 | `success` | `#34D399` | completion |
 
+Type sizes are tokens too, named by role rather than by pixel value (§15):
+
+| Token | Size | Use |
+|---|---|---|
+| `text-page` | 28px | screen titles |
+| `text-section` | 18px | section titles inside a screen |
+| `text-heading` | 17px | the title of a sheet, dialog or the sidebar |
+| `text-field` | 16px | form fields (also the size below which iOS zooms) |
+| `text-body` | 15px | body and list text |
+| `text-ui` | 14px | controls: buttons, toast, chips |
+| `text-label` | 13px | labels |
+| `text-caption` | 12px | secondary and meta lines |
+| `text-meta` | 11px | badges, calendar day numbers |
+
+Use them in new code. The `text-[Npx]` literals still in the app are migrated
+only when their line is edited anyway — see `known-gaps.md` → G10.
+
 Mobile-first (~390px). On desktop the app is capped to `max-width: 430px` and
 centered so it keeps reading like a phone.

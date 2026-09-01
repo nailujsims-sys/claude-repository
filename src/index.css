@@ -484,14 +484,17 @@ html[data-ov-scroll-locked] body {
 @media (prefers-reduced-motion: reduce) {
   /* Toast and calendar period changes: same duration and easing, no travel. */
   .animate-toast-in,
+  .animate-menu-in,
   .cal-enter-next,
   .cal-enter-prev {
     animation-name: reduced-fade-in;
   }
-  /* The toast's exit (G18) keeps its timing for the same reason the entry
-     does — the card is still removed when the animation ends — and loses only
-     the 12px of travel. */
-  .animate-toast-out {
+  /* The exits of the toast (G18) and the task-detail menu (G15) keep their
+     timing for the same reason their entries do — both are still removed when
+     the animation ends — and lose only the travel: 12px here, the scale
+     there. */
+  .animate-toast-out,
+  .animate-menu-out {
     animation-name: reduced-fade-out;
   }
 

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -20,6 +20,10 @@ import IconButton from '../components/IconButton'
 import StarButton from '../components/StarButton'
 import { formatDueLabel, formatLongDate, formatTime } from '../lib/date'
 
+// How long the menu takes to leave. Mirrors the `menu-out` animation in
+// tailwind.config.js: the popover is unmounted when its exit has finished.
+const MENU_EXIT_MS = 120
+
 export default function TaskDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -27,7 +31,43 @@ export default function TaskDetail() {
   const { openTaskForm } = useUI()
   const { showToast } = useToast()
 
-  const [menuOpen, setMenuOpen] = useState(false)
+  // The overflow menu's lifecycle (G15). Three states, held right here: it is
+  // a small anchored popover, not a modal, so it deliberately stays out of
+  // <Overlay> and out of the overlay stack — a stack entry would make it the
+  // topmost surface and let it take Escape from a sheet underneath, the same
+  // trap G18 and G21 avoided for the toast.
+  //
+  // `leaving` is what gives it an exit at all: an element removed on the click
+  // cannot animate. The timer is cancelled by its own effect when the phase
+  // changes, so re-opening mid-exit simply lands back on `open`.
+  const [menu, setMenu] = useState('closed') // 'closed' | 'open' | 'leaving'
+  const menuTriggerRef = useRef(null)
+
+  const closeMenu = useCallback(() => {
+    setMenu((m) => (m === 'open' ? 'leaving' : m))
+  }, [])
+
+  useEffect(() => {
+    if (menu !== 'leaving') return
+    const t = setTimeout(() => setMenu('closed'), MENU_EXIT_MS)
+    return () => clearTimeout(t)
+  }, [menu])
+
+  // Escape closes it and hands the focus back to the button it belongs to —
+  // without that the focus would fall to <body> when the items unmount. Bound
+  // to `open` only: a menu already leaving has handed control back, and no
+  // overlay can be open above it (every path that opens one closes the menu
+  // first), so this needs none of the overlay stack's claiming.
+  useEffect(() => {
+    if (menu !== 'open') return
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return
+      closeMenu()
+      menuTriggerRef.current?.focus?.({ preventScroll: true })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [menu, closeMenu])
 
   const task = getTask(id)
 
@@ -65,7 +105,7 @@ export default function TaskDetail() {
   // router, so it still works after the navigation below has unmounted us.
   // Failures surface through the global banner, as everywhere else.
   const handleDelete = () => {
-    setMenuOpen(false)
+    closeMenu()
     softDeleteTask(task).catch(() => {})
     showToast('Aufgabe gelöscht', {
       actionLabel: 'Rückgängig',
@@ -84,7 +124,7 @@ export default function TaskDetail() {
   // "Bearbeiten" and "Löschen" back. The toast confirms it in the wording G8
   // already established for exactly this operation.
   const handleRestore = () => {
-    setMenuOpen(false)
+    closeMenu()
     restoreTask(task).catch(() => {})
     showToast('Aufgabe wiederhergestellt')
   }
@@ -100,20 +140,36 @@ export default function TaskDetail() {
           <StarButton active={task.is_favorite} onToggle={() => toggleFavorite(task)} />
           <div className="relative">
             <IconButton
-              onClick={() => setMenuOpen((v) => !v)}
+              ref={menuTriggerRef}
+              onClick={() => setMenu((m) => (m === 'open' ? 'leaving' : 'open'))}
               aria-label="Mehr"
+              aria-expanded={menu === 'open'}
               className="text-text-primary"
             >
               <MoreHorizontal size={24} />
             </IconButton>
-            {menuOpen && (
+            {menu !== 'closed' && (
               <>
-                <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-                <div className="absolute right-0 top-9 z-20 w-44 overflow-hidden rounded-card border border-subtle bg-bg-elevated py-1 shadow-xl shadow-black/50">
+                {/* The tap-outside catcher exists only while the menu is open:
+                    during the exit the menu is already on its way out, and a
+                    catcher left behind would swallow the next tap. */}
+                {menu === 'open' && (
+                  <div className="fixed inset-0 z-10" onClick={closeMenu} />
+                )}
+                <div
+                  // React 18 doesn't know `inert`; an empty string renders the
+                  // bare attribute. A menu on its way out is no longer a
+                  // control — same rule the leaving toast and the leaving
+                  // overlay panel follow.
+                  inert={menu === 'leaving' ? '' : undefined}
+                  className={`${
+                    menu === 'leaving' ? 'animate-menu-out' : 'animate-menu-in'
+                  } absolute right-0 top-9 z-20 w-44 origin-top-right overflow-hidden rounded-card border border-subtle bg-bg-elevated py-1 shadow-xl shadow-black/50`}
+                >
                   {deleted ? (
                     <button
                       onClick={handleRestore}
-                      className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-text-primary"
+                      className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-body text-text-primary"
                     >
                       <RotateCcw size={16} /> Wiederherstellen
                     </button>
@@ -121,16 +177,16 @@ export default function TaskDetail() {
                     <>
                       <button
                         onClick={() => {
-                          setMenuOpen(false)
+                          closeMenu()
                           openTaskForm({ mode: 'edit', taskId: task.id })
                         }}
-                        className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-text-primary"
+                        className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-body text-text-primary"
                       >
                         <Pen size={16} /> Bearbeiten
                       </button>
                       <button
                         onClick={handleDelete}
-                        className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-danger"
+                        className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-body text-danger"
                       >
                         <Trash2 size={16} /> Löschen
                       </button>

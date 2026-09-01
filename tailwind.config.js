@@ -21,6 +21,27 @@ export default {
       borderColor: {
         subtle: 'rgba(255, 255, 255, 0.06)',
       },
+      // Typography scale (§15, G10) — the sizes the product already speaks,
+      // named by the roles §15 asks for, so a new module picks a token instead
+      // of inventing a value. Size only, deliberately: `text-[15px]` sets
+      // nothing but `font-size`, so a token that also carried a line-height
+      // would not be a drop-in for the literal it replaces. Weight, leading and
+      // tracking stay explicit utilities at the call site.
+      //
+      // Existing `text-[Npx]` literals are migrated only when their line is
+      // touched anyway (see known-gaps.md → G10); a handful of one-off sizes
+      // stay off the scale until then.
+      fontSize: {
+        page: '28px', // screen titles — Home, Aufgaben, Mehr, Version
+        section: '18px', // section titles inside a screen
+        heading: '17px', // the title of a surface: sheet, dialog, sidebar
+        field: '16px', // form fields — 16px is also what stops iOS zooming on focus
+        body: '15px', // default body and list text
+        ui: '14px', // controls: buttons, toast, chips
+        label: '13px', // labels and section labels
+        caption: '12px', // secondary and meta lines under a title
+        meta: '11px', // the smallest step: badges, calendar day numbers
+      },
       fontFamily: {
         sans: [
           '-apple-system',
@@ -67,6 +88,17 @@ export default {
           from: { opacity: '1', transform: 'translateY(0)' },
           to: { opacity: '0', transform: 'translateY(-12px)' },
         },
+        // The task-detail menu (G15). It belongs to the button it hangs from,
+        // so it grows out of that corner (§11) instead of sliding in from
+        // somewhere — `origin-top-right` at the call site does the anchoring.
+        'menu-in': {
+          from: { opacity: '0', transform: 'scale(0.95)' },
+          to: { opacity: '1', transform: 'scale(1)' },
+        },
+        'menu-out': {
+          from: { opacity: '1', transform: 'scale(1)' },
+          to: { opacity: '0', transform: 'scale(0.95)' },
+        },
         shimmer: {
           '100%': { transform: 'translateX(100%)' },
         },
@@ -82,6 +114,11 @@ export default {
         // frame, so the toast stays gone instead of flashing back before it is
         // removed.
         'toast-out': 'toast-out 180ms ease-in both',
+        // 120ms is MENU_EXIT_MS in src/screens/TaskDetail.jsx, which keeps the
+        // menu mounted until this has run. A popover is small and close to the
+        // finger, so it is quicker than a sheet or a toast.
+        'menu-in': 'menu-in 120ms ease-out',
+        'menu-out': 'menu-out 120ms ease-in both',
         shimmer: 'shimmer 1.5s infinite',
       },
     },

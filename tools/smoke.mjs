@@ -1255,6 +1255,75 @@ async function run() {
     console.log(`\n=== ToastReplace (Folge-Toast während des Exits) ===\n  entering=${card()?.className.includes('animate-toast-in')} text=${text.includes('Aufgabe wieder offen')}`)
   }
 
+  // 10) The task-detail menu (G15). It grows out of the button it hangs from
+  //     and leaves the same way instead of vanishing, Escape closes it with the
+  //     focus handed back to that button, and the tap-outside path it always
+  //     had is untouched. Deliberately no overlay: the menu must never become
+  //     the topmost surface, or it would take Escape from a sheet underneath.
+  {
+    const window = makeDom('#/aufgaben/seed-done', seedStore())
+    mount(window, code, 'Menu')
+    await wait(250)
+    const doc = window.document
+    const panel = () => doc.querySelector('[class*="animate-menu"]')
+    const trigger = () =>
+      [...doc.querySelectorAll('button')].find((el) => el.getAttribute('aria-label') === 'Mehr')
+    const catcher = () => doc.querySelector('header div.fixed.inset-0')
+    const tap = (el) =>
+      el?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+
+    if (!trigger()) errors.push('[Menu] the overflow trigger was not found')
+    trigger()?.focus()
+    tap(trigger())
+    await wait(30)
+    if (!panel()?.className.includes('animate-menu-in'))
+      errors.push('[Menu] the menu did not enter with animate-menu-in')
+    if (!panel()?.className.includes('origin-top-right'))
+      errors.push('[Menu] the menu does not grow out of its trigger')
+    if (trigger()?.getAttribute('aria-expanded') !== 'true')
+      errors.push('[Menu] the trigger does not report the open menu')
+    if (!catcher()) errors.push('[Menu] the tap-outside catcher is missing while the menu is open')
+
+    // Escape from inside the menu: it leaves, stops being a control while it
+    // does, and the focus is back on the trigger at once — not on <body>.
+    ;[...(panel()?.querySelectorAll('button') ?? [])][0]?.focus()
+    press(window, 'Escape')
+    await wait(20)
+    const leaving = panel()
+    if (!leaving?.className.includes('animate-menu-out'))
+      errors.push('[Menu] Escape dropped the menu without an exit')
+    if (!leaving?.hasAttribute('inert'))
+      errors.push('[Menu] the leaving menu was not inert')
+    if (doc.activeElement !== trigger())
+      errors.push('[Menu] Escape did not hand the focus back to the trigger')
+    if (catcher())
+      errors.push('[Menu] the tap-outside catcher outlived the open menu')
+    await wait(250)
+    if (panel()) errors.push('[Menu] the menu never left the DOM after its exit')
+    if (trigger()?.getAttribute('aria-expanded') !== 'false')
+      errors.push('[Menu] the trigger still reports an open menu')
+
+    // The tap-outside path is exactly what it was: it closes the menu.
+    tap(trigger())
+    await wait(30)
+    tap(catcher())
+    await wait(250)
+    if (panel()) errors.push('[Menu] a tap outside no longer closes the menu')
+
+    // Re-opening mid-exit continues instead of being closed by the exit that
+    // was already running (§7).
+    tap(trigger())
+    await wait(30)
+    press(window, 'Escape')
+    await wait(40)
+    tap(trigger())
+    await wait(200)
+    window.__restoreConsole?.()
+    if (!panel()?.className.includes('animate-menu-in'))
+      errors.push('[Menu] re-opening during the exit was swallowed by it')
+    console.log(`\n=== Menu (TaskDetail-Popover) ===\n  enter=${!!panel()} escape+focus back=${doc.activeElement === trigger() || !!panel()} reopen=${!!panel()}`)
+  }
+
   console.log('\n--- result ---')
   if (errors.length) {
     console.log('FAILURES:')

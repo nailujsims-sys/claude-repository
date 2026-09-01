@@ -98,6 +98,7 @@ Reuse these before inventing anything:
 | Need | Use |
 |---|---|
 | Design tokens | `tailwind.config.js` (`bg-base`, `bg-card`, `bg-elevated`, `bg-input`, `accent`, `accent-dim`, `text-primary/secondary/muted`, `danger`, `success`, `border-subtle`, radii `card/btn/input/chip`) |
+| Type sizes | `tailwind.config.js` (`text-page` 28 · `section` 18 · `heading` 17 · `field` 16 · `body` 15 · `ui` 14 · `label` 13 · `caption` 12 · `meta` 11). Never a new `text-[Npx]` — G10 |
 | Global motion / keyframes | `tailwind.config.js` (`animation`) + `src/index.css` (`page`, `cal-enter-*`, `press-tint`, `skeleton-shimmer`) |
 | Press feedback on icon buttons | `.press-tint` (`src/index.css`) — touch-safe, `:hover` only on real pointers |
 | Modal / panel scaffolding | `src/components/Overlay.jsx` (backdrop, Esc, phone-frame column) |
