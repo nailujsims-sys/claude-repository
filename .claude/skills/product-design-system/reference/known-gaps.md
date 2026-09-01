@@ -1,7 +1,8 @@
 # Known gaps — current app vs. design system
 
-Status: G1–G5, G7, G8, G12, G17, G19 and G20 implemented (2026-08/09); G6,
-G9–G11 open, G13–G16 and G18 open (G18 newly filed with G8).
+Status: G1–G5, G7, G8, G12–G14, G17, G19 and G20 implemented (2026-08/09); G6,
+G9–G11 open, G15, G16, G18 and G21 open (G18 newly filed with G8, G21 with
+G13).
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -48,18 +49,6 @@ them.
 Not a bug; documented so it is not copied into new modules until a material
 system is decided.
 
-### G13 · No focus trap in any overlay — §22
-Tab from an open sheet walks straight out of it into the page behind, which stays
-reachable. Pre-existing and unchanged by G4 (verified A/B against `ebdd4ce`), and
-deliberately left open: it is an accessibility concern in its own right, not a
-motion one. `Overlay.jsx` is now the obvious single place to solve it — the
-presence phase already knows exactly when a panel is the active one and when it
-is on its way out.
-
-### G14 · No scroll lock behind an open overlay — §22
-The page behind a sheet still scrolls. Same story as G13: pre-existing, out of
-G4's scope, and belongs in `Overlay.jsx` when it is picked up.
-
 ### G15 · The task-detail menu popover has no motion — §11
 `TaskDetail.jsx` renders its own `absolute … z-20` menu with no enter or exit
 animation, so it appears and vanishes instantly. It is a small anchored popover
@@ -80,6 +69,22 @@ it. Reopening through the trigger already works and lands correctly (verified
 with G5), so this is polish, not a defect.
 
 ---
+
+### G21 · A toast action is outside the modal focus scope — §22
+Filed with G13, not fixed by it. `ToastHost` renders at `z-[60]`, outside every
+`.ov-root`, so an actionable toast — "Aufgabe gelöscht · Rückgängig" (G8/G17) —
+is visible above an open overlay but is not a Tab stop inside the trapped scope.
+Verified while closing G13: **no flow reaches that state today.** The three
+toasts that carry an action are raised from `TaskDetail`, `TasksList` and
+`DayView`, i.e. from screens with no modal open, and the "Termin gelöscht" toast
+an `EventDetailSheet` raises has no action and appears while that sheet is
+already `exiting`, where the trap is off. So this is a latent constraint on
+where an actionable toast may be raised from, not a defect in the app as it
+stands.
+*Direction:* if a future module needs an undo toast raised from inside a sheet,
+the toast has to join the overlay stack rather than the trap being loosened —
+`createOverlayStack` already takes any entry. Deliberately not built now: it is
+machinery for a case that does not exist yet.
 
 ### G18 · The toast has no exit — §7, §11
 `ToastHost` remounts on every new message (`key={toast.id}`) and plays
@@ -105,6 +110,98 @@ was left out of G8 on purpose rather than half-built.
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G13 · No focus trap in any overlay — closed 2026-09 (`src/lib/focusScope.js`, `src/lib/overlayPresence.js`, `src/components/Overlay.jsx`, `src/components/BottomSheet.jsx`, `src/components/ConfirmDialog.jsx`, `src/components/Sidebar.jsx`, `src/index.css`)
+Three separate holes, all in the one shared layer, which is why no individual
+sheet was touched to close them:
+
+- **Nothing focused the panel.** Only `autoFocus` on a title field did, in two
+  of eight overlays; everywhere else the focus stayed on the trigger *behind*
+  the overlay.
+- **Tab walked straight out.** In DOM order, so a `FilterSheet` (rendered inside
+  `TasksList`) tabbed into the bottom nav and on into the sidebar. Meanwhile
+  `role="dialog" aria-modal="true"` was already telling assistive technology the
+  background was unreachable — a promise nothing kept.
+- **Nothing gave the focus back.** Worse, the `inert` a leaving panel carries
+  (G4) actively drops it on `<body>`, so the next Tab restarted at the top of
+  the document.
+
+**Why the obvious fix is the wrong one.** `ConfirmDialog` is rendered *inside*
+the sheet it is opened from (`EventDetailSheet.jsx`), so its `.ov-root` is a DOM
+descendant of the sheet's panel. Making the background unreachable by putting
+`inert`/`aria-hidden` on everything but the top panel would have taken the
+dialog down with the sheet: `inert` inherits into the subtree and a descendant
+cannot opt back out. The scope therefore asks the **stack** who is on top,
+exactly as Escape has since G4 — the sheet stops trapping the moment the dialog
+registers above it, and starts again when the dialog is gone. No portal, no
+change to the `transform: none` invariant G4 and G20 depend on.
+
+**Shape.** `createEscapeStack` became `createOverlayStack` (`push/remove/isTop/
+size`, `claim` still Escape-only) and registration no longer hangs off an
+overlay having an `onEscape` — the stack is now the one answer to "which overlay
+is the active surface?". `src/lib/focusScope.js` holds the three decisions as
+pure functions (`initialFocus`, `nextFocus`, `shouldRestore`, checked by
+`tools/focusLogic.mjs`); `Overlay.jsx` holds the DOM half, keyed on a new
+`modal` option that only `<Overlay>` passes.
+
+Details worth keeping:
+- The trap claims **only the two edges**. Tabbing between two controls of a
+  sheet stays the browser's job, which knows about radio groups and a field's
+  own stops; the trap acts where the browser would leave the scope, and pulls a
+  focus that is outside the scope entirely back to the near end.
+- **Handing over is not restoring.** `EventDetailSheet` → "Bearbeiten" closes
+  the sheet and opens `EventForm` in the same breath. `shouldRestore` gives the
+  focus back only when the panel that is going away still has it or has already
+  dropped it on `<body>`; anything else means another surface has taken over
+  and keeps it.
+- A panel with nothing focusable falls back to the root itself
+  (`tabIndex={-1}`, with `.ov-root:focus { outline: none }` so no ring is drawn
+  around a full-screen box).
+- Pointer events are untouched throughout — G5's drag keeps every event it had.
+- ARIA caught up in the same pass: the sheets and the dialog are now
+  `aria-labelledby` their own visible titles, and the sidebar says what it has
+  behaved like all along (`role="dialog" aria-modal="true" aria-label="Menü"`).
+
+`SearchOverlay` deliberately gets none of it: it is non-modal (`modal` defaults
+to `false`), because it covers the calendar instead of dimming it. See G21 for
+the one thing G13 leaves open.
+
+### G14 · No scroll lock behind an open overlay — closed 2026-09 (`src/lib/scrollLock.js`, `src/components/Overlay.jsx`, `src/index.css`)
+The page behind a sheet scrolled with the wheel, with a finger on the backdrop
+and with the keyboard — the last one most reliably of all, because G13 left the
+focus on `<body>`, where Space and Page-Down scroll the document.
+
+**Which scroller was actually moving** is what made the fix small. `.ov-root` is
+`fixed inset-0` and the backdrop covers the whole viewport, so every gesture
+lands on the backdrop — and a scroll walks the *DOM ancestor* chain from there
+(backdrop → `.ov-root` → `.app-frame` → body → document), not what happens to be
+visible behind the panel. It was always the document scroller, on every screen.
+The calendar, whose views scroll inside their own containers, never scrolled
+behind a sheet at all: those containers are not ancestors of the backdrop. So
+one lock at document level covers everything and nothing needed locking per
+container.
+
+`src/lib/scrollLock.js` is a counted lock (overlays stack; a `ConfirmDialog`
+over a sheet holds it twice) whose counting half is pure, so
+`tools/overlayLogic.mjs` can check the balance — a count that never reaches zero
+would leave the page permanently unscrollable. It is acquired for as long as the
+overlay is `mounted`, **including `exiting`**: `.ov-root` drops its pointer
+events while leaving (so the trigger underneath is reachable again), and without
+the lock a gesture in those 300ms would scroll the page behind the departing
+panel. Keying on `mounted` is also what balances the count across G4's
+`exiting + open → open` edge — reopening mid-exit never leaves that window, so
+the effect never re-runs.
+
+Deliberately **not** gesture-based. A `touchmove` + `preventDefault`, or a global
+`touch-action: none`, would have taken the events G5's drag-to-dismiss, the
+sheet's own scrolling body and the calendar's swipe all live on. It is one
+attribute on `<html>` and one CSS rule instead. No `position: fixed` on the body
+either: `html` already has `height: 100%`, so `overflow: hidden` holds on iOS as
+well, the scroll offset survives untouched, and G19/G20's
+`--browser-bottom-inset` — derived from `lvh`/`dvh`, which the browser keeps
+current by itself — needs no help. `scrollbar-gutter: stable` is set
+unconditionally so hiding the desktop scrollbar cannot shift the centred
+`.app-frame` sideways.
 
 ### G20 · Overlays sat against the layout viewport too — closed 2026-09 (`src/components/Overlay.jsx`)
 G19's case on a second surface: `.ov-root` is `fixed inset-0`, so the column

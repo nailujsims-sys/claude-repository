@@ -178,6 +178,44 @@ body {
   pointer-events: none;
 }
 
+/* ── Scroll lock (G14) ───────────────────────────────────────────────
+   The page behind an open sheet used to keep scrolling — with the wheel, with
+   a finger on the backdrop and with the keyboard alike, because all three end
+   up at the document scroller (see src/lib/scrollLock.js for why it is always
+   that one). `overflow: hidden` on the scrolling element stops exactly that
+   and nothing else: the sheet's own body, the sidebar's nav and the calendar's
+   view containers are separate scroll containers and keep working, and no
+   `touchmove` handler or `touch-action` is involved, so G5's drag-to-dismiss
+   and the calendar gestures keep every event they had.
+
+   `html` already has `height: 100%`, which is what makes the rule hold on iOS
+   as well — no `position: fixed` on the body, so the scroll offset survives
+   the lock and the page is exactly where it was when the sheet closes. Both
+   elements are named because which of the two carries the viewport's scrolling
+   depends on the browser; locking the pair is decided either way, and neither
+   affects the `position: fixed` chrome (bottom nav, toasts, the overlay root).
+
+   `scrollbar-gutter` is set unconditionally, not inside the locked rule: it
+   reserves the classic desktop scrollbar's width at all times, so hiding the
+   scrollbar cannot shift the centred `.app-frame` sideways when a sheet opens.
+   Mobile and trackpad overlay scrollbars take no width and are unaffected. */
+html {
+  scrollbar-gutter: stable;
+}
+html[data-ov-scroll-locked],
+html[data-ov-scroll-locked] body {
+  overflow: hidden;
+}
+
+/* The overlay root is the focus scope's boundary and its last-resort focus
+   target (G13, `tabIndex={-1}` in Overlay.jsx). It is only ever focused by
+   script, for a panel with nothing focusable inside it, and a ring around a
+   full-screen box would be meaningless — the focus states above stay with the
+   controls. */
+.ov-root:focus {
+  outline: none;
+}
+
 .ov-panel-sheet {
   transform: translateY(100%);
   transition: transform var(--ov-dur, 300ms) var(--ov-ease);

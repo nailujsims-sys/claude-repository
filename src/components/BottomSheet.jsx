@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import { X } from 'lucide-react'
 import IconButton from './IconButton'
 import Overlay, { useOverlayPanel } from './Overlay'
@@ -43,6 +44,11 @@ export default function BottomSheet({
 // Separate component so it can read the overlay phase from the context —
 // useOverlayPanel only works below <Overlay>.
 function Panel({ full, title, headerRight, onClose, children, open }) {
+  // The sheet already draws its title; naming the dialog after it means a
+  // screen reader announces the same words the eye reads, instead of "dialog".
+  // Only wired up when there is a title — an unlabelled sheet is better than
+  // one pointing at an element that was never rendered.
+  const titleId = useId()
   const panel = useOverlayPanel(
     'ov-panel-sheet',
     full
@@ -52,7 +58,13 @@ function Panel({ full, title, headerRight, onClose, children, open }) {
   const { panelRef, handleProps } = useSheetDrag({ open, onClose, enabled: !full })
 
   return (
-    <div {...panel} ref={panelRef} role="dialog" aria-modal="true">
+    <div
+      {...panel}
+      ref={panelRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={title ? titleId : undefined}
+    >
       {full ? (
         <div className="flex items-center justify-between px-5 h-14 shrink-0 border-b border-subtle">
           <IconButton
@@ -62,7 +74,9 @@ function Panel({ full, title, headerRight, onClose, children, open }) {
           >
             <X size={24} />
           </IconButton>
-          <h2 className="text-[17px] font-semibold text-text-primary">{title}</h2>
+          <h2 id={titleId} className="text-[17px] font-semibold text-text-primary">
+            {title}
+          </h2>
           <div className="min-w-[24px] text-right">{headerRight}</div>
         </div>
       ) : (
@@ -75,7 +89,10 @@ function Panel({ full, title, headerRight, onClose, children, open }) {
             <div className="ov-sheet-grabber h-1 w-9 rounded-full bg-white/15" />
           </div>
           {title && (
-            <h2 className="px-5 pb-2 text-[17px] font-semibold text-text-primary">
+            <h2
+              id={titleId}
+              className="px-5 pb-2 text-[17px] font-semibold text-text-primary"
+            >
               {title}
             </h2>
           )}
