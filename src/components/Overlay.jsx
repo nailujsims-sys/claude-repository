@@ -16,9 +16,11 @@ import {
   FOCUSABLE_SELECTOR,
   initialFocus,
   nextFocus,
+  scopeElements,
   shouldRestore,
 } from '../lib/focusScope'
 import { scrollLock } from '../lib/scrollLock'
+import { toastScope } from '../lib/toastScope'
 
 // How long after the nominal duration we stop waiting for `transitionend`.
 // The event is the primary signal; this only covers the cases where it never
@@ -36,6 +38,22 @@ function focusableWithin(root) {
   return Array.from(root.querySelectorAll(FOCUSABLE_SELECTOR)).filter(
     (el) => !el.hasAttribute('hidden') && !el.closest('[inert]')
   )
+}
+
+// What Tab may reach while this overlay is the active surface: the panel's own
+// controls plus the actionable toast floating above it (G21). Both sides go
+// through the same collector, so the `[inert]` filter covers the toast's
+// subtree too — a toast inside an inert subtree is no more a Tab stop than a
+// leaving panel is, and G16's catch window keeps working untouched.
+//
+// The ordering decision, and the seam it produces, are in
+// src/lib/focusScope.js; this only reads the DOM.
+function scopeWithin(root) {
+  const toast = toastScope.current()
+  return scopeElements({
+    overlayElements: focusableWithin(root),
+    toastElements: toast?.isConnected ? focusableWithin(toast) : [],
+  })
 }
 
 /**
@@ -143,6 +161,9 @@ export function usePresence(
     // Whatever had the focus when the overlay opened — the button that opened
     // it, in every case the app has today.
     const returnTo = doc.activeElement
+    // Panel-only on purpose, not the G21 scope: "where does the focus land
+    // when this opens?" is a question about the panel. A toast that happens to
+    // be on screen must never be what an opening sheet focuses.
     const target = initialFocus({
       elements: focusableWithin(root),
       // A sheet may have focused itself already: React applies `autoFocus`
@@ -204,10 +225,12 @@ export function usePresence(
       const root = rootRef?.current
       if (!root) return
       const doc = root.ownerDocument
+      const { elements, seam } = scopeWithin(root)
       const target = nextFocus({
-        elements: focusableWithin(root),
+        elements,
         current: doc.activeElement,
         backwards: e.shiftKey,
+        seam,
       })
       if (!target) return
       e.preventDefault()
@@ -216,6 +239,31 @@ export function usePresence(
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [modal, listens, rootRef])
+
+  // The toast that was part of the scope can leave on its own timer, and if it
+  // held the focus the browser drops that focus on <body> — inside an open
+  // modal, the exact state G13 exists to prevent. `nextFocus` would repair it
+  // on the next Tab, but a focus standing in the void until the user presses a
+  // key is not a repair, so the active surface takes it back immediately.
+  //
+  // Deliberately not "did the toast have the focus?": if the focus is on
+  // <body> while a modal is open it belongs back inside the scope whatever put
+  // it there, which is the rule G13 already applies to a stray Tab. Bound to
+  // `mounted` like the focus scope above, and guarded by `isTop` so a sheet
+  // under a ConfirmDialog stays out of it.
+  useEffect(() => {
+    if (!modal || !mounted) return
+    return toastScope.subscribe(() => {
+      const root = rootRef?.current
+      if (!root || !overlayStack.isTop(entryRef.current)) return
+      const doc = root.ownerDocument
+      const active = doc.activeElement
+      if (active && active !== doc.body) return
+      const { elements, seam } = scopeWithin(root)
+      const target = nextFocus({ elements, current: null, seam })
+      ;(target || root).focus?.({ preventScroll: true })
+    })
+  }, [modal, mounted, rootRef])
 
   const handleTransitionEnd = (e) => {
     // Only the panel's own movement ends the exit — never a transition

@@ -59,16 +59,58 @@ export function initialFocus({ elements, focusAlreadyInside = false }) {
  *   • at the last element going forward → back to the first
  *   • at the first element going backward → around to the last
  *   • focus outside the scope entirely → pull it back to the near end
+ *   • across the seam of a scope that is not contiguous in the DOM (G21)
+ *
+ * `seam`, default -1, is the index at which a second, detached part of the
+ * scope begins — today the actionable toast, see `scopeElements`. Without one,
+ * every branch below behaves exactly as it did for G13.
  *
  * That last case is what catches a focus that escaped before the trap existed
  * — after `inert` dropped it on <body>, say.
  */
-export function nextFocus({ elements, current, backwards = false }) {
+export function nextFocus({ elements, current, backwards = false, seam = -1 }) {
   if (!elements || elements.length === 0) return null
   const i = current == null ? -1 : elements.indexOf(current)
   if (i === -1) return backwards ? elements[elements.length - 1] : elements[0]
-  if (backwards) return i === 0 ? elements[elements.length - 1] : null
-  return i === elements.length - 1 ? elements[0] : null
+  if (backwards) {
+    if (i === 0) return elements[elements.length - 1]
+    return i === seam ? elements[i - 1] : null
+  }
+  if (i === elements.length - 1) return elements[0]
+  return i === seam - 1 ? elements[i + 1] : null
+}
+
+/**
+ * The elements Tab may reach while an overlay is the active surface (G21).
+ *
+ * An actionable toast renders outside every `.ov-root` but floats above the
+ * panel, so it belongs to the scope without being part of the panel. It goes
+ * *last*: the panel is what the user opened and is working in, the toast is a
+ * transient offer beside it, and appending leaves the order of the panel's own
+ * controls exactly what it was before G21.
+ *
+ * With no toast — the ordinary case, and every case there was before G21 — the
+ * panel's own list comes back untouched and `seam` is -1, which is what makes
+ * every `nextFocus` decision above identical to G13's.
+ *
+ * `seam` is the index where the toast's elements begin, and it exists because
+ * this list is the one thing in the app that is *not* contiguous in the DOM.
+ * G13 deliberately leaves the middle of a scope to the browser, which knows
+ * about radio groups and a field's own internal stops — but the browser's
+ * natural order does not lead from the panel's last control to a toast rendered
+ * in a different corner of the tree. So the two seam crossings are claimed, and
+ * nothing else is: inside the panel, and inside the toast, the browser still
+ * has the middle.
+ *
+ * A toast without an action never reaches here — `ToastHost` only registers a
+ * card that has one, and a plain toast has no focusable element to contribute
+ * either way.
+ */
+export function scopeElements({ overlayElements, toastElements }) {
+  const panel = overlayElements || []
+  const toast = toastElements || []
+  if (toast.length === 0) return { elements: panel, seam: -1 }
+  return { elements: panel.concat(toast), seam: panel.length }
 }
 
 /**

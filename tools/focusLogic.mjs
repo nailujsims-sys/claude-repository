@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url'
 
 const TEST = `
 import {
-  FOCUSABLE_SELECTOR, initialFocus, nextFocus, shouldRestore,
+  FOCUSABLE_SELECTOR, initialFocus, nextFocus, scopeElements, shouldRestore,
 } from './src/lib/focusScope.js'
 
 let pass = 0, fail = 0
@@ -76,6 +76,79 @@ ok('a trigger that has left the document is never focused',
    shouldRestore({ targetConnected: false, activeInsideRoot: true, activeIsBody: true }) === false)
 ok('no trigger recorded at all is not restored either',
    shouldRestore({ targetConnected: false, activeInsideRoot: false, activeIsBody: true }) === false)
+
+// ── the scope with an actionable toast (G21) ────────────────────────────────
+// The toast renders outside every .ov-root but floats above the panel, so it
+// joins the scope as a second, detached part. \`seam\` is where it begins.
+const TOAST = ['undo']
+
+const withToast = scopeElements({ overlayElements: SHEET, toastElements: TOAST })
+// Pinned against literals, not against the function's own output: a rotated
+// ring walks identically, so only the ends and the seam can tell "toast last"
+// from "toast first" apart.
+ok('an actionable toast joins the scope at the end',
+   withToast.elements.join() === 'close,title,save,undo')
+ok('the panel still owns the front of the scope',
+   withToast.elements[0] === 'close')
+ok('the toast owns the back of it',
+   withToast.elements[withToast.elements.length - 1] === 'undo')
+ok('the seam sits where the panel ends', withToast.seam === SHEET.length)
+
+// The regression that matters most: nothing about an overlay without a toast
+// may differ from G13. Same list, and a seam that no branch can ever match.
+const noToast = scopeElements({ overlayElements: SHEET, toastElements: [] })
+ok('no toast leaves the panel list exactly as it was',
+   noToast.elements === SHEET && noToast.seam === -1)
+ok('a toast that contributes nothing focusable is not in the scope',
+   scopeElements({ overlayElements: SHEET, toastElements: undefined }).elements === SHEET)
+ok('the scope survives being asked with nothing at all',
+   scopeElements({}).elements.length === 0 && scopeElements({}).seam === -1)
+
+// Crossing the seam is claimed, because the browser's natural order does not
+// lead from the panel's last control to a toast rendered elsewhere in the tree.
+const S = withToast.elements, seam = withToast.seam
+ok('tab off the last panel control crosses to the toast',
+   nextFocus({ elements: S, current: 'save', seam }) === 'undo')
+ok('tab off the toast wraps to the first panel control',
+   nextFocus({ elements: S, current: 'undo', seam }) === 'close')
+ok('shift+tab off the first panel control wraps around to the toast',
+   nextFocus({ elements: S, current: 'close', backwards: true, seam }) === 'undo')
+ok('shift+tab off the toast crosses back to the last panel control',
+   nextFocus({ elements: S, current: 'undo', backwards: true, seam }) === 'save')
+
+// Everything that is not a seam or an edge still belongs to the browser — the
+// G13 rule the seam was invented to preserve.
+ok('tabbing inside the panel is still left to the browser with a toast present',
+   nextFocus({ elements: S, current: 'close', seam }) === null &&
+   nextFocus({ elements: S, current: 'title', seam }) === null)
+ok('shift+tab inside the panel is still left to the browser with a toast present',
+   nextFocus({ elements: S, current: 'save', backwards: true, seam }) === null)
+
+// A one-control panel plus a toast is exactly two stops, and they point at
+// each other in both directions.
+const tiny = scopeElements({ overlayElements: ['only'], toastElements: TOAST })
+ok('a one-control panel plus a toast is exactly two stops',
+   tiny.elements.length === 2 &&
+   nextFocus({ elements: tiny.elements, current: 'only', seam: tiny.seam }) === 'undo' &&
+   nextFocus({ elements: tiny.elements, current: 'undo', seam: tiny.seam }) === 'only' &&
+   nextFocus({ elements: tiny.elements, current: 'undo', backwards: true, seam: tiny.seam }) === 'only' &&
+   nextFocus({ elements: tiny.elements, current: 'only', backwards: true, seam: tiny.seam }) === 'undo')
+
+// The toast can run out while it holds the focus. The scope it leaves behind
+// is the panel's own again, and a focus that is no longer in the list comes
+// back to the near end — the same rule G13 already had for a stray Tab.
+ok('a focus left over from a vanished toast returns to the near end',
+   nextFocus({ elements: SHEET, current: 'undo' }) === 'close' &&
+   nextFocus({ elements: SHEET, current: 'undo', backwards: true }) === 'save')
+ok('the same holds once the focus has fallen to nothing',
+   nextFocus({ elements: SHEET, current: null }) === 'close')
+
+// Entering the scope from outside is the one walk a rotation *does* change:
+// it must land on the panel the user opened, never on the transient toast.
+ok('a focus pulled in from outside lands in the panel, not on the toast',
+   nextFocus({ elements: S, current: 'bottom-nav', seam }) === 'close')
+ok('...and backwards it still lands on the toast, the near end that way round',
+   nextFocus({ elements: S, current: 'bottom-nav', backwards: true, seam }) === 'undo')
 
 // ── the selector ────────────────────────────────────────────────────────────
 // tabindex="-1" is script-focusable but never a Tab stop, and the overlay root

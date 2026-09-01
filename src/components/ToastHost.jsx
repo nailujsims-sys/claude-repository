@@ -1,4 +1,6 @@
+import { useEffect, useRef } from 'react'
 import { useToast } from '../context/ToastContext'
+import { toastScope } from '../lib/toastScope'
 
 // Renders the active toast near the top of the frame.
 //
@@ -13,6 +15,21 @@ import { useToast } from '../context/ToastContext'
 export default function ToastHost() {
   const { toast, dismissToast } = useToast()
   const actionable = !!(toast && toast.actionLabel && toast.onAction)
+
+  // An actionable toast joins the focus scope of whichever overlay is the
+  // active surface (G21) — it floats above the panel, so being reachable by
+  // pointer but not by Tab is the one thing it must not be. A plain toast
+  // stays out: it is a message, not a control.
+  //
+  // Registered from an effect rather than through the ref itself, because the
+  // cleanup then runs *after* the card has left the DOM. That ordering is what
+  // lets the overlay see the focus has fallen to <body> and take it back; a
+  // ref detached before the removal would still report the old focus.
+  const cardRef = useRef(null)
+  useEffect(() => {
+    if (!actionable) return
+    return toastScope.register(cardRef.current)
+  }, [actionable, toast?.id])
 
   // Retire the toast first, then run the action: both land in the same React
   // batch, so a follow-up toast raised by the action wins over the dismiss.
@@ -31,6 +48,7 @@ export default function ToastHost() {
         {toast && (
           <div
             key={toast.id}
+            ref={cardRef}
             className={`animate-toast-in flex max-w-full items-center rounded-btn bg-bg-elevated border border-subtle text-[14px] font-medium text-text-primary shadow-lg shadow-black/40 ${
               actionable ? 'pointer-events-auto py-0.5 pl-4 pr-1' : 'px-4 py-2.5'
             }`}
