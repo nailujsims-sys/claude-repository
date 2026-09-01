@@ -146,8 +146,29 @@ export default function Overlay({
           onClick={onClose}
           aria-hidden
         />
+        {/* The column every panel is positioned in ends at the *visible*
+            bottom, not at the layout one (G20). `position: fixed` — and with
+            it `.ov-root` above — resolves against the layout viewport, which
+            on iOS keeps reaching underneath a browser's own bottom bar; a
+            panel at `bottom: 0` therefore ends up behind that bar. This is
+            G19's case on a second surface, so it reuses G19's number:
+            `--browser-bottom-inset` is `100lvh - 100dvh` where a bar overlays
+            and 0px everywhere else, which is why iPad Safari, iPhone, Android
+            and desktop are unchanged.
+
+            One offset here covers every panel because they all position
+            themselves inside this column — the sheets (`bottom-0` and the
+            full-screen `inset-0`), the sidebar (`inset-y-0`) and the confirm
+            dialog's centring box. Their own heights, overflow and scrolling
+            are untouched, so G5's drag stays exactly as it was: the panel is
+            the same size, only higher up, and its dismiss threshold is a share
+            of that unchanged height.
+
+            The backdrop deliberately keeps `inset-0`: it still covers the
+            whole layout viewport, so while a bar retracts the strip below a
+            panel shows the dimmed app rather than a bright gap. */}
         <div
-          className={`absolute inset-0 flex ${
+          className={`absolute inset-x-0 top-0 bottom-[var(--browser-bottom-inset)] flex ${
             align === 'left' ? 'justify-start' : 'justify-center'
           } pointer-events-none`}
         >
