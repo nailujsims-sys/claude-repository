@@ -166,10 +166,15 @@ export default function TaskDetail() {
         </div>
       </section>
 
-      {/* Bottom actions */}
+      {/* Bottom actions. Fixed like BottomNav and stacked directly on top of
+          it, so it carries the same `--browser-bottom-inset` and the two keep
+          their spacing whether or not a browser bar overlaps the page. */}
       <div
         className="fixed inset-x-0 z-30 flex justify-center"
-        style={{ bottom: 'calc(72px + env(safe-area-inset-bottom))' }}
+        style={{
+          bottom:
+            'calc(72px + env(safe-area-inset-bottom) + var(--browser-bottom-inset))',
+        }}
       >
         <div className="w-full max-w-app space-y-3 px-5 pb-3 pt-6 bg-gradient-to-t from-bg-base via-bg-base to-transparent">
           <button

@@ -5,11 +5,18 @@ import { useUI } from '../context/UIContext'
 
 // Persistent bottom navigation. Driven entirely by the `bottomNav` config —
 // the center `plus` slot opens the action sheet, every other slot is a route.
+//
+// It sits on `--browser-bottom-inset` rather than flat on `bottom: 0`: a
+// browser that lays its own bar over the bottom of the page (Chrome on iPad,
+// the URL bar on iPhone) leaves the *layout* viewport — what `fixed` is
+// measured against — reaching underneath it, so `bottom: 0` puts the bar out
+// of sight until the user scrolls. The variable is 0 wherever nothing
+// overlaps, so iPad Safari and desktop are unchanged. See src/index.css.
 export default function BottomNav() {
   const { openActionSheet } = useUI()
 
   return (
-    <nav className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center">
+    <nav className="pointer-events-none fixed inset-x-0 bottom-[var(--browser-bottom-inset)] z-40 flex justify-center">
       <div className="pointer-events-auto w-full max-w-app">
         <div
           className="flex items-stretch border-t border-subtle"
