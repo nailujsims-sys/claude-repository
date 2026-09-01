@@ -58,29 +58,43 @@ export function acceptsEscape(phase) {
   return phase === ENTERING || phase === OPEN
 }
 
-// ── Escape stack ────────────────────────────────────────────────────────────
+// ── Overlay stack ───────────────────────────────────────────────────────────
 //
-// Overlays nest — a ConfirmDialog on top of an EventDetailSheet — and until now
-// each mounted overlay listened for Escape on its own, so a single keypress
-// tore down the whole stack at once. Registration follows mount order, so the
-// last overlay to register is the topmost one and only it may act.
+// Overlays nest — a ConfirmDialog on top of an EventDetailSheet — and only the
+// topmost one may act on a global key. Registration follows mount order, so the
+// last overlay to register is the topmost one.
 //
-// The event is marked as claimed as well as checked against the top of the
-// stack. Checking the top alone would leave the outcome depending on the order
-// the window listeners happen to fire in and on when React flushes the state
-// update that pops the entry; claiming the event settles it either way.
-export function createEscapeStack() {
+// The stack started out as the Escape stack (G4) and is now the one place that
+// answers "which overlay is currently the active surface?" — for Escape (G4)
+// and for the focus trap (G13) alike. Registration therefore no longer depends
+// on an overlay having an `onEscape`: every active overlay is in the stack, and
+// the individual features decide for themselves whether they apply. (The scroll
+// lock, G14, does not ask — it counts holders of its own, see
+// src/lib/scrollLock.js, because it has to keep holding through the exit, where
+// an overlay is no longer the active surface.)
+//
+// `claim` stays Escape-specific. The event is marked as claimed as well as
+// checked against the top of the stack: checking the top alone would leave the
+// outcome depending on the order the window listeners happen to fire in and on
+// when React flushes the state update that pops the entry; claiming the event
+// settles it either way. A Tab keypress needs none of that — the trap acts
+// once, on the top entry, and never lets the event through.
+export function createOverlayStack() {
   const entries = []
   const claimed = new WeakSet()
 
+  const remove = (entry) => {
+    const i = entries.indexOf(entry)
+    if (i !== -1) entries.splice(i, 1)
+  }
+
   return {
+    // Returns its own remover so an effect can just `return stack.push(entry)`.
     push(entry) {
       entries.push(entry)
-      return () => {
-        const i = entries.indexOf(entry)
-        if (i !== -1) entries.splice(i, 1)
-      }
+      return () => remove(entry)
     },
+    remove,
     size() {
       return entries.length
     },
@@ -96,4 +110,4 @@ export function createEscapeStack() {
   }
 }
 
-export const escapeStack = createEscapeStack()
+export const overlayStack = createOverlayStack()

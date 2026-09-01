@@ -29,7 +29,10 @@ function Panel({ onClose: closeSidebar }) {
   )
 
   return (
-    <aside {...panel}>
+    // The sidebar behaves exactly like the sheets — backdrop, Escape, trapped
+    // focus, locked page — so it has to say so as well. It draws no title of
+    // its own (the head shows the account, not a heading), hence a plain label.
+    <aside {...panel} role="dialog" aria-modal="true" aria-label="Menü">
       <div className="flex items-center justify-between px-5 pt-6 pb-5">
         <div className="flex items-center gap-3">
           <div className="grid h-12 w-12 place-items-center rounded-full bg-bg-elevated text-text-secondary">

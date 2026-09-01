@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import { X } from 'lucide-react'
 import IconButton from './IconButton'
 import Overlay, { useOverlayPanel } from './Overlay'
@@ -49,6 +50,11 @@ export default function BottomSheet({
 // Separate component so it can read the overlay phase from the context —
 // useOverlayPanel only works below <Overlay>.
 function Panel({ full, title, headerRight, onClose, onReopen, children, open }) {
+  // The sheet already draws its title; naming the dialog after it means a
+  // screen reader announces the same words the eye reads, instead of "dialog".
+  // Only wired up when there is a title — an unlabelled sheet is better than
+  // one pointing at an element that was never rendered.
+  const titleId = useId()
   const panel = useOverlayPanel(
     'ov-panel-sheet',
     full
@@ -65,15 +71,17 @@ function Panel({ full, title, headerRight, onClose, onReopen, children, open }) 
   return (
     <div
       {...panel}
-      // While the sheet is catchable (G16) it must not be `inert`: an inert
-      // subtree ignores pointer input even where a descendant sets
-      // `pointer-events: auto`, so the handle would stay unreachable. The window
-      // lasts only as long as the user's own dismissal is still travelling, and
-      // only the handle is hit-testable in it — see index.css.
+      // While the sheet is catchable (G16) its *root* must not be `inert`: an
+      // inert subtree ignores pointer input even where a descendant sets
+      // `pointer-events: auto` (measured), so the handle would stay
+      // unreachable. The attribute is not dropped, it moves — the body below
+      // carries it for exactly that window, so G13's rule that a leaving panel
+      // is never a Tab stop still holds. See the body for why that is enough.
       inert={catchable ? undefined : panel.inert}
       ref={panelRef}
       role="dialog"
       aria-modal="true"
+      aria-labelledby={title ? titleId : undefined}
     >
       {full ? (
         <div className="flex items-center justify-between px-5 h-14 shrink-0 border-b border-subtle">
@@ -84,7 +92,9 @@ function Panel({ full, title, headerRight, onClose, onReopen, children, open }) 
           >
             <X size={24} />
           </IconButton>
-          <h2 className="text-[17px] font-semibold text-text-primary">{title}</h2>
+          <h2 id={titleId} className="text-[17px] font-semibold text-text-primary">
+            {title}
+          </h2>
           <div className="min-w-[24px] text-right">{headerRight}</div>
         </div>
       ) : (
@@ -97,13 +107,30 @@ function Panel({ full, title, headerRight, onClose, onReopen, children, open }) 
             <div className="ov-sheet-grabber h-1 w-9 rounded-full bg-white/15" />
           </div>
           {title && (
-            <h2 className="px-5 pb-2 text-[17px] font-semibold text-text-primary">
+            <h2
+              id={titleId}
+              className="px-5 pb-2 text-[17px] font-semibold text-text-primary"
+            >
               {title}
             </h2>
           )}
         </div>
       )}
-      <div className="flex-1 overflow-y-auto overscroll-contain">{children}</div>
+      {/* The catch window (G16) is the one moment the panel root cannot carry
+          `inert`, so the body carries it instead — and that is enough, because
+          every focusable element of a grabber sheet is in here: the handle
+          strip above holds only the grabber and the heading, neither of them a
+          Tab stop. `focusableWithin` filters on `closest('[inert]')`, so the
+          focus trap and the browser's own tab order agree on skipping it, and
+          the `aria-labelledby` heading stays outside, so the dialog keeps its
+          accessible name. Outside the catch window this is `undefined` and
+          nothing about the sheet changes. */}
+      <div
+        className="flex-1 overflow-y-auto overscroll-contain"
+        inert={catchable ? '' : undefined}
+      >
+        {children}
+      </div>
     </div>
   )
 }
