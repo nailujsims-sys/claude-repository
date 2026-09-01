@@ -21,6 +21,7 @@ import { CSS } from '@dnd-kit/utilities'
 
 import { useUI } from '../context/UIContext'
 import { useTasks } from '../context/TasksContext'
+import { useToast } from '../context/ToastContext'
 import { buildSections, CATEGORIES } from '../lib/taskSelectors'
 import { addDays, endOfMonth, isOverdue, startOfDay, startOfISOWeek, toISODate } from '../lib/date'
 import IconButton from '../components/IconButton'
@@ -59,6 +60,7 @@ export default function TasksList() {
   const { tasks, loading, toggleFavorite, completeTask, uncompleteTask, reorderTasks } =
     useTasks()
   const navigate = useNavigate()
+  const { showToast } = useToast()
 
   const [category, setCategory] = useState('Alle')
   const [search, setSearch] = useState('')
@@ -185,10 +187,29 @@ export default function TasksList() {
     }))
   }, [sections, dndContainers, taskById])
 
+  // Completing commits on press (G7) — and what carries the way back depends on
+  // what the list shows afterwards. With "Erledigte Aufgaben anzeigen" on, the
+  // row stays in its section card, struck through, and its own circle
+  // un-completes it: a toast would only repeat an affordance already on screen
+  // (§18 "unobtrusive"). With the filter off — the default — the row is gone,
+  // so the toast is the only way back and carries `uncompleteTask`, the inverse
+  // the context already had. Same shape as G8's delete (§19).
+  const handleComplete = (task) => {
+    completeTask(task).catch(() => {})
+    if (filters.showCompleted) return
+    showToast('Aufgabe erledigt', {
+      actionLabel: 'Rückgängig',
+      onAction: () => {
+        uncompleteTask(task).catch(() => {})
+        showToast('Aufgabe wieder offen')
+      },
+    })
+  }
+
   const rowHandlers = {
     onOpen: (t) => navigate(`/aufgaben/${t.id}`),
     onToggleFavorite: toggleFavorite,
-    onComplete: completeTask,
+    onComplete: handleComplete,
     onUncomplete: uncompleteTask,
   }
 

@@ -193,6 +193,98 @@ async function run() {
       errors.push('[Undo] the undo toast was not retired after use')
   }
 
+  // 2c) Complete + undo (G7). Completion commits on the tap — the 150ms wait
+  //     below is deliberately shorter than the 300ms timer this replaces, so a
+  //     re-introduced delay fails here. Then both halves of the toast rule: the
+  //     row is gone → toast with the way back; the filter keeps the row on
+  //     screen → its own circle is the way back and no toast is raised.
+  {
+    const now = new Date().toISOString()
+    const task = {
+      id: 'seed-done', user_id: 'local-julian', title: 'Erledigbare Aufgabe',
+      category: 'Privat', subcategory: null, details: null,
+      due_date: null, due_time: null, due_type: 'day',
+      is_favorite: false, is_completed: false, is_deleted: false,
+      completed_at: null, deleted_at: null, sort_order: 0,
+      created_at: now, updated_at: now,
+    }
+    const window = makeDom('#/aufgaben', {
+      'mw.tasks.local-julian': JSON.stringify([task]),
+    })
+    mount(window, code, 'Complete')
+    await wait(250)
+
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Als erledigt markieren'))
+      errors.push('[Complete] the completion circle was not found')
+    await wait(150)
+    let text = txt(window)
+    console.log(`\n=== Complete (nach Tippen auf den Kreis) ===\n  ${text.slice(0, 170)}`)
+    if (text.includes('Erledigbare Aufgabe'))
+      errors.push('[Complete] the task is still listed — completion did not commit on press')
+    if (!text.includes('Aufgabe erledigt'))
+      errors.push('[Complete] toast "Aufgabe erledigt" not shown')
+    if (!text.includes('Rückgängig'))
+      errors.push('[Complete] toast action "Rückgängig" not shown')
+
+    if (!click(window, (el) => el.textContent.trim() === 'Rückgängig'))
+      errors.push('[Complete] "Rückgängig" not clickable')
+    await wait(150)
+    window.__restoreConsole?.()
+    text = txt(window)
+    console.log(`=== Complete (nach Rückgängig) ===\n  ${text.slice(0, 170)}`)
+    if (!text.includes('Erledigbare Aufgabe'))
+      errors.push('[Complete] the task did not come back')
+    if (!text.includes('Aufgabe wieder offen'))
+      errors.push('[Complete] follow-up toast "Aufgabe wieder offen" not shown')
+    if (text.includes('Rückgängig'))
+      errors.push('[Complete] the undo toast was not retired after use')
+  }
+
+  // 2d) The other half of the same rule (G7): with "Erledigte Aufgaben
+  //     anzeigen" on, the completed row stays in its card and its own circle
+  //     un-completes it — so no toast is raised. Its own window, so no toast
+  //     from 2c can still be on screen when that is asserted.
+  {
+    const now = new Date().toISOString()
+    const task = {
+      id: 'seed-visible', user_id: 'local-julian', title: 'Sichtbare Aufgabe',
+      category: 'Privat', subcategory: null, details: null,
+      due_date: null, due_time: null, due_type: 'day',
+      is_favorite: false, is_completed: false, is_deleted: false,
+      completed_at: null, deleted_at: null, sort_order: 0,
+      created_at: now, updated_at: now,
+    }
+    const window = makeDom('#/aufgaben', {
+      'mw.tasks.local-julian': JSON.stringify([task]),
+    })
+    mount(window, code, 'CompleteVisible')
+    await wait(250)
+
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Filter'))
+      errors.push('[CompleteVisible] Filter button not found')
+    await wait(150)
+    if (!click(window, (el) => el.textContent.trim() === 'Erledigte Aufgaben anzeigen'))
+      errors.push('[CompleteVisible] filter row "Erledigte Aufgaben anzeigen" not found')
+    // The draft has to be re-rendered before "Anwenden" reads it.
+    await wait(80)
+    if (!click(window, (el) => el.textContent.trim() === 'Anwenden'))
+      errors.push('[CompleteVisible] "Anwenden" not found')
+    await wait(250)
+
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Als erledigt markieren'))
+      errors.push('[CompleteVisible] the completion circle was not found')
+    await wait(150)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== Complete (Filter: Erledigte sichtbar) ===\n  ${text.slice(0, 170)}`)
+    if (!text.includes('Sichtbare Aufgabe'))
+      errors.push('[CompleteVisible] the completed row is not shown while the filter is on')
+    if (!window.document.querySelector('[aria-label="Als offen markieren"]'))
+      errors.push('[CompleteVisible] the completed row does not offer "Als offen markieren"')
+    if (text.includes('Aufgabe erledigt') || text.includes('Rückgängig'))
+      errors.push('[CompleteVisible] a toast was raised although the completed row stays on screen')
+  }
+
   // 3) Open the Neue Aufgabe form via the Plus button → mounts the calendar.
   {
     const window = makeDom('#/aufgaben')
