@@ -1,7 +1,9 @@
 # Known gaps — current app vs. design system
 
-Status: G1–G5, G7, G8, G12–G14, G16, G17, G19–G21 implemented (2026-08/09);
-G6, G9–G11, G15 and G18 open (G18 newly filed with G8).
+Status: **the mandatory G phase is finished** (2026-08/09). G1–G5, G7, G8,
+G10–G21 are done or deliberately closed; nothing on this list blocks new
+product work. What remains are two polish-phase candidates, G6 and G9, which
+§26 wants judged after real use rather than built now.
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -15,63 +17,33 @@ issues again and do not start an unrequested refactor.
 
 ---
 
-## Medium impact (single interaction)
+## Polish-phase candidates (§26)
+
+Not open gaps and not work items: both are known, both were measured, and both
+are deliberately left until the app has been used in real life. Neither is
+allowed to justify a refactor on the way past.
 
 ### G6 · Swipe navigation is discrete, not continuous — §10, §12
 `useSwipe.js` reads only the net delta on `touchend` (threshold 48px, ratio 1.4)
-and then plays a fixed 220ms `cal-enter-*` animation. The design system asks for
-continuous feedback during the gesture and for release velocity to influence the
-result; §12 explicitly warns against relying solely on a final "swipe detected"
-event. The user gets no feedback while dragging and no momentum.
-*Direction:* deferred — a continuous pager is a real rework of the calendar
-views. Candidate for the polish phase (§26), not for incidental changes.
-
----
-
-## Low impact
+and `Kalender.jsx` then plays a fixed 220ms `cal-enter-*` off a remount key. §12
+asks for continuous feedback during the gesture and for release velocity to
+influence the result; the user gets neither.
+*Why not now:* a continuous pager means rendering three periods at once in all
+three calendar views, 1:1 pointer tracking, rubber-banding at the edges (§13),
+velocity and interruptibility — and it has to coexist with the event
+move/resize drag (`data-ev-id`, `useTimedGesture`) and with vertical scrolling.
+That is a gesture rework of the calendar, exactly the kind of thing §26 wants
+based on actual usage. The navigation works today; it is the *feel* that is
+short of the standard.
 
 ### G9 · `StarButton` pop is a fixed 220ms timer — §7
-`setTimeout(() => setPop(false), 220)`; rapid re-taps restart rather than
-continue from the current visual state. Minor.
-
-### G10 · Typography values are literals, not tokens — §15
-Sizes are written inline as `text-[15px]`, `text-[17px]`, `text-[12px]`,
-`text-[11px]` across screens and components. The scale is *de facto* consistent
-but is not defined as a system, so each new module re-invents it.
-*Direction:* define the scale in `tailwind.config.js` (`fontSize` extension) and
-adopt it in new code first; migrate existing call sites only when already editing
-them.
-
-### G11 · `BottomNav` blur is an ad-hoc material — §25
-`BottomNav.jsx` sets `backdropFilter: blur(20px)` with an inline rgba background
-— the one translucency in the app, while §25 defers a glass/material system.
-Not a bug; documented so it is not copied into new modules until a material
-system is decided.
-
-### G15 · The task-detail menu popover has no motion — §11
-`TaskDetail.jsx` renders its own `absolute … z-20` menu with no enter or exit
-animation, so it appears and vanishes instantly. It is a small anchored popover
-rather than a modal overlay, so it deliberately stayed outside G4; if it is given
-motion later it should originate from its trigger (§11), not slide like a sheet.
-
----
-
-### G18 · The toast has no exit — §7, §11
-`ToastHost` remounts on every new message (`key={toast.id}`) and plays
-`animate-toast-in`; when the timer runs out the element is simply dropped, so the
-toast blinks away instead of leaving. Pre-existing, and untouched by G8.
-*Direction:* the machinery exists — `usePresence` is exported and already used
-outside `<Overlay>` by the calendar search (`Kalender.jsx`). The catch, measured
-while scoping G8: one `open`-driven presence machine per host would kill the
-re-announce, because a *replacing* toast would swap its text with no motion at
-all instead of remounting into `toast-in`. Keeping both needs presence **per
-toast**, not per host. That is a real piece of machinery for a small gain, so it
-was left out of G8 on purpose rather than half-built.
-Whatever builds it has one constraint from G21: an actionable toast is a Tab
-stop inside the active overlay's scope, so a toast on its way out must stop
-being one. `focusableWithin` already filters `[inert]`, and `usePresence`'s
-`panel()` already sets that attribute while exiting, so a presence-driven toast
-gets this for free — but only if it goes through `panel()`.
+`setTimeout(() => setPop(false), 220)`; a second tap inside that window does not
+restart the pop and does not continue from the current visual state.
+*Why not now:* the state change itself is already communicated (the star fills
+and turns accent), `press-fade` covers the press, and reduced motion is handled.
+Nothing is missing, only a refinement. Fix it opportunistically when
+`StarButton` is being edited anyway — an `animationend` instead of the timer —
+never as a task of its own.
 
 ## Explicitly conformant (do not "fix")
 
@@ -82,9 +54,123 @@ gets this for free — but only if it goes through `panel()`.
   pointers so a tap does not leave a stuck tint.
 - `src/config/navigation.js` — config-driven navigation; scales to new modules
   without component edits (§2).
-- Dark-first token set in `tailwind.config.js` with a single accent (§14).
+- Dark-first token set in `tailwind.config.js` with a single accent (§14), and
+  since G10 the typography scale beside it (§15).
+- `BottomNav.jsx`'s `backdropFilter: blur(20px)` over an inline rgba background
+  (was G11). It is the one translucency in the app and it predates the standard,
+  but §25 does not ask for it to be removed — it asks that a glass/material
+  system is not *introduced*. Reverting it would be a visual change nobody
+  requested, so it stays exactly as it is: a documented, contained exception.
+  Do not copy it into a new module, and do not extend it; if translucency is
+  ever wanted as a system, that is a §26 decision, not a precedent set here.
 
 ## Closed
+
+### G10 · Typography values were literals, not tokens — closed 2026-09 (`tailwind.config.js`)
+Sizes were written inline as `text-[15px]`, `text-[17px]`, `text-[12px]` and so
+on: 141 occurrences across 26 files in 16 different sizes. The scale was *de
+facto* consistent in the middle and ad hoc at the edges, and because it was not
+defined anywhere, every new module had to re-invent it — which §15 forbids
+outright ("do not independently invent typography values inside individual
+modules").
+
+**What was done, and where it stops.** The scale now exists as `fontSize` tokens
+in `tailwind.config.js`, named by the roles §15 lists rather than by size:
+`page` 28 · `section` 18 · `heading` 17 · `field` 16 · `body` 15 · `ui` 14 ·
+`label` 13 · `caption` 12 · `meta` 11. Those nine cover 132 of the 141 call
+sites. The existing literals were **not** migrated: that would be a rewrite of
+every screen for no visible change, against Rule 0 and against Rule 2. New code
+uses the tokens; an existing literal becomes a token when its line is being
+edited anyway.
+
+**Size only, on purpose.** A Tailwind `fontSize` entry can carry a line-height,
+and this one does not. `text-[15px]` sets nothing but `font-size`, so a token
+that also set `line-height` would silently change rendering the moment a literal
+was migrated — the migration has to be a drop-in or it will not happen. Weight,
+leading and tracking stay explicit utilities at the call site, where they
+already are.
+
+**Nine tokens, not sixteen.** `16px` is kept as its own step (`field`) because
+form inputs need it: below 16px iOS zooms the page on focus. The leftovers —
+9, 10, 19, 22, 24, 26, 34px — are single call sites and stay off the scale until
+someone touches them; two roles genuinely disagree today (Home's section
+headings are 16px where TaskDetail's are 18px), and the token picks 18px rather
+than inventing a third value.
+
+### G15 · The task-detail menu popover had no motion — closed 2026-09 (`src/screens/TaskDetail.jsx`, `tailwind.config.js`, `src/index.css`)
+`TaskDetail.jsx` renders its own `absolute … z-20` overflow menu. It appeared
+and vanished instantly (§11) and could not be closed with the keyboard at all —
+only by tapping outside it.
+
+**Local lifecycle, not the overlay system.** The menu is a small anchored
+popover, not a modal: it dims nothing, blocks nothing, and traps nothing. Giving
+it `usePresence` would have put it in the `overlayStack`, making it the topmost
+surface and letting it take Escape from a sheet underneath — the same trap G18
+and G21 refused for the toast. So it holds a three-state flag of its own,
+`closed | open | leaving`, and an effect that cancels its own exit timer when
+the phase changes, which is what lets a re-open mid-exit simply continue.
+
+**It grows out of its trigger** (§11): `menu-in` / `menu-out` scale 0.95↔1 with
+a fade over 120ms, anchored with `origin-top-right` on the panel, so the motion
+starts at the button it belongs to instead of arriving from nowhere. Reduced
+motion drops the scale and keeps the fade, next to the toast's exit it mirrors.
+
+**Escape hands the focus back to the trigger.** Without that the items unmount
+under the focus and it falls to `<body>` — the state G13 exists to prevent. The
+listener is bound to `open` only and claims nothing from the overlay stack: it
+does not have to, because every path that opens an overlay from this screen
+closes the menu first. A leaving menu carries `inert`, so it stops being a Tab
+stop and a click target while it is still on screen, and the tap-outside catcher
+is rendered only while the menu is open, so the exit cannot swallow the next
+tap. The tap-outside behaviour itself is unchanged.
+
+Covered by `Menu` in `tools/smoke.mjs` (entry, exit, `inert`, focus hand-back,
+tap-outside, re-open mid-exit). Mutation-tested: closing without the leaving
+phase fails 2 assertions, not cancelling the exit timer on re-open fails the
+interruptibility one.
+
+
+### G18 · The toast had no exit — closed 2026-09 (`src/context/ToastContext.jsx`, `src/components/ToastHost.jsx`, `tailwind.config.js`, `src/index.css`)
+Filed with G8. `ToastHost` played `animate-toast-in` and the element was then
+simply dropped when the timer ran out, so the toast blinked away instead of
+leaving — the one element in the app that arrived but never departed, against
+§7 and against the spatial rule that what enters from the top leaves toward the
+top (§11).
+
+**The direction this entry used to give was wrong, and why is worth keeping.**
+It proposed driving the card through `usePresence`, whose `panel()` sets
+`[inert]` while exiting. But `usePresence` pushes into the `overlayStack`
+unconditionally, and a toast in that stack is the topmost surface: it would take
+Escape (closing the toast instead of the sheet being worked in) and the trap —
+exactly the modality G21 refused to claim for it, dimming nothing and blocking
+nothing. Reusing the presence machine would have meant a new flag inside it for
+a single non-modal caller.
+
+**One slot, one flag instead.** `ToastProvider` already holds exactly one toast
+and owns its timer, so retiring became two steps: mark the payload `leaving`,
+then drop it `TOAST_EXIT_MS` later. Timer expiry and `dismissToast` share that
+path, so an expiry and a tap on the action leave identically. The replacement
+the old note worried about is untouched: a new toast still arrives with its own
+`id`, remounts and plays `toast-in` from the start, which is what keeps the live
+region re-announcing (§22) — asserted, not assumed.
+
+**G21's constraint, met without touching G21.** A leaving card carries `inert`,
+and `focusableWithin` in `Overlay.jsx` already filters that attribute, so it
+contributes nothing to the scope while it is still on screen — the same way a
+leaving panel does not. It stays *registered* in `toastScope` until it actually
+leaves the DOM, deliberately: the departure notification is what lets the active
+surface take a focus back that fell to `<body>`, and announcing it at the start
+of the exit would find the focus still on the card and repair nothing.
+
+**What is not solved.** A toast replaced mid-exit restarts at opacity 0 rather
+than continuing from what is on screen (§7's interruptibility). That is the
+pre-existing behaviour of the remount and the price of keeping the re-announce;
+fixing it needs presence per toast, which is still not worth its machinery.
+
+Covered by `ToastExit` and `ToastReplace` in `tools/smoke.mjs`. Mutation-tested
+both ways: dropping the toast without the leaving phase fails 3 assertions,
+removing `inert` from the leaving card fails 2 — the second of which is the G21
+one, so the Tab stop is proven to be closed by `inert` and not by chance.
 
 ### G21 · A toast action was outside the modal focus scope — closed 2026-09 (`src/lib/focusScope.js`, `src/lib/toastScope.js`, `src/components/Overlay.jsx`, `src/components/ToastHost.jsx`)
 Filed with G13. `ToastHost` renders at `z-[60]`, outside every `.ov-root`, so an

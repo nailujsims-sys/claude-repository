@@ -16,6 +16,11 @@ export default function ToastHost() {
   const { toast, dismissToast } = useToast()
   const actionable = !!(toast && toast.actionLabel && toast.onAction)
 
+  // The card is on its way out (G18): still on screen, no longer a control.
+  // It keeps its action rendered — dropping the button mid-exit would resize
+  // the card while it leaves — and stops being one through `inert`.
+  const leaving = !!toast?.leaving
+
   // An actionable toast joins the focus scope of whichever overlay is the
   // active surface (G21) — it floats above the panel, so being reachable by
   // pointer but not by Tab is the one thing it must not be. A plain toast
@@ -25,6 +30,12 @@ export default function ToastHost() {
   // cleanup then runs *after* the card has left the DOM. That ordering is what
   // lets the overlay see the focus has fallen to <body> and take it back; a
   // ref detached before the removal would still report the old focus.
+  //
+  // A leaving card stays registered for exactly that reason — the departure is
+  // announced when it goes, not when it starts going. It is out of the scope
+  // long before then: `focusableWithin` in Overlay.jsx filters `[inert]`, so an
+  // exiting toast contributes nothing to walk, the same way a leaving panel
+  // does not.
   const cardRef = useRef(null)
   useEffect(() => {
     if (!actionable) return
@@ -49,7 +60,13 @@ export default function ToastHost() {
           <div
             key={toast.id}
             ref={cardRef}
-            className={`animate-toast-in flex max-w-full items-center rounded-btn bg-bg-elevated border border-subtle text-[14px] font-medium text-text-primary shadow-lg shadow-black/40 ${
+            // React 18 doesn't know `inert`; an empty string renders the bare
+            // attribute, a boolean would warn. Same as the exiting overlay
+            // panel in Overlay.jsx.
+            inert={leaving ? '' : undefined}
+            className={`${
+              leaving ? 'animate-toast-out' : 'animate-toast-in'
+            } flex max-w-full items-center rounded-btn bg-bg-elevated border border-subtle text-[14px] font-medium text-text-primary shadow-lg shadow-black/40 ${
               actionable ? 'pointer-events-auto py-0.5 pl-4 pr-1' : 'px-4 py-2.5'
             }`}
           >
