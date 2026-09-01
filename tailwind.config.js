@@ -61,6 +61,12 @@ export default {
           from: { opacity: '0', transform: 'translateY(-12px)' },
           to: { opacity: '1', transform: 'translateY(0)' },
         },
+        // What enters from the top leaves toward the top (§11). Shorter and
+        // ease-in, so the toast gets out of the way faster than it arrived.
+        'toast-out': {
+          from: { opacity: '1', transform: 'translateY(0)' },
+          to: { opacity: '0', transform: 'translateY(-12px)' },
+        },
         shimmer: {
           '100%': { transform: 'translateX(100%)' },
         },
@@ -71,6 +77,11 @@ export default {
         'slide-in-left': 'slide-in-left 250ms cubic-bezier(0.16, 1, 0.3, 1)',
         'star-pop': 'star-pop 200ms ease-out',
         'toast-in': 'toast-in 200ms ease-out',
+        // 180ms is TOAST_EXIT_MS in src/context/ToastContext.jsx, which is what
+        // keeps the card in the DOM until this has run. `both` holds the last
+        // frame, so the toast stays gone instead of flashing back before it is
+        // removed.
+        'toast-out': 'toast-out 180ms ease-in both',
         shimmer: 'shimmer 1.5s infinite',
       },
     },

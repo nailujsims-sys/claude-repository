@@ -488,6 +488,12 @@ html[data-ov-scroll-locked] body {
   .cal-enter-prev {
     animation-name: reduced-fade-in;
   }
+  /* The toast's exit (G18) keeps its timing for the same reason the entry
+     does — the card is still removed when the animation ends — and loses only
+     the 12px of travel. */
+  .animate-toast-out {
+    animation-name: reduced-fade-out;
+  }
 
   /* Sheets and the sidebar (G4). Same lifecycle, same duration, same exit —
      they just fade in and out instead of travelling. The backdrop and the
@@ -556,5 +562,14 @@ html[data-ov-scroll-locked] body {
   }
   to {
     opacity: 1;
+  }
+}
+
+@keyframes reduced-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
   }
 }

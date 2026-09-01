@@ -1,7 +1,7 @@
 # Known gaps — current app vs. design system
 
-Status: G1–G5, G7, G8, G12–G14, G16, G17, G19–G21 implemented (2026-08/09);
-G6, G9–G11, G15 and G18 open (G18 newly filed with G8).
+Status: G1–G5, G7, G8, G12–G14, G16–G21 implemented (2026-08/09);
+G6, G9–G11 and G15 open.
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -56,23 +56,6 @@ motion later it should originate from its trigger (§11), not slide like a sheet
 
 ---
 
-### G18 · The toast has no exit — §7, §11
-`ToastHost` remounts on every new message (`key={toast.id}`) and plays
-`animate-toast-in`; when the timer runs out the element is simply dropped, so the
-toast blinks away instead of leaving. Pre-existing, and untouched by G8.
-*Direction:* the machinery exists — `usePresence` is exported and already used
-outside `<Overlay>` by the calendar search (`Kalender.jsx`). The catch, measured
-while scoping G8: one `open`-driven presence machine per host would kill the
-re-announce, because a *replacing* toast would swap its text with no motion at
-all instead of remounting into `toast-in`. Keeping both needs presence **per
-toast**, not per host. That is a real piece of machinery for a small gain, so it
-was left out of G8 on purpose rather than half-built.
-Whatever builds it has one constraint from G21: an actionable toast is a Tab
-stop inside the active overlay's scope, so a toast on its way out must stop
-being one. `focusableWithin` already filters `[inert]`, and `usePresence`'s
-`panel()` already sets that attribute while exiting, so a presence-driven toast
-gets this for free — but only if it goes through `panel()`.
-
 ## Explicitly conformant (do not "fix")
 
 - `src/screens/calendar/useTimedGesture.js` — long-press grab, pointer capture,
@@ -85,6 +68,48 @@ gets this for free — but only if it goes through `panel()`.
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G18 · The toast had no exit — closed 2026-09 (`src/context/ToastContext.jsx`, `src/components/ToastHost.jsx`, `tailwind.config.js`, `src/index.css`)
+Filed with G8. `ToastHost` played `animate-toast-in` and the element was then
+simply dropped when the timer ran out, so the toast blinked away instead of
+leaving — the one element in the app that arrived but never departed, against
+§7 and against the spatial rule that what enters from the top leaves toward the
+top (§11).
+
+**The direction this entry used to give was wrong, and why is worth keeping.**
+It proposed driving the card through `usePresence`, whose `panel()` sets
+`[inert]` while exiting. But `usePresence` pushes into the `overlayStack`
+unconditionally, and a toast in that stack is the topmost surface: it would take
+Escape (closing the toast instead of the sheet being worked in) and the trap —
+exactly the modality G21 refused to claim for it, dimming nothing and blocking
+nothing. Reusing the presence machine would have meant a new flag inside it for
+a single non-modal caller.
+
+**One slot, one flag instead.** `ToastProvider` already holds exactly one toast
+and owns its timer, so retiring became two steps: mark the payload `leaving`,
+then drop it `TOAST_EXIT_MS` later. Timer expiry and `dismissToast` share that
+path, so an expiry and a tap on the action leave identically. The replacement
+the old note worried about is untouched: a new toast still arrives with its own
+`id`, remounts and plays `toast-in` from the start, which is what keeps the live
+region re-announcing (§22) — asserted, not assumed.
+
+**G21's constraint, met without touching G21.** A leaving card carries `inert`,
+and `focusableWithin` in `Overlay.jsx` already filters that attribute, so it
+contributes nothing to the scope while it is still on screen — the same way a
+leaving panel does not. It stays *registered* in `toastScope` until it actually
+leaves the DOM, deliberately: the departure notification is what lets the active
+surface take a focus back that fell to `<body>`, and announcing it at the start
+of the exit would find the focus still on the card and repair nothing.
+
+**What is not solved.** A toast replaced mid-exit restarts at opacity 0 rather
+than continuing from what is on screen (§7's interruptibility). That is the
+pre-existing behaviour of the remount and the price of keeping the re-announce;
+fixing it needs presence per toast, which is still not worth its machinery.
+
+Covered by `ToastExit` and `ToastReplace` in `tools/smoke.mjs`. Mutation-tested
+both ways: dropping the toast without the leaving phase fails 3 assertions,
+removing `inert` from the leaving card fails 2 — the second of which is the G21
+one, so the Tab stop is proven to be closed by `inert` and not by chance.
 
 ### G21 · A toast action was outside the modal focus scope — closed 2026-09 (`src/lib/focusScope.js`, `src/lib/toastScope.js`, `src/components/Overlay.jsx`, `src/components/ToastHost.jsx`)
 Filed with G13. `ToastHost` renders at `z-[60]`, outside every `.ov-root`, so an
