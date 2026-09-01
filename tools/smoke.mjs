@@ -285,6 +285,132 @@ async function run() {
       errors.push('[CompleteVisible] a toast was raised although the completed row stays on screen')
   }
 
+  // 2e) Restore from the Papierkorb — the list half (G17). Once the 5s undo
+  //     toast is gone, the deleted row itself has to carry the way back. Two
+  //     tasks with known sort_orders around the deleted one, so the assertion
+  //     is not just "it came back" but "it came back where it was".
+  {
+    const now = new Date().toISOString()
+    const mk = (id, title, sort_order, over = {}) => ({
+      id, user_id: 'local-julian', title,
+      category: 'Privat', subcategory: null, details: null,
+      due_date: null, due_time: null, due_type: 'day',
+      is_favorite: false, is_completed: false, is_deleted: false,
+      completed_at: null, deleted_at: null, sort_order,
+      created_at: now, updated_at: now, ...over,
+    })
+    const seeded = [
+      mk('r-first', 'Erste Aufgabe', 0),
+      mk('r-mid', 'Papierkorb Aufgabe', 1, { is_deleted: true, deleted_at: now }),
+      mk('r-last', 'Letzte Aufgabe', 2),
+    ]
+    const window = makeDom('#/aufgaben', {
+      'mw.tasks.local-julian': JSON.stringify(seeded),
+    })
+    mount(window, code, 'Restore')
+    await wait(250)
+
+    // Hidden until the Papierkorb filter is on — the existing behaviour.
+    if (txt(window).includes('Papierkorb Aufgabe'))
+      errors.push('[Restore] the deleted task is listed although the filter is off')
+
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Filter'))
+      errors.push('[Restore] Filter button not found')
+    await wait(150)
+    if (!click(window, (el) => el.textContent.trim() === 'Gelöschte Aufgaben anzeigen'))
+      errors.push('[Restore] filter row "Gelöschte Aufgaben anzeigen" not found')
+    await wait(80)
+    if (!click(window, (el) => el.textContent.trim() === 'Anwenden'))
+      errors.push('[Restore] "Anwenden" not found')
+    await wait(250)
+
+    let text = txt(window)
+    console.log(`\n=== Restore (Papierkorb sichtbar) ===\n  ${text.slice(0, 170)}`)
+    if (!text.includes('Papierkorb Aufgabe'))
+      errors.push('[Restore] the deleted task is not shown while the filter is on')
+    // The dead star is gone from the deleted row and a real action took its slot.
+    const restoreBtn = window.document.querySelector('[aria-label="Aufgabe wiederherstellen"]')
+    if (!restoreBtn)
+      errors.push('[Restore] the deleted row offers no way back')
+    if (!restoreBtn?.className.includes('press-fade'))
+      errors.push('[Restore] the restore control has no press feedback (G2)')
+
+    restoreBtn?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(200)
+    window.__restoreConsole?.()
+    text = txt(window)
+    console.log(`=== Restore (nach Wiederherstellen) ===\n  ${text.slice(0, 200)}`)
+    if (!text.includes('Aufgabe wiederhergestellt'))
+      errors.push('[Restore] toast "Aufgabe wiederhergestellt" not shown')
+    // Plain toast: nothing was lost, so it must not carry an undo action.
+    if (text.includes('Rückgängig'))
+      errors.push('[Restore] the restore toast carries an undo action it should not')
+    if (!text.includes('Papierkorb Aufgabe'))
+      errors.push('[Restore] the task vanished instead of becoming active')
+    if (window.document.querySelector('[aria-label="Aufgabe wiederherstellen"]'))
+      errors.push('[Restore] the row still offers a restore after being restored')
+    if (!window.document.querySelector('[aria-label="Als erledigt markieren"]'))
+      errors.push('[Restore] the restored row is not a normal, completable task')
+    // sort_order 1 between 0 and 2 — it must land back between its neighbours.
+    const order = ['Erste Aufgabe', 'Papierkorb Aufgabe', 'Letzte Aufgabe'].map((t) => text.indexOf(t))
+    if (order.some((i) => i < 0) || order[0] > order[1] || order[1] > order[2])
+      errors.push(`[Restore] the row did not return to its sort_order position (${order.join()})`)
+  }
+
+  // 2f) Restore from the Papierkorb — the detail half (G17). The screen used
+  //     to offer "Löschen" for a task that was already deleted; it must offer
+  //     the way back instead, and turn back into an ordinary detail view once
+  //     the task is active again (without navigating away).
+  {
+    const now = new Date().toISOString()
+    const task = {
+      id: 'seed-trash', user_id: 'local-julian', title: 'Gelöschte Aufgabe',
+      category: 'Privat', subcategory: null, details: null,
+      due_date: null, due_time: null, due_type: 'day',
+      is_favorite: false, is_completed: false, is_deleted: true,
+      completed_at: null, deleted_at: now, sort_order: 0,
+      created_at: now, updated_at: now,
+    }
+    const window = makeDom('#/aufgaben/seed-trash', {
+      'mw.tasks.local-julian': JSON.stringify([task]),
+    })
+    mount(window, code, 'TrashDetail')
+    await wait(250)
+
+    let text = txt(window)
+    console.log(`\n=== TrashDetail (gelöschte Aufgabe) ===\n  ${text.slice(0, 200)}`)
+    if (!text.includes('Gelöschte Aufgabe'))
+      errors.push('[TrashDetail] the deleted task does not render its detail view')
+    if (text.includes('Löschen'))
+      errors.push('[TrashDetail] "Löschen" is still offered for an already deleted task')
+    if (!text.includes('Wiederherstellen'))
+      errors.push('[TrashDetail] no "Wiederherstellen" action offered')
+    // The screen has to say why it looks different (§21).
+    if (!text.includes('Gelöscht am'))
+      errors.push('[TrashDetail] the screen does not say the task is in the Papierkorb')
+    // Editing sits behind the restore: the info rows must not open the form.
+    if (text.includes('Bearbeiten'))
+      errors.push('[TrashDetail] "Bearbeiten" is offered for a task in the Papierkorb')
+
+    if (!click(window, (el) => el.textContent.trim().includes('Wiederherstellen')))
+      errors.push('[TrashDetail] "Wiederherstellen" not clickable')
+    await wait(200)
+    window.__restoreConsole?.()
+    text = txt(window)
+    console.log(`=== TrashDetail (nach Wiederherstellen) ===\n  ${text.slice(0, 200)}`)
+    if (!text.includes('Aufgabe wiederhergestellt'))
+      errors.push('[TrashDetail] toast "Aufgabe wiederhergestellt" not shown')
+    // It stays on the detail screen — the task is simply active now.
+    if (!text.includes('Gelöschte Aufgabe'))
+      errors.push('[TrashDetail] the detail view was left after restoring')
+    if (!text.includes('Löschen') || !text.includes('Bearbeiten'))
+      errors.push('[TrashDetail] the restored task does not get its normal actions back')
+    if (text.includes('Wiederherstellen'))
+      errors.push('[TrashDetail] "Wiederherstellen" is still offered after the restore')
+    if (text.includes('Gelöscht am'))
+      errors.push('[TrashDetail] the Papierkorb status line survived the restore')
+  }
+
   // 3) Open the Neue Aufgabe form via the Plus button → mounts the calendar.
   {
     const window = makeDom('#/aufgaben')

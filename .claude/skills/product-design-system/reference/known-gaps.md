@@ -1,7 +1,7 @@
 # Known gaps — current app vs. design system
 
-Status: G1–G5, G7, G8, G12 and G19 implemented (2026-08/09); G6, G9–G11 open,
-G13–G18 and G20 open (G17/G18 newly filed with G8, G20 with G19).
+Status: G1–G5, G7, G8, G12, G17 and G19 implemented (2026-08/09); G6, G9–G11
+open, G13–G16, G18 and G20 open (G18 newly filed with G8, G20 with G19).
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -93,19 +93,6 @@ what was reported.
 belongs on the panel or on its content padding needs a look at drag-to-dismiss
 (G5), which measures against the panel's own height.
 
-### G17 · The Papierkorb has no restore path once the toast is gone — §19
-A deleted task keeps living in the data (`is_deleted`, `deleted_at`) and can be
-*seen* again through the filter "Gelöschte Aufgaben anzeigen", where it renders
-muted and struck through with an inert circle (`TaskRow` `variant="deleted"`).
-Nothing can bring it back: the row's only handler is `onOpen`, and `TaskDetail`
-does not branch on `is_deleted`, so it offers "Löschen" for a task that is
-already deleted. Found while implementing G8 — which is why undo mattered enough
-to build: **it is currently the app's only way back from a delete.**
-*Direction:* a restore affordance on the deleted rows (and the matching branch in
-`TaskDetail`), reusing `TasksContext.restoreTask`, which G8 already added and
-which is exactly this operation. Deliberately not folded into G8: that would have
-been a new feature on the Aufgaben list, not the closing of the gap.
-
 ### G18 · The toast has no exit — §7, §11
 `ToastHost` remounts on every new message (`key={toast.id}`) and plays
 `animate-toast-in`; when the timer runs out the element is simply dropped, so the
@@ -130,6 +117,89 @@ was left out of G8 on purpose rather than half-built.
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G17 · The Papierkorb has no restore path once the toast is gone — closed 2026-09 (`src/components/TaskRow.jsx`, `src/screens/TasksList.jsx`, `src/screens/TaskDetail.jsx`)
+G8 built the operation and used it once. `restoreTask` — `{is_deleted: false,
+deleted_at: null}` and nothing else — was reachable only from the undo toast,
+so five seconds after a delete the way back was gone while the task itself was
+still there, visible under "Gelöschte Aufgaben anzeigen". This closes that by
+**giving the existing operation two more entry points**, not by writing a new
+one: no context change, no selector change, no data change. `TasksContext` is
+untouched.
+
+**The row carries the way back, in the slot that had nothing to do.** A deleted
+row already rendered a `StarButton`, but `TasksList` handed deleted rows only
+`onOpen` — so that star animated on tap and toggled nothing. The `deleted`
+variant now puts a `RotateCcw` button there instead, at the star's exact
+geometry (`p-1`, `size={22}` → a 30×30 box, measured identical), with the same
+`press-fade` the star and the completion circle use. So the change removes a
+dead control and adds a live one without moving a pixel of the row.
+
+**The circle was deliberately not reused.** It is the obvious symmetry — a
+completed row's own circle un-completes it (G7) — and it is wrong here: the
+circle means *completion state* on every other row, and an identically drawn
+control that instead means "get this out of the trash" breaks the rule the
+design system leads with (same look ⇒ same behaviour, §2). A different action
+gets a different glyph.
+
+**The detail view stops lying.** It used to offer "Löschen" for a task that was
+already deleted, in both the bottom bar and the popover menu. A deleted task is
+now a *state* of the same screen, not a second screen: the title takes the list
+row's own treatment (`line-through text-text-muted`), a muted 12px line under
+the subtitle says "Gelöscht am …" from `deleted_at` (§21 — the screen has to
+say why it behaves differently), the two info rows stop opening the edit form,
+and both the bar and the menu offer "Wiederherstellen" instead. The bar's
+button wears the accent outline "Bearbeiten" already uses — a restore is
+constructive, so it must not inherit the danger tint — and stands alone,
+because it is the only thing worth doing to a task in the Papierkorb. Editing
+sits behind it: a task is restored first and changed afterwards.
+
+**Restoring from the detail does not navigate.** Deleting does (`navigate('/aufgaben')`,
+because the screen's subject just left the list), but its inverse has no reason
+to: the task is active again and this is the ordinary detail view of an active
+task, so it simply re-renders with "Bearbeiten" and "Löschen" back and the
+struck-through title gone. Verified in Chromium at both sizes.
+
+**The confirmation is G8's own second step, reused verbatim.** Both entry
+points raise the plain toast `'Aufgabe wiederhergestellt'` — the exact string
+G8's undo already ends on — so the operation says the same thing wherever it is
+reached from. It deliberately carries **no** action: G8's rule is that a toast
+earns an undo slot when it is the only way back from something that left the
+view, and a restore removes nothing. An undo-of-an-undo would also loop. The
+5s actionable toast G8 built is untouched, and so is `ToastHost`.
+
+**It adds no CSS, no token, no duration and no component.** `index.css` and
+`tailwind.config.js` are not touched, which is why reduced motion needed no
+work — there is no new motion for G1's block to catch. Verified under
+`prefers-reduced-motion: reduce`: `animation-name: none` on the control, the
+restore still commits and the toast still appears (feedback kept, §22).
+
+`sort_order` needed no work either, and that is the point of restoring through
+a patch: the delete never wrote it, so the row returns to the position it left.
+`tools/restoreLogic.mjs` pins that promise without a browser — the patch clears
+exactly two fields and nothing else; a task with `sort_order` 1 lands back
+between 0 and 2 rather than at the end; the section is re-derived, so LATER,
+MORGEN and the overdue roll-forward into HEUTE are each checked; and a task
+that was completed *before* it was deleted comes back completed rather than
+active. `tools/smoke.mjs` covers the two behavioural halves — the Papierkorb row
+(hidden until the filter is on, restore control present with press feedback,
+toast without an undo action, row active again and back between its neighbours)
+and the detail (no "Löschen", no "Bearbeiten", the "Gelöscht am" line, restore
+without navigating, normal actions back). Both blocks were mutation-tested:
+reverting either half of the implementation fails 9 assertions.
+
+Measured in Chromium at 390×844 and 1280×900, 68 checks: press feedback arms on
+pointer-down and cancels on drag-off with nothing committed (§5), Tab reaches
+the control and paints the G3 ring (2px solid at 2px offset), Space activates it
+with the `data-pressed="key"` wash, the completed and active rows are unchanged
+alongside, and G8's delete→undo round trip still behaves exactly as before. One
+pre-existing 404 (a favicon probe that only mobile emulation triggers) was
+confirmed against the reverted build and is not this change's.
+
+Left open on purpose: the detail header's `StarButton` still works on a deleted
+task. Unlike the row's, it has a live handler, so removing it would be a
+behaviour change rather than the removal of a dead control — and a favourite
+flag survives the restore, so it is not misleading.
 
 ### G19 · The bottom navigation sits behind the browser's own bottom bar — closed 2026-09 (`src/index.css`, `src/components/BottomNav.jsx`, `src/screens/TaskDetail.jsx`)
 Reported from an iPad: in Chrome the navigation was invisible until the page was

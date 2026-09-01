@@ -11,6 +11,7 @@ import {
   Pencil,
   Trash2,
   Pen,
+  RotateCcw,
 } from 'lucide-react'
 import { useTasks } from '../context/TasksContext'
 import { useUI } from '../context/UIContext'
@@ -45,6 +46,15 @@ export default function TaskDetail() {
 
   const subtitle = [task.category, task.subcategory].filter(Boolean).join(' · ')
 
+  // A task in the Papierkorb is a different screen state, not a different
+  // screen (G17). It shows the same information, styled the way the list
+  // already styles a deleted row, and offers the one action that makes sense
+  // there: getting it back. Editing stays behind that — a task is restored
+  // first and changed afterwards — so the rows below stop opening the form
+  // and the "Löschen" that used to sit here, offering to delete something
+  // already deleted, is gone.
+  const deleted = !!task.is_deleted
+
   // Deleting a task is reversible — it moves to the Papierkorb — so it commits
   // on press instead of asking "Bist du sicher?" first, and the toast carries
   // the way back for the next five seconds (§18/§19, G8). ConfirmDialog stays
@@ -65,6 +75,18 @@ export default function TaskDetail() {
       },
     })
     navigate('/aufgaben')
+  }
+
+  // The inverse, and the same one the undo toast runs (G8's `restoreTask`), so
+  // the task keeps every property including `sort_order`. Unlike the delete
+  // this does not navigate: the task is active again and this screen is the
+  // ordinary detail view of an active task, so it simply re-renders with
+  // "Bearbeiten" and "Löschen" back. The toast confirms it in the wording G8
+  // already established for exactly this operation.
+  const handleRestore = () => {
+    setMenuOpen(false)
+    restoreTask(task).catch(() => {})
+    showToast('Aufgabe wiederhergestellt')
   }
 
   return (
@@ -88,21 +110,32 @@ export default function TaskDetail() {
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
                 <div className="absolute right-0 top-9 z-20 w-44 overflow-hidden rounded-card border border-subtle bg-bg-elevated py-1 shadow-xl shadow-black/50">
-                  <button
-                    onClick={() => {
-                      setMenuOpen(false)
-                      openTaskForm({ mode: 'edit', taskId: task.id })
-                    }}
-                    className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-text-primary"
-                  >
-                    <Pen size={16} /> Bearbeiten
-                  </button>
-                  <button
-                    onClick={handleDelete}
-                    className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-danger"
-                  >
-                    <Trash2 size={16} /> Löschen
-                  </button>
+                  {deleted ? (
+                    <button
+                      onClick={handleRestore}
+                      className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-text-primary"
+                    >
+                      <RotateCcw size={16} /> Wiederherstellen
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => {
+                          setMenuOpen(false)
+                          openTaskForm({ mode: 'edit', taskId: task.id })
+                        }}
+                        className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-text-primary"
+                      >
+                        <Pen size={16} /> Bearbeiten
+                      </button>
+                      <button
+                        onClick={handleDelete}
+                        className="press-tint flex w-full items-center gap-2 px-4 py-2.5 text-left text-[15px] text-danger"
+                      >
+                        <Trash2 size={16} /> Löschen
+                      </button>
+                    </>
+                  )}
                 </div>
               </>
             )}
@@ -112,8 +145,24 @@ export default function TaskDetail() {
 
       {/* Title */}
       <div className="mt-4">
-        <h1 className="text-[24px] font-bold leading-tight text-text-primary">{task.title}</h1>
+        <h1
+          className={`text-[24px] font-bold leading-tight ${
+            deleted ? 'text-text-muted line-through' : 'text-text-primary'
+          }`}
+        >
+          {task.title}
+        </h1>
         {subtitle && <p className="mt-1 text-[12px] text-text-secondary">{subtitle}</p>}
+        {/* Why this screen looks and behaves differently (§21). Same muted
+            12px line the subtitle uses — no new component, no banner. */}
+        {deleted && (
+          <p className="mt-1 flex items-center gap-1.5 text-[12px] text-text-muted">
+            <Trash2 size={13} />
+            {task.deleted_at
+              ? `Gelöscht am ${formatLongDate(new Date(task.deleted_at))}`
+              : 'Im Papierkorb'}
+          </p>
+        )}
       </div>
 
       {/* Due / time / created */}
@@ -122,14 +171,14 @@ export default function TaskDetail() {
           icon={CalendarDays}
           label="Fällig"
           value={formatDueLabel(task)}
-          onClick={() => openTaskForm({ mode: 'edit', taskId: task.id })}
+          onClick={deleted ? undefined : () => openTaskForm({ mode: 'edit', taskId: task.id })}
         />
         <InfoRow
           icon={Clock}
           label="Uhrzeit"
           value={task.due_time ? formatTime(task.due_time) : 'Keine Uhrzeit'}
           muted={!task.due_time}
-          onClick={() => openTaskForm({ mode: 'edit', taskId: task.id })}
+          onClick={deleted ? undefined : () => openTaskForm({ mode: 'edit', taskId: task.id })}
           border={false}
         />
       </div>
@@ -177,19 +226,35 @@ export default function TaskDetail() {
         }}
       >
         <div className="w-full max-w-app space-y-3 px-5 pb-3 pt-6 bg-gradient-to-t from-bg-base via-bg-base to-transparent">
-          <button
-            onClick={() => openTaskForm({ mode: 'edit', taskId: task.id })}
-            className="press-tint flex w-full items-center justify-center gap-2 rounded-btn border-[1.5px] border-accent py-3.5 text-[15px] font-semibold text-accent"
-          >
-            <Pencil size={18} /> Bearbeiten
-          </button>
-          <button
-            onClick={handleDelete}
-            className="press-tint flex w-full items-center justify-center gap-2 rounded-btn py-3.5 text-[15px] font-semibold text-danger"
-            style={{ background: 'rgba(239, 68, 68, 0.12)' }}
-          >
-            <Trash2 size={18} /> Löschen
-          </button>
+          {deleted ? (
+            /* One action, in the bar's existing constructive style — the same
+               accent outline "Bearbeiten" uses. A restore is not destructive,
+               so it must not wear the danger tint; and it is the only thing
+               worth doing to a task in the Papierkorb, so nothing sits next
+               to it competing for the press. */
+            <button
+              onClick={handleRestore}
+              className="press-tint flex w-full items-center justify-center gap-2 rounded-btn border-[1.5px] border-accent py-3.5 text-[15px] font-semibold text-accent"
+            >
+              <RotateCcw size={18} /> Wiederherstellen
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={() => openTaskForm({ mode: 'edit', taskId: task.id })}
+                className="press-tint flex w-full items-center justify-center gap-2 rounded-btn border-[1.5px] border-accent py-3.5 text-[15px] font-semibold text-accent"
+              >
+                <Pencil size={18} /> Bearbeiten
+              </button>
+              <button
+                onClick={handleDelete}
+                className="press-tint flex w-full items-center justify-center gap-2 rounded-btn py-3.5 text-[15px] font-semibold text-danger"
+                style={{ background: 'rgba(239, 68, 68, 0.12)' }}
+              >
+                <Trash2 size={18} /> Löschen
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

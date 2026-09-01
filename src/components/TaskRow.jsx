@@ -1,4 +1,4 @@
-import { Check } from 'lucide-react'
+import { Check, RotateCcw } from 'lucide-react'
 import StarButton from './StarButton'
 import { formatTime } from '../lib/date'
 
@@ -6,13 +6,16 @@ import { formatTime } from '../lib/date'
 // the handlers and (optionally) drag listeners. Variants:
 //   'active'    — normal, completable
 //   'completed' — strikethrough, green check, tap circle to un-complete
-//   'deleted'   — muted, non-interactive circle
+//   'deleted'   — muted, non-interactive circle, restore action instead of
+//                 the star (G17): in the Papierkorb the favourite toggle has
+//                 nothing to act on, while getting the task back does.
 export default function TaskRow({
   task,
   variant = 'active',
   onComplete,
   onUncomplete,
   onToggleFavorite,
+  onRestore,
   onOpen,
   showBorder = true,
   dragHandleProps,
@@ -38,6 +41,15 @@ export default function TaskRow({
     // re-render; the way back afterwards is the screen's business too (the
     // completed row's own circle, or an undo toast where that row is gone).
     onComplete?.(task)
+  }
+
+  // Restoring commits on the tap, like completing does (§5/§7, G7): the patch
+  // is the exact inverse of the delete, so there is nothing to sit out and
+  // nothing to protect the user from. The row's own re-render is the result.
+  const handleRestore = (e) => {
+    e.stopPropagation()
+    e.preventDefault()
+    onRestore?.(task)
   }
 
   const subtitle = [task.category, task.subcategory].filter(Boolean).join(' · ')
@@ -105,16 +117,30 @@ export default function TaskRow({
         )}
       </div>
 
-      {/* Right: due time (if any) then star */}
+      {/* Right: due time (if any) then the row's own trailing action.
+          A deleted row's star had nothing to toggle — the list never handed
+          one down — so the slot carries the way back instead (G17). Same
+          place, same press feedback, same focus ring; only the glyph and the
+          meaning differ. */}
       {task.due_time && variant === 'active' && (
         <span className="shrink-0 text-[12px] text-text-secondary">
           {formatTime(task.due_time)}
         </span>
       )}
-      <StarButton
-        active={task.is_favorite}
-        onToggle={() => onToggleFavorite?.(task)}
-      />
+      {deleted ? (
+        <button
+          onClick={handleRestore}
+          aria-label="Aufgabe wiederherstellen"
+          className="press-fade shrink-0 p-1 text-text-secondary"
+        >
+          <RotateCcw size={22} />
+        </button>
+      ) : (
+        <StarButton
+          active={task.is_favorite}
+          onToggle={() => onToggleFavorite?.(task)}
+        />
+      )}
 
       {showBorder && (
         <span className="pointer-events-none absolute inset-x-4 bottom-0 h-px bg-subtle" />
