@@ -1,7 +1,7 @@
 # Known gaps — current app vs. design system
 
-Status: G1–G5, G7, G8, G12, G17 and G19 implemented (2026-08/09); G6, G9–G11
-open, G13–G16, G18 and G20 open (G18 newly filed with G8, G20 with G19).
+Status: G1–G5, G7, G8, G12, G17, G19 and G20 implemented (2026-08/09); G6,
+G9–G11 open, G13–G16 and G18 open (G18 newly filed with G8).
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -81,18 +81,6 @@ with G5), so this is polish, not a defect.
 
 ---
 
-### G20 · Bottom sheets sit against the layout viewport too — §22
-`Overlay.jsx` panels are `fixed` and end at `bottom: 0`, so on any browser that
-lays a bar over the bottom of the page a sheet's last row — the primary button
-in `TaskForm`/`EventForm` — is behind it until the bar retracts. Exactly the
-case G19 fixed for the bottom navigation, on a different surface. Found while
-measuring G19 and deliberately left: a sheet is a transient surface the user
-opens deliberately, the navigation is permanent chrome, and G19 was scoped to
-what was reported.
-*Direction:* the mechanism already exists — `--browser-bottom-inset`. Whether it
-belongs on the panel or on its content padding needs a look at drag-to-dismiss
-(G5), which measures against the panel's own height.
-
 ### G18 · The toast has no exit — §7, §11
 `ToastHost` remounts on every new message (`key={toast.id}`) and plays
 `animate-toast-in`; when the timer runs out the element is simply dropped, so the
@@ -117,6 +105,93 @@ was left out of G8 on purpose rather than half-built.
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G20 · Overlays sat against the layout viewport too — closed 2026-09 (`src/components/Overlay.jsx`)
+G19's case on a second surface: `.ov-root` is `fixed inset-0`, so the column
+every panel positions itself in ended at the *layout* viewport — the height with
+browser bars retracted — and a panel at `bottom: 0` therefore sat behind a
+browser's own bottom bar. Reported for bottom sheets; it was never only the
+sheets.
+
+**Measured first, with G19's own 88px model, before anything was changed**
+(Chromium, five viewports, each run twice — inset 0px and inset 88px). What was
+actually unreachable behind the bar:
+
+- `FilterSheet` — **"Anwenden" *and* "Zurücksetzen" start 7.5px below the
+  visible edge**, i.e. entirely gone. The filter could be opened but not
+  committed. The worst case of the set.
+- `ActionSheet` — "Neuer Termin" 64px of 68px covered; only "Neue Aufgabe" was
+  usable, so the Plus button silently lost half its purpose.
+- `EventDetailSheet` — "Löschen" fully covered, "Bearbeiten" clipped by 1.5px.
+- `TaskForm` / `EventForm` — the *last field*, 33px at 390×844 and 48px at
+  390×600.
+- `Sidebar` — at 820×700 the last entry was 88px covered **after scrolling the
+  list to its very end**, i.e. not reachable at all. Not previously filed; it is
+  the same bug, because the sidebar is `inset-y-0` in the same column.
+- `ConfirmDialog` — not covered, but centred against `lvh`, so 44px too low.
+
+**Two things the original G20 note got wrong, both corrected by measuring.**
+The note blamed "the primary button in `TaskForm`/`EventForm`" — that button
+lives in the sheet's *header* (`headerRight`) and was never affected;
+`TaskForm.jsx` and `EventForm.jsx` are untouched by this fix. And scrolling was
+assumed to be a way out: it is not. The scroll container itself ends behind the
+bar, so at 390×600 the form's last field stayed 48px covered *after* being
+scrolled to the end. That is what makes this a geometry bug rather than a
+padding one.
+
+**The fix is one class on one element** — the column inside `.ov-root` now ends
+at `bottom: var(--browser-bottom-inset)` instead of at the layout bottom. No
+new variable (G19's is reused verbatim), no JavaScript, no component, no token,
+no motion, and no change to any panel's own CSS. One offset reaches every panel
+because they all position themselves inside that column: both sheet variants,
+the sidebar, and the dialog's centring box. `TaskForm`, `EventForm`,
+`BottomSheet.jsx`, `index.css` and `tailwind.config.js` are not touched.
+
+**The backdrop deliberately keeps `inset-0`.** It still covers the full layout
+viewport, so the strip below a panel shows the dimmed app rather than a bright
+gap in the moment a bar retracts.
+
+**Why the offset went on the column and not on the sheet's content**, the
+question G20 was filed with: padding inside the body would grow the panel by the
+bar's height, and G5 takes its dismiss threshold from `getBoundingClientRect()`
+— the action sheet's would have gone from 53.6px to 75.6px, a quarter of a
+height that is partly invisible. The column keeps every panel's height exactly
+as it was. Verified with real pointer gestures rather than by reading the code:
+panel height 214.5px and threshold 53.6px in both builds, a 30px drag springs
+back, a 107px drag dismisses, and an upward pull is damped to the same
+-28.97px — identical with and without a bar.
+
+**Verification.** One harness, run against the build before and against the
+build after, and diffed. With the bar modelled, every "covered" line became
+"clear": "Anwenden"/"Zurücksetzen" 32px, "Neuer Termin" 24px, "Löschen" 24px,
+the forms' last field 40px, the sidebar's last entry reachable. Without the bar
+the two reports are **byte-identical** (98 lines, same md5) across 820×1180,
+390×844, 1280×900, 820×700 and 390×600 — iPad Safari, iPhone, Android and
+desktop cannot see this change. `npm run build`, `npm run smoke` and
+`npm run test:logic` (157 assertions incl. `overlayLogic` and `sheetLogic`) all
+pass. Keyboard: the G3 ring is unchanged (2px solid at 2px offset), Enter on
+"Anwenden" still commits, Escape still closes — and the keyboard case is what
+showed the bug was not merely cosmetic, since "Anwenden" was focusable and
+activatable while being invisible. Under `prefers-reduced-motion: reduce` the
+panel still resolves to `transform: none`, `opacity: 1`,
+`transition-property: opacity` — the fix adds no motion for G1's block to catch.
+Document geometry is untouched: `scrollHeight` is identical with a sheet closed,
+open, exiting and gone, and there is no horizontal overflow.
+
+**One intended consequence, recorded so it is not read as a regression.** A
+sheet's `max-h-[85%]` is a share of that column, so where a bar overlays, a tall
+sheet is now clamped to 85% of what is *visible* and its body scrolls (event
+detail at 390×844: 645.4px → 642.6px). That is the point — the alternative is a
+sheet that is taller than the screen it is on. Where the inset is 0px the
+heights are unchanged, which the byte-identical report above proves.
+
+Left for their own tasks: **G13** (focus trap) and **G14** (scroll lock) still
+belong in this same file, and were deliberately not bundled in — they change
+behaviour, this changes geometry. Worth noting for whoever takes G14: because
+the page behind an open sheet still scrolls, a browser bar can retract *while* a
+sheet is open, and the sheet then travels down with it. That is coherent (it
+stays flush with the visible edge, exactly like the navigation since G19) and it
+is the same trade-off G19 accepted, but G14 would remove the scenario entirely.
 
 ### G17 · The Papierkorb has no restore path once the toast is gone — closed 2026-09 (`src/components/TaskRow.jsx`, `src/screens/TasksList.jsx`, `src/screens/TaskDetail.jsx`)
 G8 built the operation and used it once. `restoreTask` — `{is_deleted: false,
