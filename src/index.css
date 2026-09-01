@@ -81,17 +81,6 @@ body {
   }
 }
 
-/* Used while a task row completes (slide left + fade). */
-.task-completing {
-  animation: task-complete 300ms ease forwards;
-}
-@keyframes task-complete {
-  to {
-    transform: translateX(-40px);
-    opacity: 0;
-  }
-}
-
 /* Calendar period navigation: the incoming view slides in from the side it's
    coming from (next = from the right, previous = from the left) with a short
    fade. Transform-only + fade so it stays smooth on the tall day/week grids. */
@@ -456,12 +445,6 @@ body {
     transform: translateY(100%);
   }
 
-  /* Completing a task keeps its 300ms fade (the list still waits for it before
-     committing), just without the slide. */
-  .task-completing {
-    animation-name: reduced-fade-out;
-  }
-
   /* The favourite pop is pure decoration — the star's colour change is the
      feedback and stays. */
   .animate-star-pop {
@@ -492,10 +475,5 @@ body {
   }
   to {
     opacity: 1;
-  }
-}
-@keyframes reduced-fade-out {
-  to {
-    opacity: 0;
   }
 }

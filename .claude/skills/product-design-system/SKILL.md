@@ -98,7 +98,7 @@ Reuse these before inventing anything:
 | Need | Use |
 |---|---|
 | Design tokens | `tailwind.config.js` (`bg-base`, `bg-card`, `bg-elevated`, `bg-input`, `accent`, `accent-dim`, `text-primary/secondary/muted`, `danger`, `success`, `border-subtle`, radii `card/btn/input/chip`) |
-| Global motion / keyframes | `tailwind.config.js` (`animation`) + `src/index.css` (`page`, `cal-enter-*`, `task-completing`, `press-tint`, `skeleton-shimmer`) |
+| Global motion / keyframes | `tailwind.config.js` (`animation`) + `src/index.css` (`page`, `cal-enter-*`, `press-tint`, `skeleton-shimmer`) |
 | Press feedback on icon buttons | `.press-tint` (`src/index.css`) — touch-safe, `:hover` only on real pointers |
 | Modal / panel scaffolding | `src/components/Overlay.jsx` (backdrop, Esc, phone-frame column) |
 | Sheets | `src/components/BottomSheet.jsx` (`full` and auto-height variants) |

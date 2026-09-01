@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { Check } from 'lucide-react'
 import StarButton from './StarButton'
 import { formatTime } from '../lib/date'
@@ -20,12 +19,10 @@ export default function TaskRow({
   isDragging = false,
   isOverdue = false,
 }) {
-  const [completing, setCompleting] = useState(false)
   const completed = variant === 'completed'
   const deleted = variant === 'deleted'
-  // Overdue styling only applies to open tasks (not completed/deleted) and
-  // never while the completion animation is playing.
-  const overdue = isOverdue && variant === 'active' && !completing
+  // Overdue styling only applies to open tasks (not completed/deleted).
+  const overdue = isOverdue && variant === 'active'
 
   const handleCircle = (e) => {
     e.stopPropagation()
@@ -35,19 +32,21 @@ export default function TaskRow({
       onUncomplete?.(task)
       return
     }
-    // Play the slide-out animation, then persist completion.
-    setCompleting(true)
-    setTimeout(() => onComplete?.(task), 300)
+    // Completion commits on the tap itself — there is no timer to sit out and
+    // therefore no window in which the action is already running but can no
+    // longer be stopped (§5/§7, G7). What follows is the screen's ordinary
+    // re-render; the way back afterwards is the screen's business too (the
+    // completed row's own circle, or an undo toast where that row is gone).
+    onComplete?.(task)
   }
 
   const subtitle = [task.category, task.subcategory].filter(Boolean).join(' · ')
-  const showCheck = completed || completing
 
   return (
     <div
       className={`press-tint relative flex items-center gap-3 px-4 ${
-        completing ? 'task-completing' : ''
-      } ${isDragging ? 'opacity-90' : ''}`}
+        isDragging ? 'opacity-90' : ''
+      }`}
       style={{ minHeight: 60 }}
       onClick={() => onOpen?.(task)}
       {...dragHandleProps}
@@ -65,7 +64,7 @@ export default function TaskRow({
       >
         <span
           className={`grid h-[22px] w-[22px] place-items-center rounded-full border-2 transition-colors ${
-            showCheck
+            completed
               ? 'border-success bg-success'
               : deleted
                 ? 'border-text-muted/50'
@@ -74,7 +73,7 @@ export default function TaskRow({
                   : 'border-text-muted'
           }`}
         >
-          {showCheck && <Check size={14} className="text-bg-base" strokeWidth={3} />}
+          {completed && <Check size={14} className="text-bg-base" strokeWidth={3} />}
         </span>
       </button>
 

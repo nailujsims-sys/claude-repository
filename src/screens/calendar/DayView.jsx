@@ -133,9 +133,25 @@ function TasksCollapsible({ tasks }) {
   const [open, setOpen] = useState(true)
   const navigate = useNavigate()
   const { completeTask, uncompleteTask, toggleFavorite } = useTasks()
+  const { showToast } = useToast()
+
+  // This list is built from `tasksForDay`, which only ever returns active
+  // tasks — so completing one always takes the row off screen and the toast is
+  // the only way back (G7, §19). The Aufgaben list makes the same call from its
+  // own filter state; here the answer is constant.
+  const handleComplete = (task) => {
+    completeTask(task).catch(() => {})
+    showToast('Aufgabe erledigt', {
+      actionLabel: 'Rückgängig',
+      onAction: () => {
+        uncompleteTask(task).catch(() => {})
+        showToast('Aufgabe wieder offen')
+      },
+    })
+  }
 
   const handlers = {
-    onComplete: completeTask,
+    onComplete: handleComplete,
     onUncomplete: uncompleteTask,
     onToggleFavorite: toggleFavorite,
     onOpen: (t) => navigate(`/aufgaben/${t.id}`),

@@ -1,6 +1,6 @@
 # Known gaps — current app vs. design system
 
-Status: G1–G5, G8 and G12 implemented (2026-08); G6, G7, G9–G11 open, G13–G18 open
+Status: G1–G5, G7, G8 and G12 implemented (2026-08); G6, G9–G11 open, G13–G18 open
 (G17 and G18 newly filed with G8).
 
 This file records where the existing implementation deviates from
@@ -25,17 +25,6 @@ result; §12 explicitly warns against relying solely on a final "swipe detected"
 event. The user gets no feedback while dragging and no momentum.
 *Direction:* deferred — a continuous pager is a real rework of the calendar
 views. Candidate for the polish phase (§26), not for incidental changes.
-
-### G7 · Task completion is a blocking 300ms timer — §5, §7, §19
-`TaskRow.jsx` sets `completing` and commits via `setTimeout(…, 300)`. The
-animation is not interruptible, the action cannot be cancelled once the circle is
-tapped, and there is no undo afterwards.
-*Direction:* the mechanism it was waiting for now exists — G8 gave the toast an
-action slot, and `TasksContext` an explicit `restoreTask` inverse. Completion has
-its own inverse already (`uncompleteTask`), so the same shape applies. Still open
-for its own commit, and with one question of its own: a toast on *every*
-completion would be noise (§18 "unobtrusive"), which the delete path does not
-have to answer because deleting is rare.
 
 ---
 
@@ -129,6 +118,67 @@ was left out of G8 on purpose rather than half-built.
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G7 · Task completion is a blocking 300ms timer — closed 2026-08 (`src/components/TaskRow.jsx`, `src/index.css`, `src/screens/TasksList.jsx`, `src/screens/calendar/DayView.jsx`)
+The timer is gone: `onComplete` now runs from the circle's own click, and the
+row's `completing` state, the `setTimeout` and the `.task-completing` animation
+went with it. Nothing replaces the delay, because nothing needed it —
+`.task-completing` existed only to fill the 300ms the commit was waiting on, and
+the animation *was* the lock §7 names ("never create artificial interaction locks
+solely because an animation is running"). Press feedback and cancellation were
+already correct and are untouched: G2 arms `.press-fade` on pointer-down with the
+8px slop, and the commit rides the native click, i.e. released inside the target
+(§5). Removing the window between the tap and the commit is what makes the tap
+cancellable in the ordinary way, verified in Chromium: press, drag off, release —
+nothing happens.
+
+**The undo is G8's shape, with G8's own asymmetry argument applied to a much more
+frequent action.** The inverse already existed (`uncompleteTask`), so the whole
+question was where the toast earns its place — a toast after *every* completion
+would be noise (§18 "unobtrusive"), which the delete path never had to answer.
+It therefore follows what the screen shows next, and each case ends with exactly
+one piece of feedback:
+
+- the completed row stays on screen (Filter → "Erledigte Aufgaben anzeigen") →
+  **no toast**; the row restyles in place, struck through with the green check,
+  and its own circle un-completes it — one tap where the finger already is. A
+  toast would only repeat an affordance that is visible.
+- the row leaves the view (the default Aufgaben list, and the calendar's day
+  list, which is built from `tasksForDay` and only ever holds active tasks) →
+  **"Aufgabe erledigt · Rückgängig"**, then "Aufgabe wieder offen". Here the
+  toast is the only way back, exactly as it is for a deleted task (§19).
+
+The decision is the caller's, as G8 established — `ToastContext` still knows
+nothing about tasks. `TasksList` reads it from its own `filters.showCompleted`;
+`DayView` has the constant answer. That the two screens repeat the handler
+rather than share one is the app's existing habit for exactly this (`DayView` and
+`WeekView` already repeat their "Termin verschoben" toast), and it keeps `src/lib`
+free of context imports, which is the only reason it stays a pure layer.
+
+**It adds no CSS, no token, no duration and no component** — `tailwind.config.js`
+is untouched and `index.css` only *loses* three rules: `.task-completing`,
+`@keyframes task-complete`, and the reduced-motion re-declaration that mapped it
+to `reduced-fade-out` (whose keyframe, used by nothing else, went too). Reduced
+motion therefore needed no work: the block G1 wrote no longer has a completion
+animation to catch, and there is no new motion for it to miss.
+
+The list is pixel-identical to `3a3b5a2` at 390×844 and 1280×900 with all three
+row variants on screen (active, favourite, with due time, completed), and the row
+geometry is unchanged to the half-pixel. `tools/smoke.mjs` covers both halves —
+the commit lands 150ms after the tap (shorter than the timer it replaces, so a
+re-introduced delay fails the test), the row goes, the toast carries the action,
+undo brings the task back and retires the toast; and with the filter on the row
+stays and *no* toast is raised. No new `tools/*Logic.mjs`: like G8 this has no
+pure decision worth pinning — the one branch is a filter flag, and the risk is
+behavioural.
+
+Measured in Chromium at 390×844 and 1280×900: commit 31ms after release
+(was 300ms), `is_completed` persisted, the circle already gone 20ms later and the
+filter sheet openable immediately (no lock), drag-off cancel leaving the task
+open, undo from the Kalender restoring the row, the G3 focus ring still 2px accent
+at 2px offset on the circle with Enter completing, a 44px undo target, and
+`prefers-reduced-motion` committing identically with the toast still on G1's
+`reduced-fade-in`.
 
 ### G8 · Undo instead of "Bist du sicher?" — closed 2026-08 (`src/context/ToastContext.jsx`, `src/components/ToastHost.jsx`, `src/context/TasksContext.jsx`, `src/screens/TaskDetail.jsx`)
 The app already did the hard part twice, which is why this stayed small:
