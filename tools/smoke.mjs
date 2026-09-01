@@ -88,6 +88,19 @@ function focusables(window, root) {
   )].filter((el) => !el.closest('[inert]'))
 }
 
+// The actionable toast's own control, and the full scope Tab walks with it
+// (G21): the panel's controls first, the toast last. Mirrors scopeWithin() in
+// src/components/Overlay.jsx, so a divergence between the two shows up here.
+function undoButton(window) {
+  return [...window.document.querySelectorAll('[role="status"] button')].find(
+    (el) => el.textContent.trim() === 'Rückgängig'
+  )
+}
+function scopeOf(window, root) {
+  const undo = undoButton(window)
+  return [...focusables(window, root), ...(undo ? [undo] : [])]
+}
+
 const locked = (window) => window.document.documentElement.hasAttribute('data-ov-scroll-locked')
 
 function typeInto(window, selector, text) {
@@ -847,6 +860,310 @@ async function run() {
     if (locked(window))
       errors.push('[Reopen] the lock was taken twice and released once — the page stays locked')
     console.log(`\n=== Reopen (Öffnen während exiting) ===\n  closed=${!doc.querySelector('.ov-root')} locked=${locked(window)}`)
+  }
+
+  // 9) The actionable toast joins the focus scope of whichever overlay is on
+  //    top (G21). ToastHost renders at z-[60], outside every .ov-root, so the
+  //    undo used to be hittable by pointer and unreachable by Tab. These cases
+  //    seed one completable task, raise the real toast through the real flow,
+  //    and then open real overlays over it.
+  const seedTask = (extra = {}) => {
+    const now = new Date().toISOString()
+    return {
+      id: 'seed-done', user_id: 'local-julian', title: 'Erledigbare Aufgabe',
+      category: 'Privat', subcategory: null, details: null,
+      due_date: null, due_time: null, due_type: 'day',
+      is_favorite: false, is_completed: false, is_deleted: false,
+      completed_at: null, deleted_at: null, sort_order: 0,
+      created_at: now, updated_at: now, ...extra,
+    }
+  }
+  const seedStore = (extra) => ({ 'mw.tasks.local-julian': JSON.stringify([seedTask(extra)]) })
+
+  // 9a) A sheet opened while the undo is still on screen. The toast stays, it
+  //     becomes the last Tab stop, both seam crossings work, the middle of the
+  //     panel is still the browser's, and the pointer path is untouched.
+  {
+    const window = makeDom('#/aufgaben', seedStore())
+    mount(window, code, 'ToastScope')
+    await wait(250)
+    const doc = window.document
+
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Als erledigt markieren'))
+      errors.push('[ToastScope] the completion circle was not found')
+    await wait(150)
+    if (!undoButton(window)) errors.push('[ToastScope] the undo toast was not raised')
+
+    // Open a sheet over the live toast — the flow the old note called
+    // unreachable, because it only looked at where a toast is *raised*.
+    const filter = [...doc.querySelectorAll('button')].find(
+      (el) => el.getAttribute('aria-label') === 'Filter'
+    )
+    filter?.focus()
+    filter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(200)
+
+    const root = doc.querySelector('.ov-root')
+    if (!root) errors.push('[ToastScope] the filter sheet did not open')
+    const undo = undoButton(window)
+    if (!undo) errors.push('[ToastScope] the toast did not survive the sheet opening')
+    if (root?.contains(undo)) errors.push('[ToastScope] the toast is inside the overlay root — the test proves nothing')
+    if (!root?.contains(doc.activeElement))
+      errors.push('[ToastScope] opening the sheet did not take the focus into it')
+
+    const items = focusables(window, root)
+    const scope = scopeOf(window, root)
+    if (scope[scope.length - 1] !== undo)
+      errors.push('[ToastScope] the toast is not the last stop of the scope')
+
+    // Forward across the seam: the panel's last control → the toast.
+    items[items.length - 1]?.focus()
+    let e = press(window, 'Tab')
+    if (!e.defaultPrevented || doc.activeElement !== undo)
+      errors.push('[ToastScope] Tab off the last sheet control did not reach the toast')
+
+    // Off the toast: wrap to the front of the panel.
+    e = press(window, 'Tab')
+    if (!e.defaultPrevented || doc.activeElement !== items[0])
+      errors.push('[ToastScope] Tab off the toast did not wrap into the sheet')
+
+    // Backwards around the front edge lands on the toast.
+    items[0]?.focus()
+    e = press(window, 'Tab', { shiftKey: true })
+    if (!e.defaultPrevented || doc.activeElement !== undo)
+      errors.push('[ToastScope] Shift+Tab off the first sheet control did not reach the toast')
+
+    // ...and back across the seam the other way.
+    e = press(window, 'Tab', { shiftKey: true })
+    if (!e.defaultPrevented || doc.activeElement !== items[items.length - 1])
+      errors.push('[ToastScope] Shift+Tab off the toast did not cross back into the sheet')
+
+    // G13's own rule is untouched: the middle of the panel is still the
+    // browser's, toast or no toast.
+    if (items.length > 2) {
+      items[0]?.focus()
+      e = press(window, 'Tab')
+      if (e.defaultPrevented)
+        errors.push('[ToastScope] Tab inside the sheet was intercepted although it is not a seam')
+    }
+
+    // Entering from outside must land in the panel, never on the toast — the
+    // one walk that tells "toast last" from "toast first" apart.
+    filter?.focus()
+    press(window, 'Tab')
+    if (doc.activeElement === undo)
+      errors.push('[ToastScope] a focus pulled in from outside landed on the toast instead of the sheet')
+    if (!root?.contains(doc.activeElement))
+      errors.push('[ToastScope] Tab did not pull an escaped focus back into the sheet')
+
+    console.log(`\n=== ToastScope (Sheet + Undo-Toast) ===\n  sheet controls=${items.length} scope=${scope.length} toast last=${scope[scope.length - 1] === undo}`)
+
+    // Escape belongs to the sheet, not to the toast — even with the toast
+    // holding the focus.
+    undo?.focus()
+    press(window, 'Escape')
+    await wait(450)
+    if (doc.querySelector('.ov-root'))
+      errors.push('[ToastScope] Escape did not close the sheet')
+    if (!undoButton(window))
+      errors.push('[ToastScope] Escape closed the toast instead of leaving it alone')
+  }
+
+  // 9b) Pointer regression (G21 must change nothing here): the undo still
+  //     works by click while a sheet is open, and the plain follow-up toast it
+  //     raises must not become a Tab stop.
+  {
+    const window = makeDom('#/aufgaben', seedStore())
+    mount(window, code, 'ToastPointer')
+    await wait(250)
+    const doc = window.document
+
+    click(window, (el) => el.getAttribute('aria-label') === 'Als erledigt markieren')
+    await wait(150)
+    click(window, (el) => el.getAttribute('aria-label') === 'Filter')
+    await wait(200)
+    const root = doc.querySelector('.ov-root')
+    if (!root) errors.push('[ToastPointer] the filter sheet did not open')
+
+    if (!click(window, (el) => el.textContent.trim() === 'Rückgängig'))
+      errors.push('[ToastPointer] the undo was not clickable over an open sheet')
+    await wait(200)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    if (!text.includes('Erledigbare Aufgabe'))
+      errors.push('[ToastPointer] the pointer undo did not bring the task back')
+    if (!text.includes('Aufgabe wieder offen'))
+      errors.push('[ToastPointer] the follow-up toast did not win over the dismiss')
+    if (!doc.querySelector('.ov-root'))
+      errors.push('[ToastPointer] using the undo closed the sheet')
+
+    // The follow-up carries no action, so it contributes nothing to the scope.
+    const after = scopeOf(window, doc.querySelector('.ov-root'))
+    const panelOnly = focusables(window, doc.querySelector('.ov-root'))
+    if (after.length !== panelOnly.length)
+      errors.push('[ToastPointer] a toast without an action joined the focus scope')
+    console.log(`\n=== ToastPointer (Maus über offenem Sheet) ===\n  undo worked=${text.includes('Erledigbare Aufgabe')} plain toast in scope=${after.length !== panelOnly.length}`)
+  }
+
+  // 9c) Nesting (G21 × G13): with a ConfirmDialog over a sheet the toast has to
+  //     belong to the *dialog's* scope, and go back to the sheet's when the
+  //     dialog closes. The sheet's own controls stay unreachable throughout.
+  {
+    const today = new Date().toISOString().slice(0, 10)
+    const window = makeDom('#/kalender', seedStore({ due_date: today }))
+    mount(window, code, 'ToastNested')
+    await wait(300)
+    const doc = window.document
+
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Als erledigt markieren'))
+      errors.push('[ToastNested] no completable task in the day view')
+    await wait(150)
+    if (!undoButton(window)) errors.push('[ToastNested] the undo toast was not raised')
+
+    if (!click(window, (el) => el.textContent.trim() === 'Familientreffen'))
+      errors.push('[ToastNested] event bar not found')
+    await wait(200)
+    if (!click(window, (el) => el.textContent.trim() === 'Löschen'))
+      errors.push('[ToastNested] "Löschen" not clickable')
+    await wait(250)
+
+    const sheetRoot = doc.querySelector('.ov-root')
+    const dialogRoot = doc.querySelector('.ov-root .ov-root')
+    if (!dialogRoot) errors.push('[ToastNested] the confirm dialog did not open')
+    const undo = undoButton(window)
+    if (!undo) errors.push('[ToastNested] the toast did not survive two overlays')
+
+    const dialogItems = focusables(window, dialogRoot)
+    const sheetOnly = focusables(window, sheetRoot).filter((el) => !dialogRoot?.contains(el))
+
+    // Walk the whole ring from the dialog's last control and record where it
+    // goes: dialog controls and the toast only, never the sheet underneath.
+    dialogItems[dialogItems.length - 1]?.focus()
+    const visited = []
+    for (let i = 0; i < dialogItems.length + 2; i++) {
+      press(window, 'Tab')
+      visited.push(doc.activeElement)
+    }
+    if (!visited.includes(undo))
+      errors.push('[ToastNested] the toast is not part of the dialog scope')
+    if (visited.some((el) => sheetOnly.includes(el)))
+      errors.push('[ToastNested] Tab reached the sheet underneath the dialog')
+
+    // Escape takes the dialog and leaves the toast standing.
+    press(window, 'Escape')
+    await wait(350)
+    if (doc.querySelector('.ov-root .ov-root'))
+      errors.push('[ToastNested] Escape did not close the dialog')
+    if (!doc.querySelector('.ov-root'))
+      errors.push('[ToastNested] the same Escape closed the sheet as well')
+    if (!undoButton(window))
+      errors.push('[ToastNested] Escape closed the toast instead of the dialog')
+
+    // ...and the toast is the sheet's last stop again, with no re-registration.
+    const backItems = focusables(window, doc.querySelector('.ov-root'))
+    backItems[backItems.length - 1]?.focus()
+    const e = press(window, 'Tab')
+    if (!e.defaultPrevented || doc.activeElement !== undoButton(window))
+      errors.push('[ToastNested] the toast did not fall back to the sheet scope')
+    console.log(`\n=== ToastNested (Sheet + ConfirmDialog + Toast) ===\n  dialog stops=${dialogItems.length} toast in dialog scope=${visited.includes(undo)} back to sheet=${doc.activeElement === undoButton(window)}`)
+    window.__restoreConsole?.()
+  }
+
+  // 9d) The toast can run out while it holds the focus. The browser drops that
+  //     focus on <body> — inside an open modal, the state G13 exists to
+  //     prevent — so the active surface takes it back at once, not at the next
+  //     Tab. TOAST_ACTION_MS is 5000, so this waits the real timer out rather
+  //     than faking one.
+  {
+    const window = makeDom('#/aufgaben', seedStore())
+    mount(window, code, 'ToastExpiry')
+    await wait(250)
+    const doc = window.document
+
+    click(window, (el) => el.getAttribute('aria-label') === 'Als erledigt markieren')
+    await wait(150)
+    click(window, (el) => el.getAttribute('aria-label') === 'Filter')
+    await wait(200)
+    const root = doc.querySelector('.ov-root')
+    const undo = undoButton(window)
+    undo?.focus()
+    if (doc.activeElement !== undo) errors.push('[ToastExpiry] the undo could not take the focus')
+
+    await wait(5400) // past TOAST_ACTION_MS from when the toast was raised
+    if (undoButton(window)) errors.push('[ToastExpiry] the toast outlived its timer')
+    if (doc.activeElement === doc.body || !doc.activeElement)
+      errors.push('[ToastExpiry] the focus fell to <body> when the toast expired')
+    if (!root?.contains(doc.activeElement))
+      errors.push('[ToastExpiry] the focus did not come back into the open sheet')
+
+    // Both global keys work immediately afterwards, with no Tab needed first.
+    const items = focusables(window, root)
+    items[items.length - 1]?.focus()
+    const e = press(window, 'Tab')
+    if (!e.defaultPrevented || doc.activeElement !== items[0])
+      errors.push('[ToastExpiry] the trap did not go back to the panel-only ring')
+    console.log(`\n=== ToastExpiry (Toast läuft bei Fokus ab) ===\n  focus in sheet=${root?.contains(doc.activeElement)} body=${doc.activeElement === doc.body}`)
+
+    press(window, 'Escape')
+    await wait(450)
+    window.__restoreConsole?.()
+    if (doc.querySelector('.ov-root')) errors.push('[ToastExpiry] Escape stopped working after the expiry')
+  }
+
+  // 9e) The other direction: the overlay closes while the toast holds the
+  //     focus. G13's shouldRestore must keep its answer — something else has
+  //     the focus, so the leaving sheet does not pull it back to its trigger.
+  {
+    const window = makeDom('#/aufgaben', seedStore())
+    mount(window, code, 'ToastRestore')
+    await wait(250)
+    const doc = window.document
+
+    click(window, (el) => el.getAttribute('aria-label') === 'Als erledigt markieren')
+    await wait(150)
+    const filter = [...doc.querySelectorAll('button')].find(
+      (el) => el.getAttribute('aria-label') === 'Filter'
+    )
+    filter?.focus()
+    filter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(200)
+
+    const undo = undoButton(window)
+    undo?.focus()
+    press(window, 'Escape')
+    await wait(450)
+    window.__restoreConsole?.()
+    if (doc.querySelector('.ov-root')) errors.push('[ToastRestore] the sheet did not close')
+    if (doc.activeElement === filter)
+      errors.push('[ToastRestore] the closing sheet pulled the focus off the toast onto its trigger')
+    if (doc.activeElement !== undo)
+      errors.push('[ToastRestore] the toast lost the focus it held across the close')
+    console.log(`\n=== ToastRestore (Overlay schließt bei Toast-Fokus) ===\n  focus stayed on the toast=${doc.activeElement === undo}`)
+  }
+
+  // 9f) A non-modal presence must be left exactly as it was: the calendar
+  //     search has no trap, so a live toast may not create one.
+  {
+    const today = new Date().toISOString().slice(0, 10)
+    const window = makeDom('#/kalender', seedStore({ due_date: today }))
+    mount(window, code, 'ToastNonModal')
+    await wait(300)
+    const doc = window.document
+
+    click(window, (el) => el.getAttribute('aria-label') === 'Als erledigt markieren')
+    await wait(150)
+    if (!undoButton(window)) errors.push('[ToastNonModal] the undo toast was not raised')
+
+    click(window, (el) => el.getAttribute('aria-label') === 'Suche')
+    await wait(200)
+    window.__restoreConsole?.()
+    if (!doc.querySelector('input[placeholder="Termine durchsuchen"]'))
+      errors.push('[ToastNonModal] the search overlay did not open')
+    if (locked(window)) errors.push('[ToastNonModal] the toast made a non-modal surface lock the page')
+    const e = press(window, 'Tab')
+    if (e.defaultPrevented)
+      errors.push('[ToastNonModal] the toast created a focus trap on a non-modal surface')
+    console.log(`\n=== ToastNonModal (Kalendersuche + Toast) ===\n  trapped=${e.defaultPrevented} locked=${locked(window)}`)
   }
 
   console.log('\n--- result ---')

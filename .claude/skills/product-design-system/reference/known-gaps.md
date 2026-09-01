@@ -1,7 +1,7 @@
 # Known gaps — current app vs. design system
 
-Status: G1–G5, G7, G8, G12–G14, G16, G17, G19 and G20 implemented (2026-08/09);
-G6, G9–G11, G15, G18 and G21 open (G18 newly filed with G8, G21 with G13).
+Status: G1–G5, G7, G8, G12–G14, G16, G17, G19–G21 implemented (2026-08/09);
+G6, G9–G11, G15 and G18 open (G18 newly filed with G8).
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -56,22 +56,6 @@ motion later it should originate from its trigger (§11), not slide like a sheet
 
 ---
 
-### G21 · A toast action is outside the modal focus scope — §22
-Filed with G13, not fixed by it. `ToastHost` renders at `z-[60]`, outside every
-`.ov-root`, so an actionable toast — "Aufgabe gelöscht · Rückgängig" (G8/G17) —
-is visible above an open overlay but is not a Tab stop inside the trapped scope.
-Verified while closing G13: **no flow reaches that state today.** The three
-toasts that carry an action are raised from `TaskDetail`, `TasksList` and
-`DayView`, i.e. from screens with no modal open, and the "Termin gelöscht" toast
-an `EventDetailSheet` raises has no action and appears while that sheet is
-already `exiting`, where the trap is off. So this is a latent constraint on
-where an actionable toast may be raised from, not a defect in the app as it
-stands.
-*Direction:* if a future module needs an undo toast raised from inside a sheet,
-the toast has to join the overlay stack rather than the trap being loosened —
-`createOverlayStack` already takes any entry. Deliberately not built now: it is
-machinery for a case that does not exist yet.
-
 ### G18 · The toast has no exit — §7, §11
 `ToastHost` remounts on every new message (`key={toast.id}`) and plays
 `animate-toast-in`; when the timer runs out the element is simply dropped, so the
@@ -83,6 +67,11 @@ re-announce, because a *replacing* toast would swap its text with no motion at
 all instead of remounting into `toast-in`. Keeping both needs presence **per
 toast**, not per host. That is a real piece of machinery for a small gain, so it
 was left out of G8 on purpose rather than half-built.
+Whatever builds it has one constraint from G21: an actionable toast is a Tab
+stop inside the active overlay's scope, so a toast on its way out must stop
+being one. `focusableWithin` already filters `[inert]`, and `usePresence`'s
+`panel()` already sets that attribute while exiting, so a presence-driven toast
+gets this for free — but only if it goes through `panel()`.
 
 ## Explicitly conformant (do not "fix")
 
@@ -96,6 +85,89 @@ was left out of G8 on purpose rather than half-built.
 - Dark-first token set in `tailwind.config.js` with a single accent (§14).
 
 ## Closed
+
+### G21 · A toast action was outside the modal focus scope — closed 2026-09 (`src/lib/focusScope.js`, `src/lib/toastScope.js`, `src/components/Overlay.jsx`, `src/components/ToastHost.jsx`)
+Filed with G13. `ToastHost` renders at `z-[60]`, outside every `.ov-root`, so an
+actionable toast — "Aufgabe erledigt · Rückgängig" (G7/G8/G17) — floats above an
+open overlay: hittable by pointer, but never a Tab stop inside the trapped
+scope, while `aria-modal="true"` told assistive technology that nothing outside
+the panel exists. Seeing an undo you cannot reach is the defect.
+
+**The original note said no flow reached that state. That was wrong, and the
+reasoning is worth keeping.** It looked only at where an actionable toast is
+*raised* — `TaskDetail`, `TasksList`, `DayView`, all screens with no modal open.
+But an actionable toast lives `TOAST_ACTION_MS` = 5s, and nothing retires it
+when an overlay opens or the route changes: `dismissToast` is called by the
+action itself and by nothing else, and `ToastProvider` sits above the router. So
+the toast simply outlives its screen into a modal opened afterwards. Three
+flows, all reachable today: abhaken in `TasksList` → Filter, FAB or Menü within
+5s; abhaken in the day view's `TasksCollapsible` → tap an event; löschen in
+`TaskDetail` → navigate → FAB.
+
+**The toast joins the scope, not the overlay stack.** The direction this entry
+used to give — make it a stack entry, `createOverlayStack` takes any entry — was
+measured and dropped. As the top of the stack the toast would take Escape
+(closing the toast instead of the sheet the user is working in) and the trap
+(Tab circling one button while a whole form sits underneath), and it would claim
+a modality it does not have: it dims nothing and blocks nothing. So the stack,
+the Escape claim and the scroll lock are all untouched, and only the focus scope
+grew.
+
+**What grew, exactly.** `scopeElements` (pure, in `focusScope.js`) puts the
+panel's controls first and the actionable toast last, and returns the index
+where the toast begins. With no toast it returns the panel's own list and
+`seam: -1`, which is what makes every overlay without a toast behave exactly as
+it did under G13 — asserted, not assumed. `src/lib/toastScope.js` is one slot
+plus a subscription, the same factory-and-instance shape as `scrollLock` and the
+overlay stack; module-level rather than context, because `usePresence` runs
+inside every overlay and a context would re-render every open sheet on every
+toast. `ToastHost` registers only a card that has an action — a plain toast is a
+message, not a control.
+
+**Why a seam and not "claim every Tab".** G13 deliberately leaves the middle of
+a scope to the browser, which knows about radio groups and a field's own
+internal stops. That rule holds because a scope is contiguous in the DOM — and
+this one is not: `ToastHost` is a sibling of the overlays, so the browser's
+natural order does not lead from a panel's last control to the toast. Only the
+two seam crossings are claimed. Inside the panel, and inside the toast, the
+browser still has the middle. Verified in Chromium with the real Tab key, which
+is the only way to see that the trap and the browser agree.
+
+**Nesting needs no new rule.** Each overlay's Tab handler already asks
+`overlayStack.isTop`, so the toast belongs to whichever overlay is topmost: with
+a ConfirmDialog over an `EventDetailSheet` it is part of the dialog's ring and
+the sheet underneath stays unreachable, and when the dialog closes the toast is
+the sheet's last stop again — with no re-registration, because the scope is
+computed per keypress, not at registration.
+
+**The toast can also run out while it holds the focus.** The browser then drops
+that focus on `<body>` — inside an open modal, the state G13 exists to prevent.
+`nextFocus` would repair it at the next Tab, but a focus standing in the void
+until the user presses a key is not a repair, so the departure is announced and
+the active surface takes the focus back at once. Deliberately not "did the toast
+have it?": a focus on `<body>` under an open modal belongs back in the scope
+whatever put it there. The opposite direction is G13's own and unchanged — when
+the overlay closes while the toast holds the focus, `shouldRestore` still
+answers no, and the toast keeps it.
+
+**Untouched on purpose:** `handleAction`, `dismissToast`, the follow-up-toast
+ordering, every pointer path, the toast's position and styling, `sheetDrag.js`,
+`overlayPresence.js`, the scroll lock and the Escape stack. `initialFocus` still
+sees the panel's own list only — "where does the focus land when this opens?" is
+a question about the panel, and an opening sheet must never focus a toast that
+happens to be on screen. G18 stays open; the toast still has no exit.
+
+Verified: 219 logic assertions across six suites (`tools/focusLogic.mjs` grew by
+17, including the ends, the seam and both seam crossings) and the jsdom smoke
+run (six new sections: sheet + toast, pointer regression, sheet + dialog +
+toast, expiry under focus, the close-while-focused direction, and a non-modal
+surface). Mutation-tested three ways: dropping the toast from the scope fails 4
+logic and 6 smoke assertions; putting it first instead of last fails 6 logic and
+2 smoke assertions; removing the focus reclaim fails the expiry case. Then 39
+assertions in Chromium at 390×844 over native Tab, mouse and real touch. The
+first ordering mutation only failed one assertion, which is what exposed that a
+rotated ring walks identically — the ordering tests were re-pinned to the ends,
+the seam and the entry from outside before being accepted.
 
 ### G13 · No focus trap in any overlay — closed 2026-09 (`src/lib/focusScope.js`, `src/lib/overlayPresence.js`, `src/components/Overlay.jsx`, `src/components/BottomSheet.jsx`, `src/components/ConfirmDialog.jsx`, `src/components/Sidebar.jsx`, `src/index.css`)
 Three separate holes, all in the one shared layer, which is why no individual
