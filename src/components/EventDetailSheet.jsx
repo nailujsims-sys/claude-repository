@@ -49,7 +49,7 @@ function timeLabel(ev) {
 // Read-only detail view for a calendar event. Opened by tapping an event in any
 // of the three views. The bottom actions (Bearbeiten / Löschen) mirror the task
 // detail exactly — same buttons, colors, animation and confirm dialog.
-export default function EventDetailSheet({ event, onClose }) {
+export default function EventDetailSheet({ event, onClose, onReopen }) {
   // Retained: `event` is nulled the instant the sheet is closed, and an empty
   // sheet sliding down looks like a bug. The exit keeps showing the event the
   // user was reading.
@@ -76,7 +76,17 @@ export default function EventDetailSheet({ event, onClose }) {
   }
 
   return (
-    <BottomSheet open={!!event} onClose={onClose} title="Termin">
+    <BottomSheet
+      open={!!event}
+      onClose={onClose}
+      // Catching the sheet on its way out (G16) puts back the event it was
+      // showing — the retained one, because `event` is already null by then.
+      // Only a dismissal by drag can get here: Löschen and Bearbeiten close
+      // through their buttons, which never arm the catch, so neither a deleted
+      // event nor a sheet the form has already replaced can come back.
+      onReopen={ev && onReopen ? () => onReopen(ev) : null}
+      title="Termin"
+    >
       {ev && (
         <div className="px-5 pb-6 pt-1">
           <h3 className="text-[22px] font-bold leading-tight text-text-primary">

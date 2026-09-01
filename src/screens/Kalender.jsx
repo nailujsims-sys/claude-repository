@@ -219,7 +219,11 @@ export default function Kalender() {
           setSelectedEvent(ev)
         }}
       />
-      <EventDetailSheet event={selectedEvent} onClose={() => setSelectedEvent(null)} />
+      <EventDetailSheet
+        event={selectedEvent}
+        onClose={() => setSelectedEvent(null)}
+        onReopen={selectEvent}
+      />
     </div>
   )
 }

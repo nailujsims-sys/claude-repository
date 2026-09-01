@@ -1,8 +1,12 @@
-// Pure-logic tests for the sheet drag-to-dismiss decisions (G5).
+// Pure-logic tests for the sheet drag-to-dismiss decisions (G5) and for the
+// one decision G16 adds on top: may a leaving sheet be caught again?
 // The DOM plumbing in src/lib/useSheetDrag.js is deliberately thin — the
 // decisions ("how far does it resist?", "how fast was that?", "does this
 // release close the sheet?") live in exported pure functions, so they can be
 // checked here without a browser. Bundled with esbuild like overlayLogic.mjs.
+// `isCatchableExit` lives in useSheetDrag.js rather than sheetDrag.js because it
+// reads a DOM attribute the hook writes; it is pure all the same, so the bundle
+// simply pulls React in with it and never renders anything.
 import { build } from 'esbuild'
 import { writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
@@ -12,6 +16,7 @@ import {
   DRAG_SLOP, RUBBER_MAX, DISMISS_RATIO, FLICK_VELOCITY, VELOCITY_WINDOW,
   rubberBand, dragOffset, releaseVelocity, shouldDismiss,
 } from './src/lib/sheetDrag.js'
+import { isCatchableExit } from './src/lib/useSheetDrag.js'
 
 let pass = 0, fail = 0
 const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log('  ✗ ' + name) } }
@@ -99,6 +104,38 @@ ok('...not even with a downward flick already under way', release(dragOffset(-20
 // Defensive: a height of 0 (a panel measured before layout) must not close
 // everything by accident.
 ok('an unmeasurable sheet never dismisses on distance', release(10, 0, 0) === false)
+
+// ── may a leaving sheet be caught? (G16) ────────────────────────────────────
+// The whole gate is "did the user throw this one themselves": \`data-drag='exit'\`
+// is written by the dismissal above and by nothing else, so every other way out
+// — backdrop, Escape, Löschen, Bearbeiten, an action-sheet row — leaves no
+// attribute and stays uncatchable. That is what keeps a catch from reviving a
+// deleted event or overtaking a form that is already opening.
+ok('a sheet the user threw away themselves can be caught',
+   isCatchableExit('exit') === true)
+ok('an exit that was not thrown by the drag is not catchable',
+   isCatchableExit(null) === false && isCatchableExit(undefined) === false)
+ok('an empty attribute is not an exit', isCatchableExit('') === false)
+ok('a sheet still being dragged is not "leaving"', isCatchableExit('live') === false)
+ok('an unknown attribute value catches nothing', isCatchableExit('exiting') === false)
+// The full-screen form sheets draw no grabber and pass enabled: false, so they
+// promise no gesture in either direction.
+ok('a sheet without a grabber is never catchable',
+   isCatchableExit('exit', false) === false)
+ok('...however it was closed', isCatchableExit('live', false) === false)
+ok('the grabber variant is the default', isCatchableExit('exit', true) === true)
+
+// A catch hands straight back to the rules above — it adds none of its own.
+// Released without moving, the gesture holds a single sample, so there is no
+// velocity to read and G5's "a press that never moved decides nothing" applies.
+ok('a catch that never moved has no velocity',
+   releaseVelocity([{ t: 12, y: 300 }]) === 0)
+// And once it does move, the release is judged exactly as any other drag: from
+// the offset the sheet is actually at, which after a catch is where the exit had
+// already carried it.
+ok('a sheet caught near the top springs back up', release(DETAIL * 0.1, 0) === false)
+ok('a sheet caught most of the way out lets go again', release(DETAIL * 0.8, 0) === true)
+ok('a catch pulled back up keeps the sheet', release(DETAIL * 0.8, -0.6) === false)
 
 console.log(\`  \${pass} passed, \${fail} failed\`)
 process.exit(fail ? 1 : 0)

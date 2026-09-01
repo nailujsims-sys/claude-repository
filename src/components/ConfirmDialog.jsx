@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import Overlay, { useOverlayPanel } from './Overlay'
 
 // Small centered confirmation dialog shared by destructive actions (deleting a
@@ -34,14 +35,17 @@ export default function ConfirmDialog({
 }
 
 function Dialog({ title, message, confirmLabel, cancelLabel, onCancel, onConfirm }) {
+  const titleId = useId()
   const panel = useOverlayPanel(
     'ov-panel-fade',
     'pointer-events-auto relative w-full max-w-[320px] rounded-card border border-subtle bg-bg-elevated p-5'
   )
 
   return (
-    <div {...panel} role="dialog" aria-modal="true">
-      <h3 className="text-[17px] font-bold text-text-primary">{title}</h3>
+    <div {...panel} role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <h3 id={titleId} className="text-[17px] font-bold text-text-primary">
+        {title}
+      </h3>
       {message && (
         <p className="mt-2 text-[14px] leading-snug text-text-secondary">{message}</p>
       )}

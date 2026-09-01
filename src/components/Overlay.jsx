@@ -10,8 +10,15 @@ import {
   nextPhase,
   isMounted,
   acceptsEscape,
-  escapeStack,
+  overlayStack,
 } from '../lib/overlayPresence'
+import {
+  FOCUSABLE_SELECTOR,
+  initialFocus,
+  nextFocus,
+  shouldRestore,
+} from '../lib/focusScope'
+import { scrollLock } from '../lib/scrollLock'
 
 // How long after the nominal duration we stop waiting for `transitionend`.
 // The event is the primary signal; this only covers the cases where it never
@@ -20,6 +27,16 @@ import {
 const FALLBACK_SLACK = 120
 
 const OverlayContext = createContext(null)
+
+// The focusable elements inside a scope, in tab order. `[inert]` is filtered
+// out rather than left to the browser: a panel on its way out carries the
+// attribute (see `panel()` below), and a leaving panel must not be a Tab stop
+// even while it is still on screen.
+function focusableWithin(root) {
+  return Array.from(root.querySelectorAll(FOCUSABLE_SELECTOR)).filter(
+    (el) => !el.hasAttribute('hidden') && !el.closest('[inert]')
+  )
+}
 
 /**
  * Drives an overlay's mount lifecycle (see src/lib/overlayPresence.js) and
@@ -32,8 +49,17 @@ const OverlayContext = createContext(null)
  *
  * Most overlays get this through <Overlay>. The calendar search uses it
  * directly: it wants the lifecycle but not the backdrop and phone-frame column.
+ *
+ * `modal` is what separates the two. <Overlay> passes it; the calendar search
+ * does not, and stays exactly what it is — a full-screen view that covers the
+ * calendar rather than a dialog over it, with no backdrop, no trapped focus and
+ * no locked page behind it. Everything G13 and G14 add hangs off this flag, so
+ * a non-modal presence keeps the behaviour it had before them.
  */
-export function usePresence(open, { duration = 300, onEscape = null } = {}) {
+export function usePresence(
+  open,
+  { duration = 300, onEscape = null, modal = false, rootRef = null } = {}
+) {
   const [phase, setPhase] = useState(CLOSED)
   const send = (event) => setPhase((p) => nextPhase(p, event))
 
@@ -62,31 +88,134 @@ export function usePresence(open, { duration = 300, onEscape = null } = {}) {
     return () => clearTimeout(t)
   }, [phase, duration])
 
-  // Escape closes the topmost overlay only — and an overlay already on its way
-  // out is no longer topmost, so a second Escape reaches the one underneath
-  // instead of closing two at once.
-  const escapeRef = useRef(onEscape)
-  escapeRef.current = onEscape
+  // The overlay's place in the stack. `listens` is the phase window in which it
+  // is the active surface — an overlay already on its way out has handed
+  // control back and must not answer a key a second time. Registration is
+  // deliberately unconditional: the stack answers "who is on top?" for Escape,
+  // for the focus trap and for the scroll lock alike, so an overlay without an
+  // `onEscape` still has to be in it.
   const entryRef = useRef(null)
   if (entryRef.current === null) entryRef.current = {}
 
-  const hasEscape = !!onEscape
   const listens = acceptsEscape(phase)
+  useEffect(() => {
+    if (!listens) return
+    return overlayStack.push(entryRef.current)
+  }, [listens])
+
+  // Escape closes the topmost overlay only, so a second Escape reaches the one
+  // underneath instead of closing two at once. Declared after the registration
+  // effect on purpose: effects run in order, so the entry is on the stack
+  // before this listener can be asked to claim anything.
+  const escapeRef = useRef(onEscape)
+  escapeRef.current = onEscape
+  const hasEscape = !!onEscape
   useEffect(() => {
     if (!hasEscape || !listens) return
     const entry = entryRef.current
-    const remove = escapeStack.push(entry)
     const onKey = (e) => {
       if (e.key !== 'Escape') return
-      if (!escapeStack.claim(entry, e)) return
+      if (!overlayStack.claim(entry, e)) return
       escapeRef.current?.()
     }
     window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('keydown', onKey)
-      remove()
-    }
+    return () => window.removeEventListener('keydown', onKey)
   }, [hasEscape, listens])
+
+  // ── Focus scope (G13) ─────────────────────────────────────────────────
+  // The panel takes the focus when it opens and gives it back when it closes.
+  // Bound to `mounted`, not to `listens`, so the whole exit runs inside one
+  // effect: reopening mid-exit (G4's `exiting + open → open`) never leaves this
+  // window, so it neither re-focuses nor restores — the sheet simply keeps the
+  // focus it already had.
+  //
+  // The decisions are in src/lib/focusScope.js; this only reads and writes the
+  // DOM. `preventScroll` throughout: the trigger of an overlay generally sits
+  // in a scroll container, and handing the focus back must not scroll the page
+  // underneath a panel that is still on screen.
+  const mounted = isMounted(phase)
+  useEffect(() => {
+    if (!modal || !mounted) return
+    const root = rootRef?.current
+    const doc = root?.ownerDocument
+    if (!root || !doc) return
+
+    // Whatever had the focus when the overlay opened — the button that opened
+    // it, in every case the app has today.
+    const returnTo = doc.activeElement
+    const target = initialFocus({
+      elements: focusableWithin(root),
+      // A sheet may have focused itself already: React applies `autoFocus`
+      // during the commit, so the Neue-Aufgabe title field holds the focus by
+      // the time this effect runs, and overruling it would be worse than
+      // leaving it alone.
+      focusAlreadyInside: !!doc.activeElement && root.contains(doc.activeElement),
+    })
+    // Nothing focusable at all still needs somewhere to stand, or the very
+    // next Tab would start at the top of the document again — the root itself
+    // is `tabIndex={-1}` for exactly this.
+    ;(target || root).focus?.({ preventScroll: true })
+
+    return () => {
+      const active = doc.activeElement
+      const current = rootRef?.current
+      const restore = shouldRestore({
+        activeInsideRoot: !!(current && active && current.contains(active)),
+        activeIsBody: !active || active === doc.body,
+        targetConnected: !!returnTo?.isConnected,
+      })
+      if (restore) returnTo.focus?.({ preventScroll: true })
+    }
+  }, [modal, mounted, rootRef])
+
+  // ── Scroll lock (G14) ─────────────────────────────────────────────────
+  // Held for as long as the overlay is on screen — `mounted`, not `listens`,
+  // so the page is still locked while a sheet slides out. That window matters:
+  // `.ov-root` drops its pointer events while exiting (see src/index.css) so
+  // the trigger underneath is reachable again, and without the lock a gesture
+  // in those 300ms would scroll the page behind the leaving panel.
+  //
+  // Keyed on the same boolean as the focus scope, which is what keeps the
+  // count balanced across G4's `exiting + open → open` edge: reopening mid-exit
+  // never leaves the mounted window, so the effect does not re-run and the lock
+  // is held exactly once throughout.
+  useEffect(() => {
+    if (!modal || !mounted) return
+    return scrollLock.acquire()
+  }, [modal, mounted])
+
+  // Tab stays inside the active overlay (G13). Same "topmost only" rule the
+  // Escape listener uses, and for the same reason: a ConfirmDialog opened from
+  // a sheet is a DOM *descendant* of that sheet, so the background cannot be
+  // made unreachable by setting `inert` on it — that would take the dialog with
+  // it. Asking the stack who is on top instead is correct by construction: the
+  // sheet stops trapping the moment the dialog registers above it, and starts
+  // again when the dialog is gone.
+  //
+  // Only the two edges are claimed (see nextFocus); everything in between stays
+  // the browser's. Pointer events are never touched — a tap behind the panel is
+  // already the backdrop's business, and G5's drag must keep every event it has.
+  useEffect(() => {
+    if (!modal || !listens) return
+    const entry = entryRef.current
+    const onKey = (e) => {
+      if (e.key !== 'Tab' || e.defaultPrevented) return
+      if (!overlayStack.isTop(entry)) return
+      const root = rootRef?.current
+      if (!root) return
+      const doc = root.ownerDocument
+      const target = nextFocus({
+        elements: focusableWithin(root),
+        current: doc.activeElement,
+        backwards: e.shiftKey,
+      })
+      if (!target) return
+      e.preventDefault()
+      target.focus({ preventScroll: true })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [modal, listens, rootRef])
 
   const handleTransitionEnd = (e) => {
     // Only the panel's own movement ends the exit — never a transition
@@ -129,16 +258,28 @@ export default function Overlay({
   duration = 300,
   z = 'z-50',
 }) {
-  const presence = usePresence(open, { duration, onEscape: onClose })
+  const rootRef = useRef(null)
+  const presence = usePresence(open, {
+    duration,
+    onEscape: onClose,
+    modal: true,
+    rootRef,
+  })
 
   if (!presence.mounted) return null
 
   return (
     <OverlayContext.Provider value={presence}>
       <div
+        ref={rootRef}
         className={`ov-root fixed inset-0 ${z}`}
         data-phase={presence.phase}
         style={presence.style}
+        // The focus scope's boundary and its last-resort focus target (G13).
+        // -1 keeps it out of the tab order, so nothing about tabbing changes;
+        // it only makes the box scriptable-focusable for a panel that has no
+        // focusable content of its own.
+        tabIndex={-1}
       >
         <div
           className="ov-backdrop absolute inset-0 bg-black/60"

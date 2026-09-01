@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { DRAG_SLOP, dragOffset, releaseVelocity, shouldDismiss } from './sheetDrag'
 
 // The pointer side of drag-to-dismiss (G5). The decisions live in
@@ -21,6 +21,11 @@ import { DRAG_SLOP, dragOffset, releaseVelocity, shouldDismiss } from './sheetDr
 // The gesture state is a ref, never state: a drag paints ~60 frames a second
 // and none of them need React (the same reason useTimedGesture.js keeps its
 // live gesture in a ref).
+//
+// G16 adds one more entry point to the same machinery: a sheet the user threw
+// away themselves can be caught again while it leaves. That is not a second
+// kind of gesture — the catch pins the panel where it currently is, reopens the
+// sheet for real, and from there it is the drag above, unchanged.
 
 const DRAG_ATTR = 'data-drag'
 const GRAB_ATTR = 'data-grab'
@@ -43,19 +48,46 @@ export function currentOffset(el) {
   }
 }
 
+// May a press land on the handle of a sheet that is already leaving (G16)?
+//
+// A leaving panel is deliberately unreachable — G4 gives it `pointer-events:
+// none` and `inert` so its trigger is free again the instant the exit starts.
+// The single exception is the exit the user threw themselves: `data-drag="exit"`
+// is written by the dismissal in `finish()` below and by nothing else, so it is
+// exactly the marker for "this one is catchable". The backdrop, Escape, and
+// every button inside a sheet — Löschen, Bearbeiten, an action-sheet row — close
+// without it and therefore stay uncatchable, which is what stops a catch from
+// reviving state the user has already moved past.
+//
+// Pure on purpose, so tools/sheetLogic.mjs can check it.
+export function isCatchableExit(dragAttr, enabled = true) {
+  return !!enabled && dragAttr === 'exit'
+}
+
 /**
  * @param open    the sheet's own `open` flag — a reopen must never inherit a
  *                stale drag (see the reset effect below)
  * @param onClose committed on release past the threshold; the same callback
  *                the backdrop and Escape already use
+ * @param onReopen puts the owner's `open` back to true when a leaving sheet is
+ *                caught (G16). Optional: a sheet without it simply stays
+ *                uncatchable, because the catch reopens for real rather than
+ *                faking a phase, and only the owner can do that.
  * @param enabled false for the full-screen form sheets, which draw no grabber
  *                and therefore promise nothing
  */
-export default function useSheetDrag({ open, onClose, enabled = true }) {
+export default function useSheetDrag({ open, onClose, onReopen = null, enabled = true }) {
   const panelRef = useRef(null)
   const g = useRef(null) // live gesture — never triggers a render
   const closeRef = useRef(onClose)
   closeRef.current = onClose
+  const reopenRef = useRef(onReopen)
+  reopenRef.current = onReopen
+  // Whether this sheet is currently catchable, as React state rather than as
+  // the attribute alone: BottomSheet has to drop `inert` for the window the
+  // catch is possible in, and an inert subtree ignores pointer input even where
+  // a descendant opts back in with `pointer-events: auto` (measured).
+  const [catchable, setCatchable] = useState(false)
 
   const paint = useCallback((offset) => {
     const el = panelRef.current
@@ -89,7 +121,11 @@ export default function useSheetDrag({ open, onClose, enabled = true }) {
   // elsewhere — Escape, say — while a finger is still down.
   useEffect(() => {
     if (open) {
-      clearDrag()
+      // Not while a finger is still down: a catch (see onPointerDown) reopens
+      // the sheet from inside its own gesture, and clearing here would drop the
+      // pin it set one line earlier and snap the panel out from under the hand.
+      if (!g.current) clearDrag()
+      setCatchable(false)
       return
     }
     const s = g.current
@@ -110,7 +146,16 @@ export default function useSheetDrag({ open, onClose, enabled = true }) {
       // Never engaged: the press was a tap (or a scroll attempt). Nothing was
       // painted, so there is nothing to undo and nothing to commit — the tap
       // reaches whatever it was on, exactly as before.
-      if (!s.dragging) return
+      //
+      // After a catch there *is* something to undo: the pin. Committing nothing
+      // is exactly right — the catch already reopened the sheet, so dropping the
+      // pin lets the transition carry it back up from where it was caught. This
+      // is G5's rule unchanged ("a press that never moved decides nothing"); it
+      // simply now decides nothing about a sheet that is open again.
+      if (!s.dragging) {
+        if (s.caught) clearDrag()
+        return
+      }
 
       const el = panelRef.current
       if (!commit || !el) {
@@ -129,6 +174,9 @@ export default function useSheetDrag({ open, onClose, enabled = true }) {
         // jump back up before fading out.
         el.style.removeProperty(DRAG_VAR)
         el.setAttribute(DRAG_ATTR, 'exit')
+        // The same attribute opens the catch window (G16) — but only for a
+        // sheet whose owner can actually put `open` back to true.
+        setCatchable(!!reopenRef.current)
         closeRef.current?.()
       } else {
         clearDrag()
@@ -146,28 +194,51 @@ export default function useSheetDrag({ open, onClose, enabled = true }) {
       if (e.pointerType === 'mouse' && e.button !== 0) return
 
       const handle = e.currentTarget
+      const el = panelRef.current
+      // Is this a press on a sheet the user threw away themselves, and can it be
+      // put back? Both have to hold, or the press is an ordinary one (G16).
+      const caught =
+        isCatchableExit(el.getAttribute(DRAG_ATTR), enabled) && !!reopenRef.current
+      const originOffset = caught ? currentOffset(el) : 0
+
       g.current = {
         id: e.pointerId,
         handle,
         startY: e.clientY,
         originY: e.clientY,
-        originOffset: 0,
-        offset: 0,
+        originOffset,
+        offset: originOffset,
         dragging: false,
+        caught,
         samples: [{ t: e.timeStamp, y: e.clientY }],
       }
       // Feedback on pointer *down* (§5) — but only on the grabber's colour.
-      // Nothing geometric happens yet: the panel keeps `transform: none` until
-      // the gesture actually engages, so a press that turns out to be a tap
-      // never creates a containing block.
+      // On an ordinary press nothing geometric happens yet: the panel keeps
+      // `transform: none` until the gesture actually engages, so a press that
+      // turns out to be a tap never creates a containing block.
       setGrabbed(true, handle)
+
+      if (caught) {
+        // A catch is the one press that *does* move something immediately: the
+        // sheet has to stop dead under the finger instead of sliding on for the
+        // 8px of slop. Safe here and only here — a leaving panel already carries
+        // a transform, so pinning it creates no containing block that wasn't
+        // there a frame ago, and releasing without a drag clears it again.
+        paint(originOffset)
+        // The owner stays the source of truth: this reopens the sheet for real,
+        // so the presence machine takes G4's own `exiting + open → open` edge
+        // and drops its exit timer with it. No phase is faked, and nothing
+        // jumps — `[data-drag='live']` outranks the open position by source
+        // order in index.css.
+        reopenRef.current()
+      }
       try {
         handle.setPointerCapture(e.pointerId)
       } catch {
         /* capture is best-effort — same as useTimedGesture.js */
       }
     },
-    [enabled, setGrabbed]
+    [enabled, paint, setGrabbed]
   )
 
   const onPointerMove = useCallback(
@@ -199,5 +270,5 @@ export default function useSheetDrag({ open, onClose, enabled = true }) {
     onPointerCancel: (e) => finish(false, e),
   }
 
-  return { panelRef, handleProps: enabled ? handleProps : {} }
+  return { panelRef, handleProps: enabled ? handleProps : {}, catchable }
 }

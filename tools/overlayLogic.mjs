@@ -12,8 +12,9 @@ import {
   CLOSED, ENTERING, OPEN, EXITING,
   OPEN_EVENT, CLOSE_EVENT, PRIMED, EXITED,
   nextPhase, isMounted, acceptsEscape,
-  createEscapeStack,
+  createOverlayStack,
 } from './src/lib/overlayPresence.js'
+import { createScrollLock, LOCK_ATTR } from './src/lib/scrollLock.js'
 
 let pass = 0, fail = 0
 const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log('  ✗ ' + name) } }
@@ -68,11 +69,11 @@ ok('closed is the only unmounted phase',
 ok('an overlay on its way out no longer answers Escape',
    acceptsEscape(ENTERING) && acceptsEscape(OPEN) && !acceptsEscape(EXITING) && !acceptsEscape(CLOSED))
 
-// ── Escape stack ────────────────────────────────────────────────────────────
+// ── Overlay stack ───────────────────────────────────────────────────────────
 // The bug this replaces: an EventDetailSheet with a ConfirmDialog on top of it
 // closed BOTH on a single Escape, because each listened for itself.
 {
-  const stack = createEscapeStack()
+  const stack = createOverlayStack()
   const sheet = { name: 'sheet' }
   const dialog = { name: 'dialog' }
   const popSheet = stack.push(sheet)
@@ -103,7 +104,7 @@ ok('an overlay on its way out no longer answers Escape',
 }
 
 {
-  const stack = createEscapeStack()
+  const stack = createOverlayStack()
   const a = {}, b = {}, c = {}
   const popA = stack.push(a), popB = stack.push(b), popC = stack.push(c)
   // Overlays do not necessarily unmount in the order they were opened.
@@ -114,6 +115,72 @@ ok('an overlay on its way out no longer answers Escape',
   popA()
   ok('removing twice is harmless', (popA(), stack.size() === 0))
 }
+
+// The stack now also carries the focus trap (G13) and the scroll lock (G14),
+// so an overlay without an onEscape has to be in it too — and remove() is
+// available on its own, not only as push's return value.
+{
+  const stack = createOverlayStack()
+  const search = {} // no Escape handler of its own
+  const sheet = {}
+  stack.push(search)
+  stack.push(sheet)
+  ok('an overlay registers regardless of an Escape handler', stack.size() === 2)
+  ok('the later overlay is the one that traps', stack.isTop(sheet))
+  stack.remove(sheet)
+  ok('remove(entry) works without the returned remover', stack.isTop(search))
+  stack.remove({})
+  ok('removing an unknown entry is harmless', stack.size() === 1)
+  stack.remove(search)
+  ok('nothing is top on an empty stack', !stack.isTop(search) && stack.size() === 0)
+}
+
+// ── Scroll lock (G14) ───────────────────────────────────────────────────────
+// Overlays stack and release out of order, and the same React effect cleanup
+// can run twice — the count has to survive all of it, because a count that
+// never reaches zero leaves the page permanently unscrollable.
+{
+  const applied = []
+  const lock = createScrollLock((locked) => applied.push(locked))
+
+  const sheet = lock.acquire()
+  ok('the first overlay locks the page', lock.locked() && applied.join() === 'true')
+
+  const dialog = lock.acquire()
+  ok('a dialog on top does not lock a second time', applied.join() === 'true')
+  ok('...but is counted', lock.count() === 2)
+
+  dialog()
+  ok('closing the dialog leaves the lock the sheet still holds',
+     lock.locked() && applied.join() === 'true')
+  sheet()
+  ok('the last overlay to close unlocks', !lock.locked() && applied.join() === 'true,false')
+
+  // A cleanup that runs twice must not push the count below what is held.
+  const a = lock.acquire()
+  const b = lock.acquire()
+  a(); a(); a()
+  ok('releasing the same holder repeatedly is harmless', lock.count() === 1 && lock.locked())
+  b()
+  ok('...and the page still unlocks exactly once', !lock.locked())
+  ok('the page was locked and unlocked twice, never more',
+     applied.join() === 'true,false,true,false')
+}
+
+// G4's exiting-to-open edge is what keeps the count balanced: the
+// overlay never leaves the mounted window, so the effect holding the lock is
+// never torn down and re-run.
+{
+  const phases = [CLOSED, ENTERING, OPEN, EXITING, OPEN, EXITING, CLOSED]
+  const mounted = phases.map(isMounted)
+  ok('the overlay stays mounted from the first open to the final close',
+     mounted.join() === 'false,true,true,true,true,true,false')
+  ok('so a lock keyed on mounted is taken once and released once',
+     mounted.filter((m, i) => i > 0 && m !== mounted[i - 1]).length === 2)
+}
+
+ok('the lock is applied as an attribute, not an inline style',
+   LOCK_ATTR === 'data-ov-scroll-locked')
 
 console.log(\`  \${pass} passed, \${fail} failed\`)
 process.exit(fail ? 1 : 0)

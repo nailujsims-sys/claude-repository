@@ -345,6 +345,7 @@ export default function TasksList() {
       <FilterSheet
         open={filterOpen}
         onClose={() => setFilterOpen(false)}
+        onReopen={() => setFilterOpen(true)}
         value={filters}
         onApply={setFilters}
       />

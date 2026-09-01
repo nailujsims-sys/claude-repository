@@ -178,6 +178,44 @@ body {
   pointer-events: none;
 }
 
+/* ── Scroll lock (G14) ───────────────────────────────────────────────
+   The page behind an open sheet used to keep scrolling — with the wheel, with
+   a finger on the backdrop and with the keyboard alike, because all three end
+   up at the document scroller (see src/lib/scrollLock.js for why it is always
+   that one). `overflow: hidden` on the scrolling element stops exactly that
+   and nothing else: the sheet's own body, the sidebar's nav and the calendar's
+   view containers are separate scroll containers and keep working, and no
+   `touchmove` handler or `touch-action` is involved, so G5's drag-to-dismiss
+   and the calendar gestures keep every event they had.
+
+   `html` already has `height: 100%`, which is what makes the rule hold on iOS
+   as well — no `position: fixed` on the body, so the scroll offset survives
+   the lock and the page is exactly where it was when the sheet closes. Both
+   elements are named because which of the two carries the viewport's scrolling
+   depends on the browser; locking the pair is decided either way, and neither
+   affects the `position: fixed` chrome (bottom nav, toasts, the overlay root).
+
+   `scrollbar-gutter` is set unconditionally, not inside the locked rule: it
+   reserves the classic desktop scrollbar's width at all times, so hiding the
+   scrollbar cannot shift the centred `.app-frame` sideways when a sheet opens.
+   Mobile and trackpad overlay scrollbars take no width and are unaffected. */
+html {
+  scrollbar-gutter: stable;
+}
+html[data-ov-scroll-locked],
+html[data-ov-scroll-locked] body {
+  overflow: hidden;
+}
+
+/* The overlay root is the focus scope's boundary and its last-resort focus
+   target (G13, `tabIndex={-1}` in Overlay.jsx). It is only ever focused by
+   script, for a panel with nothing focusable inside it, and a ring around a
+   full-screen box would be meaningless — the focus states above stay with the
+   controls. */
+.ov-root:focus {
+  outline: none;
+}
+
 .ov-panel-sheet {
   transform: translateY(100%);
   transition: transform var(--ov-dur, 300ms) var(--ov-ease);
@@ -221,6 +259,29 @@ body {
 }
 .ov-panel-sheet[data-drag='exit'] {
   transform: translateY(100%);
+}
+
+/* ── Catching a sheet on its way out (G16) ───────────────────────────
+   §7 names both directions; G5 delivered one. A sheet can be grabbed while it
+   slides *in*, but not while it leaves: G4 gives a leaving panel
+   `pointer-events: none` and `inert` so its trigger is free again the moment
+   the exit starts, and that is worth keeping.
+
+   So exactly one exit is opened back up, and only on the handle: the one the
+   user threw away themselves. `data-drag='exit'` is written by the dismissal in
+   src/lib/useSheetDrag.js and by nothing else — the backdrop, Escape, Löschen,
+   Bearbeiten and an action-sheet row all close without it. Everything else
+   stays as transparent to taps as G4 made it (the panel body, the backdrop, the
+   root), so a press next to the handle still reaches the app and the trigger
+   behind it. `inert` has to come off for this window too — an inert subtree
+   ignores pointer input even where a descendant opts back in — which
+   BottomSheet.jsx does, for this window only.
+
+   Nothing is needed under reduced motion: `[data-drag='exit']` above puts the
+   sheet at `translateY(100%)` in the same frame there, so the handle is already
+   off-screen and there is no travel to catch. */
+.ov-panel-sheet[data-drag='exit'] .ov-sheet-handle {
+  pointer-events: auto;
 }
 
 /* The handle claims the vertical gesture — otherwise the browser reads the

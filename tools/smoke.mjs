@@ -72,6 +72,24 @@ function click(window, predicate) {
 
 // Type into a React-controlled input (uses the native value setter so React's
 // onChange fires), then dispatch an 'input' event.
+// Dispatch a key on `window`, where the overlay's Escape and Tab listeners sit.
+function press(window, key, { shiftKey = false } = {}) {
+  const e = new window.KeyboardEvent('keydown', {
+    key, shiftKey, bubbles: true, cancelable: true,
+  })
+  window.dispatchEvent(e)
+  return e
+}
+
+// The focusable elements of a scope, in the same order the trap walks them.
+function focusables(window, root) {
+  return [...root.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  )].filter((el) => !el.closest('[inert]'))
+}
+
+const locked = (window) => window.document.documentElement.hasAttribute('data-ov-scroll-locked')
+
 function typeInto(window, selector, text) {
   const el = window.document.querySelector(selector)
   if (!el) return false
@@ -531,6 +549,304 @@ async function run() {
     for (const needle of ['Zahnarzt', 'Praxis', 'Bearbeiten', 'Löschen']) {
       if (!text.includes(needle)) errors.push(`[Search] opened detail missing "${needle}"`)
     }
+  }
+
+  // 8) Focus scope (G13) and scroll lock (G14). Both live in <Overlay>, so one
+  //    sheet is enough to prove the mechanism — what the individual overlays
+  //    then need is that they go through <Overlay>, which section 1-7 cover.
+  {
+    const window = makeDom('#/aufgaben')
+    mount(window, code, 'Overlay')
+    await wait(250)
+    const doc = window.document
+
+    if (locked(window)) errors.push('[Overlay] the page is locked with no overlay open')
+
+    // Open the action sheet from the Plus button, with the focus really on it —
+    // that is the element the sheet has to hand the focus back to.
+    const plus = [...doc.querySelectorAll('button')].find(
+      (el) => el.getAttribute('aria-label') === 'Neu erstellen'
+    )
+    if (!plus) errors.push('[Overlay] Plus button not found')
+    plus?.focus()
+    plus?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(150)
+
+    const root = doc.querySelector('.ov-root')
+    if (!root) errors.push('[Overlay] no overlay root rendered')
+    if (!root?.contains(doc.activeElement))
+      errors.push('[Overlay] opening the sheet did not move the focus into it')
+    if (!locked(window)) errors.push('[Overlay] the page was not locked behind the open sheet')
+
+    // The dialog names itself after the title it already draws.
+    const panel = doc.querySelector('[role="dialog"][aria-modal="true"]')
+    const labelledBy = panel?.getAttribute('aria-labelledby')
+    if (!labelledBy || doc.getElementById(labelledBy)?.textContent.trim() !== 'Erstellen')
+      errors.push('[Overlay] the sheet is not labelled by its own title')
+
+    // Tab wraps at the edges and is left alone in between.
+    const items = focusables(window, root)
+    if (items.length < 2) errors.push('[Overlay] the sheet has too few controls to trap')
+    items[items.length - 1]?.focus()
+    let e = press(window, 'Tab')
+    if (!e.defaultPrevented || doc.activeElement !== items[0])
+      errors.push('[Overlay] Tab off the last control did not wrap into the sheet')
+    e = press(window, 'Tab', { shiftKey: true })
+    if (!e.defaultPrevented || doc.activeElement !== items[items.length - 1])
+      errors.push('[Overlay] Shift+Tab off the first control did not wrap into the sheet')
+    items[0]?.focus()
+    e = press(window, 'Tab')
+    if (e.defaultPrevented)
+      errors.push('[Overlay] Tab inside the sheet was intercepted instead of left to the browser')
+
+    // A focus that escaped the scope is pulled back in.
+    plus?.focus()
+    press(window, 'Tab')
+    if (!root.contains(doc.activeElement))
+      errors.push('[Overlay] Tab did not pull an escaped focus back into the sheet')
+
+    console.log(`\n=== Overlay (Fokus + Scroll Lock) ===\n  focus=${doc.activeElement?.textContent?.trim().slice(0, 24)} locked=${locked(window)} controls=${items.length}`)
+
+    // Escape closes it, the page unlocks and the focus goes back to the Plus.
+    press(window, 'Escape')
+    await wait(450)
+    if (doc.querySelector('.ov-root'))
+      errors.push('[Overlay] Escape did not close the sheet')
+    if (locked(window)) errors.push('[Overlay] the page stayed locked after the sheet closed')
+    if (doc.activeElement !== plus)
+      errors.push('[Overlay] closing did not hand the focus back to the trigger')
+  }
+
+  // 8b) Nesting: a ConfirmDialog opened from a sheet is a DOM *descendant* of
+  //     that sheet, which is why the trap asks the stack who is on top instead
+  //     of making the background inert. Escape must reach the dialog only, and
+  //     the lock is held twice and released twice.
+  {
+    const window = makeDom('#/kalender')
+    mount(window, code, 'Nested')
+    await wait(300)
+    const doc = window.document
+
+    if (!click(window, (el) => el.textContent.trim() === 'Familientreffen'))
+      errors.push('[Nested] event bar not found')
+    await wait(200)
+    if (!locked(window)) errors.push('[Nested] the page was not locked behind the sheet')
+    const sheetRoot = doc.querySelector('.ov-root')
+    if (!sheetRoot?.contains(doc.activeElement))
+      errors.push('[Nested] the sheet did not take the focus')
+
+    if (!click(window, (el) => el.textContent.trim() === 'Löschen'))
+      errors.push('[Nested] "Löschen" not clickable')
+    await wait(200)
+    const dialogRoot = doc.querySelector('.ov-root .ov-root')
+    if (!dialogRoot)
+      errors.push('[Nested] the confirm dialog does not render inside the sheet')
+    if (!dialogRoot?.contains(doc.activeElement))
+      errors.push('[Nested] the dialog did not take the focus from the sheet')
+
+    // The trap follows the top of the stack, not the DOM nesting: Tab stays in
+    // the dialog even though the sheet around it is full of controls.
+    const dialogItems = focusables(window, dialogRoot)
+    dialogItems[dialogItems.length - 1]?.focus()
+    press(window, 'Tab')
+    if (!dialogRoot?.contains(doc.activeElement))
+      errors.push('[Nested] Tab left the dialog for the sheet underneath it')
+
+    // One Escape closes the dialog only — the sheet behind it stays.
+    press(window, 'Escape')
+    await wait(350)
+    if (doc.querySelector('.ov-root .ov-root'))
+      errors.push('[Nested] the dialog did not close on Escape')
+    if (!doc.querySelector('.ov-root'))
+      errors.push('[Nested] the same Escape closed the sheet underneath as well')
+    if (!locked(window))
+      errors.push('[Nested] the page unlocked although the sheet is still open')
+    if (!doc.querySelector('.ov-root')?.contains(doc.activeElement))
+      errors.push('[Nested] the focus did not return to the sheet under the dialog')
+
+    console.log(`\n=== Nested (Sheet + ConfirmDialog) ===\n  dialog closed, sheet open=${!!doc.querySelector('.ov-root')} locked=${locked(window)}`)
+
+    // And the second Escape closes the sheet, releasing the last lock.
+    press(window, 'Escape')
+    await wait(450)
+    window.__restoreConsole?.()
+    if (doc.querySelector('.ov-root')) errors.push('[Nested] the sheet did not close')
+    if (locked(window)) errors.push('[Nested] the lock was not fully released')
+  }
+
+  // 8c) The calendar search shares the presence lifecycle but is not a modal —
+  //     it covers the calendar instead of dimming it, and G13/G14 must leave it
+  //     exactly as it was.
+  {
+    const window = makeDom('#/kalender')
+    mount(window, code, 'NonModal')
+    await wait(300)
+    const doc = window.document
+
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Suche'))
+      errors.push('[NonModal] Suche button not found')
+    await wait(200)
+    if (!doc.querySelector('input[placeholder="Termine durchsuchen"]'))
+      errors.push('[NonModal] the search overlay did not open')
+    if (locked(window))
+      errors.push('[NonModal] the search overlay locked the page although it is not modal')
+    if (doc.querySelector('.ov-root'))
+      errors.push('[NonModal] the search overlay rendered an overlay root')
+
+    // Its own autofocus still holds the focus, and Tab is not trapped.
+    if (doc.activeElement !== doc.querySelector('input[placeholder="Termine durchsuchen"]'))
+      errors.push('[NonModal] the search field lost its autofocus')
+    const e = press(window, 'Tab')
+    if (e.defaultPrevented) errors.push('[NonModal] Tab was trapped in the search overlay')
+
+    console.log(`\n=== NonModal (Kalendersuche) ===\n  locked=${locked(window)} ov-root=${!!doc.querySelector('.ov-root')} tab trapped=${e.defaultPrevented}`)
+
+    // The scrolling surfaces the lock must not touch are still scroll containers.
+    window.__restoreConsole?.()
+    if (!doc.querySelector('.overflow-y-auto'))
+      errors.push('[NonModal] the calendar lost its own scroll container')
+  }
+
+  // 8d) The sheet's own body and the sidebar's nav keep scrolling — the lock is
+  //     on the document scroller only.
+  {
+    const window = makeDom('#/aufgaben')
+    mount(window, code, 'Scrollers')
+    await wait(250)
+    const doc = window.document
+
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Filter'))
+      errors.push('[Scrollers] Filter button not found')
+    await wait(200)
+    const body = doc.querySelector('.ov-root [role="dialog"] > .overflow-y-auto')
+    if (!body) errors.push('[Scrollers] the sheet body is no longer a scroll container')
+    if (!body?.className.includes('overscroll-contain'))
+      errors.push('[Scrollers] the sheet body lost its overscroll containment')
+    press(window, 'Escape')
+    await wait(450)
+
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Menü öffnen'))
+      errors.push('[Scrollers] Menü button not found')
+    await wait(200)
+    const aside = doc.querySelector('aside[role="dialog"]')
+    if (!aside) errors.push('[Scrollers] the sidebar is not announced as a dialog')
+    if (aside?.getAttribute('aria-modal') !== 'true')
+      errors.push('[Scrollers] the sidebar is not announced as modal')
+    if (!aside?.getAttribute('aria-label'))
+      errors.push('[Scrollers] the sidebar has no accessible name')
+    if (!aside?.querySelector('nav.overflow-y-auto'))
+      errors.push('[Scrollers] the sidebar nav is no longer a scroll container')
+    console.log(`\n=== Scrollers (Sheet-Body + Sidebar-Nav) ===\n  sheet body=${!!body} sidebar dialog=${!!aside} nav scrollable=${!!aside?.querySelector('nav.overflow-y-auto')}`)
+    window.__restoreConsole?.()
+  }
+
+  // 8e) The handoff G13 has to get right: EventDetailSheet → "Bearbeiten"
+  //     closes the sheet and opens the EventForm in the same breath. The
+  //     leaving sheet must not take the focus back off the form that has just
+  //     taken it — that would land on a calendar entry behind two overlays.
+  {
+    const window = makeDom('#/kalender')
+    mount(window, code, 'Handoff')
+    await wait(300)
+    const doc = window.document
+
+    const bar = [...doc.querySelectorAll('button, [role="button"]')].find(
+      (el) => el.textContent.trim() === 'Familientreffen'
+    )
+    if (!bar) errors.push('[Handoff] event bar not found')
+    bar?.focus()
+    bar?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(200)
+
+    if (!click(window, (el) => el.textContent.trim() === 'Bearbeiten'))
+      errors.push('[Handoff] "Bearbeiten" not clickable')
+    // Past the sheet's 300ms exit, so the closing sheet has had its say.
+    await wait(500)
+    window.__restoreConsole?.()
+
+    const form = doc.querySelector('input[placeholder="Titel des Termins"]')
+    if (!form) errors.push('[Handoff] the edit form did not open')
+    const roots = [...doc.querySelectorAll('.ov-root')]
+    if (roots.length !== 1)
+      errors.push(`[Handoff] expected exactly one overlay after the handoff, got ${roots.length}`)
+    if (!roots[0]?.contains(doc.activeElement))
+      errors.push('[Handoff] the focus is not in the form that took over')
+    if (doc.activeElement === bar)
+      errors.push('[Handoff] the closing sheet pulled the focus back onto the calendar')
+    if (!locked(window)) errors.push('[Handoff] the page unlocked during the handoff')
+    console.log(`\n=== Handoff (EventDetail → EventForm) ===\n  overlays=${roots.length} focus in form=${!!roots[0]?.contains(doc.activeElement)} locked=${locked(window)}`)
+  }
+
+  // 8f) Closing by hand (G5): drag-to-dismiss ends on the same onClose as the
+  //     backdrop and Escape, so the focus has to come back the same way.
+  {
+    const window = makeDom('#/aufgaben')
+    mount(window, code, 'DragClose')
+    await wait(250)
+    const doc = window.document
+
+    const plus = [...doc.querySelectorAll('button')].find(
+      (el) => el.getAttribute('aria-label') === 'Neu erstellen'
+    )
+    plus?.focus()
+    plus?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(200)
+
+    const panel = doc.querySelector('.ov-panel-sheet')
+    const handle = doc.querySelector('.ov-sheet-handle')
+    if (!handle) errors.push('[DragClose] the sheet has no drag handle')
+    // jsdom lays nothing out, so the sheet needs a height for the dismiss
+    // threshold (a share of it) to mean anything.
+    if (panel) panel.getBoundingClientRect = () => ({ height: 200, width: 390, top: 0, left: 0, right: 390, bottom: 200, x: 0, y: 0 })
+    const pointer = (type, clientY) =>
+      handle?.dispatchEvent(new window.PointerEvent(type, {
+        bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 0,
+        pointerType: 'touch', clientX: 100, clientY,
+      }))
+    pointer('pointerdown', 0)
+    pointer('pointermove', 20) // past the 8px slop — the drag engages
+    pointer('pointermove', 120) // well past a quarter of the sheet's height
+    pointer('pointerup', 120)
+    await wait(500)
+    window.__restoreConsole?.()
+
+    if (doc.querySelector('.ov-root'))
+      errors.push('[DragClose] the sheet was not dismissed by the drag')
+    if (locked(window)) errors.push('[DragClose] the page stayed locked after a drag dismiss')
+    if (doc.activeElement !== plus)
+      errors.push('[DragClose] a drag dismiss did not hand the focus back to the trigger')
+    console.log(`\n=== DragClose (G5 + Fokusrückgabe) ===\n  closed=${!doc.querySelector('.ov-root')} locked=${locked(window)} focus back=${doc.activeElement === plus}`)
+  }
+
+  // 8g) G4's exiting-to-open edge: reopening a sheet that is still sliding out
+  //     keeps the same element and never remounts, so the lock must be held
+  //     exactly once throughout — and released exactly once at the end.
+  {
+    const window = makeDom('#/aufgaben')
+    mount(window, code, 'Reopen')
+    await wait(250)
+    const doc = window.document
+    const plus = [...doc.querySelectorAll('button')].find(
+      (el) => el.getAttribute('aria-label') === 'Neu erstellen'
+    )
+
+    plus?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(200)
+    press(window, 'Escape')
+    await wait(100) // mid-exit, the panel is still on screen
+    if (!locked(window)) errors.push('[Reopen] the page unlocked while the sheet was still leaving')
+    plus?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(300)
+    if (!doc.querySelector('.ov-root')) errors.push('[Reopen] the sheet did not come back')
+    if (!locked(window)) errors.push('[Reopen] the reopened sheet lost the lock')
+
+    press(window, 'Escape')
+    await wait(500)
+    window.__restoreConsole?.()
+    if (doc.querySelector('.ov-root')) errors.push('[Reopen] the sheet did not close again')
+    if (locked(window))
+      errors.push('[Reopen] the lock was taken twice and released once — the page stays locked')
+    console.log(`\n=== Reopen (Öffnen während exiting) ===\n  closed=${!doc.querySelector('.ov-root')} locked=${locked(window)}`)
   }
 
   console.log('\n--- result ---')

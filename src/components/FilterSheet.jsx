@@ -6,7 +6,7 @@ const DEFAULTS = { onlyFavorites: false, showCompleted: false, showDeleted: fals
 
 // Bottom-sheet filter panel for the Aufgaben list. Edits a draft and commits on
 // "Anwenden"; "Zurücksetzen" restores defaults.
-export default function FilterSheet({ open, onClose, value, onApply }) {
+export default function FilterSheet({ open, onClose, onReopen, value, onApply }) {
   const [draft, setDraft] = useState(value)
 
   useEffect(() => {
@@ -22,7 +22,7 @@ export default function FilterSheet({ open, onClose, value, onApply }) {
   ]
 
   return (
-    <BottomSheet open={open} onClose={onClose} title="Filter">
+    <BottomSheet open={open} onClose={onClose} onReopen={onReopen} title="Filter">
       <div className="px-5 pb-8">
         <div className="divide-y divide-white/[0.06]">
           {rows.map(({ key, label, icon: Icon }) => (
