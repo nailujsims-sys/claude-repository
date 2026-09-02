@@ -7,6 +7,7 @@ import {
   Bell,
   Pencil,
   Trash2,
+  RefreshCw,
 } from 'lucide-react'
 import BottomSheet from './BottomSheet'
 import ConfirmDialog from './ConfirmDialog'
@@ -23,6 +24,8 @@ import {
 } from '../lib/date'
 import { eventStart, eventEnd, eventDisplayTitle } from '../lib/calendar'
 import { recurrenceLabel, reminderLabel } from '../lib/eventOptions'
+import { useGoogle } from '../context/GoogleContext'
+import { APP_EVENT_COLOR, calendarById, eventSyncLabel, safeHexColor } from '../lib/googleCalendar'
 
 const p2 = (n) => String(n).padStart(2, '0')
 const hm = (d) => `${p2(d.getHours())}:${p2(d.getMinutes())}`
@@ -56,6 +59,7 @@ export default function EventDetailSheet({ event, onClose, onReopen }) {
   const ev = useRetained(event)
   const { openEventForm } = useUI()
   const { deleteEvent } = useEvents()
+  const { connected, calendars } = useGoogle()
   const { showToast } = useToast()
   const [confirmOpen, setConfirmOpen] = useState(false)
 
@@ -105,6 +109,39 @@ export default function EventDetailSheet({ event, onClose, onReopen }) {
             )}
             {ev.location && <InfoRow icon={MapPin} label="Ort" value={ev.location} />}
           </div>
+
+          {/* Kalender + Sync-Zustand. Only for someone who has connected an
+              account: without one there is nothing here to say. */}
+          {connected && (
+            <div className="mt-3 divide-y divide-subtle overflow-hidden rounded-card border border-subtle bg-bg-card">
+              <InfoRow
+                icon={RefreshCw}
+                label="Kalender"
+                value={
+                  calendarById(calendars, ev.google_calendar_id)?.summary || 'Nur in dieser App'
+                }
+                muted={!ev.google_calendar_id}
+                leading={
+                  <span
+                    className="h-3 w-3 shrink-0 rounded-full"
+                    style={{
+                      background:
+                        safeHexColor(
+                          calendarById(calendars, ev.google_calendar_id)?.background_color
+                        ) || APP_EVENT_COLOR,
+                    }}
+                  />
+                }
+              />
+              <InfoRow
+                icon={Bell}
+                label="Status"
+                value={eventSyncLabel(ev)}
+                muted={!ev.google_calendar_id}
+                danger={ev.sync_state === 'error'}
+              />
+            </div>
+          )}
 
           {/* Recurrence / reminder */}
           <div className="mt-3 divide-y divide-subtle overflow-hidden rounded-card border border-subtle bg-bg-card">
@@ -162,17 +199,22 @@ export default function EventDetailSheet({ event, onClose, onReopen }) {
   )
 }
 
-function InfoRow({ icon: Icon, label, value, muted = false }) {
+// `leading` (a colour swatch) and `danger` are both optional; every existing
+// call site passes neither and renders exactly as it did before.
+function InfoRow({ icon: Icon, label, value, muted = false, leading = null, danger = false }) {
   return (
     <div className="flex w-full items-center gap-3 px-4 py-3.5">
       <Icon size={18} className="shrink-0 text-text-secondary" />
       <span className="text-[15px] text-text-primary">{label}</span>
-      <span
-        className={`ml-auto pl-3 text-right text-[15px] ${
-          muted ? 'text-text-muted' : 'text-text-secondary'
-        }`}
-      >
-        {value}
+      <span className="ml-auto flex min-w-0 items-center gap-2 pl-3">
+        {leading}
+        <span
+          className={`truncate text-right text-[15px] ${
+            danger ? 'text-danger' : muted ? 'text-text-muted' : 'text-text-secondary'
+          }`}
+        >
+          {value}
+        </span>
       </span>
     </div>
   )

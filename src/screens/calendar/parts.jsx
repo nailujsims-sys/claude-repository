@@ -10,11 +10,28 @@ import {
   eventDisplayTitle,
 } from '../../lib/calendar'
 import { useNow } from '../../lib/useNow'
+import { useGoogle } from '../../context/GoogleContext'
+import { eventColor } from '../../lib/googleCalendar'
 
 // Shared presentational primitives for the Tag / Woche grids. Kept dumb and
 // pixel-driven so both views compose them the same way.
+//
+// One exception, and it is deliberate: an event's colour is the colour of the
+// Google calendar it belongs to, and these two components are the only place
+// an event is painted. Reading it from the context here costs one hook; the
+// alternative was threading a colour prop through DayView, WeekView and
+// MonthView and every loop inside them, to arrive at exactly this line.
 
 const p2 = (n) => String(n).padStart(2, '0')
+
+// The calendar's colour as a stripe down the leading edge — an inset shadow
+// rather than a border, so it costs no layout and cannot shift a block by a
+// pixel. An app-only event keeps the accent it has always had, so nothing
+// about the calendar changes for someone who never connects Google.
+export function useEventStripe() {
+  const { calendars } = useGoogle()
+  return (ev) => ({ boxShadow: `inset 3px 0 0 ${eventColor(ev, calendars)}` })
+}
 
 // Left gutter of hour labels, aligned to the grid rows.
 export function HourGutter() {
@@ -142,6 +159,7 @@ function clampStyle(font, line, lines) {
 // only ever paints, which is exactly why it must not commit anything.
 export function TimedBlock({ item, columnWidth = 0, compact = false, editing = false, draft = null }) {
   const { ev } = item
+  const stripe = useEventStripe()
   const geom = draft
     ? eventTopHeight(draft.start_at, draft.end_at)
     : { top: item.top, height: item.height }
@@ -169,6 +187,9 @@ export function TimedBlock({ item, columnWidth = 0, compact = false, editing = f
         paddingBlock: t.padY,
         paddingInline: t.padX,
         touchAction: editing ? 'none' : undefined,
+        // While editing, the accent ring and shadow are the state; a second
+        // coloured edge under them would only muddy it.
+        ...(editing ? {} : stripe(ev)),
       }}
     >
       {t.showText && (
@@ -257,6 +278,7 @@ export function BarsArea({
   laneHeight = 22,
   containerWidth = 0,
 }) {
+  const stripe = useEventStripe()
   if (!laneCount) return null
   const barHeight = laneHeight - (laneHeight >= 20 ? 4 : 3)
   const roomy = laneHeight >= 20
@@ -280,6 +302,7 @@ export function BarsArea({
               left: `calc(${(startIndex / columns) * 100}% + 2px)`,
               width: `calc(${(span / columns) * 100}% - 4px)`,
               paddingInline: tight ? 3 : narrow ? 4 : 6,
+              ...stripe(ev),
             }}
           >
             <span

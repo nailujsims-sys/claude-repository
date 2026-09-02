@@ -8,7 +8,7 @@ import {
   eventDisplayTitle,
 } from '../../lib/calendar'
 import { tasksForDay } from '../../lib/taskSelectors'
-import { BarsArea } from './parts'
+import { BarsArea, useEventStripe } from './parts'
 import { useElementWidth } from './useElementWidth'
 
 const NUMBER_BLOCK_H = 38 // px reserved for the day number + task dot
@@ -80,6 +80,7 @@ const WeekRow = memo(function WeekRow({
   onSelectDay,
   onSelectEvent,
 }) {
+  const stripe = useEventStripe()
   const weekStart = week.days[0].date
   const weekEnd = week.days[6].date
   const bars = eventsInRange(events, weekStart, weekEnd).filter(isBarEvent)
@@ -133,6 +134,7 @@ const WeekRow = memo(function WeekRow({
                   title={eventDisplayTitle(ev)}
                   className="press-tint block w-full rounded bg-accent-dim text-left text-text-primary"
                   style={{
+                    ...stripe(ev),
                     paddingInline: 3,
                     fontSize: 10,
                     lineHeight: `${CHIP_LINE}px`,

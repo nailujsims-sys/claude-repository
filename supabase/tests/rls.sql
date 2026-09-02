@@ -22,6 +22,8 @@ declare
   event_a  uuid;
   n        integer;
   ok       boolean;
+  ok_text  text;
+  event_local uuid;
 begin
   -- ── Setup: two accounts, created the way Supabase creates them ────────────
   insert into auth.users (id, email) values
@@ -134,7 +136,142 @@ begin
   end;
   if not ok then raise exception 'FAIL: an unauthenticated client inserted a task'; end if;
 
-  -- ── 8. Every personal table actually has RLS switched on ─────────────────
+  -- ── 8. The Google integration ────────────────────────────────────────────
+  -- The rule this section exists for: a browser may see *that* it is connected
+  -- and *which* calendars there are, and may never see the tokens behind them.
+  execute 'reset role';
+
+  -- Two connected accounts, written the way the sync service writes them.
+  insert into public.google_connections (user_id, google_account_email, default_calendar_id)
+    values (user_a, 'a@example.test', 'a-privat'), (user_b, 'b@example.test', 'b-privat');
+  insert into public.google_credentials (user_id, access_token, refresh_token)
+    values (user_a, 'token-a', 'refresh-a'), (user_b, 'token-b', 'refresh-b');
+  insert into public.google_calendars (user_id, google_calendar_id, summary, access_role, is_selected)
+    values (user_a, 'a-privat', 'A privat', 'owner', true),
+           (user_b, 'b-privat', 'B privat', 'owner', true);
+  insert into public.google_channels (id, user_id, google_calendar_id, token)
+    values ('chan-a', user_a, 'a-privat', 'secret-a');
+
+  execute 'set local role authenticated';
+  perform set_config('request.jwt.claims', json_build_object('sub', user_a, 'role', 'authenticated')::text, true);
+
+  -- A sees their own connection, and only their own.
+  select count(*) into n from public.google_connections;
+  if n <> 1 then raise exception 'FAIL: A sees % Google connections, expected only their own', n; end if;
+  select count(*) into n from public.google_connections where user_id = user_b;
+  if n <> 0 then raise exception 'FAIL: A can see B''s Google connection'; end if;
+
+  select count(*) into n from public.google_calendars;
+  if n <> 1 then raise exception 'FAIL: A sees % Google calendars, expected only their own', n; end if;
+
+  -- The tokens. Not "A cannot see B''s" — A cannot see *any*, including their
+  -- own: the browser has no grant on this table at all, which is what keeps a
+  -- Google refresh token out of a client bundle even if a policy were added
+  -- by accident later.
+  ok := false;
+  begin
+    execute 'select count(*) from public.google_credentials' into n;
+  exception when insufficient_privilege then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: a signed-in client could read google_credentials'; end if;
+
+  ok := false;
+  begin
+    execute 'select count(*) from public.google_channels' into n;
+  exception when insufficient_privilege then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: a signed-in client could read google_channels'; end if;
+
+  ok := false;
+  begin
+    execute 'select count(*) from public.google_event_tombstones' into n;
+  exception when insufficient_privilege then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: a signed-in client could read google_event_tombstones'; end if;
+
+  -- The connection and the calendar list are read-only for the client: every
+  -- change goes through an Edge Function, so a browser cannot mark a broken
+  -- sync as healthy or point a connection somewhere else.
+  ok := false;
+  begin
+    execute format('update public.google_connections set status = %L where user_id = %L', 'connected', user_a);
+  exception when insufficient_privilege then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: a client could write to google_connections'; end if;
+
+  ok := false;
+  begin
+    execute format('update public.google_calendars set is_selected = false where user_id = %L', user_a);
+  exception when insufficient_privilege then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: a client could write to google_calendars'; end if;
+
+  -- ── 9. The triggers that keep the sync honest ────────────────────────────
+  -- A change made by a device owes Google something; a change made by the sync
+  -- service does not. That single distinction is what stops the echo loop.
+  insert into public.events (user_id, title, start_at, end_at, google_calendar_id, sync_enabled)
+    values (user_a, 'Termin in Google', '2026-09-03T09:00', '2026-09-03T10:00', 'a-privat', true)
+    returning id into event_a;
+  select sync_state into strict ok_text from public.events where id = event_a;
+  if ok_text <> 'pending' then
+    raise exception 'FAIL: an event created on a device was not marked pending (got %)', ok_text;
+  end if;
+
+  -- An app-only event never becomes Google''s business.
+  insert into public.events (user_id, title, start_at, end_at, sync_enabled)
+    values (user_a, 'Nur in der App', '2026-09-03T11:00', '2026-09-03T12:00', false)
+    returning id into event_local;
+  select sync_state into strict ok_text from public.events where id = event_local;
+  if ok_text <> 'local' then
+    raise exception 'FAIL: an app-only event was marked % instead of local', ok_text;
+  end if;
+
+  -- Deleting a synced event leaves the tombstone the sync service needs; the
+  -- client cannot write one itself, which is why the trigger is definer.
+  execute 'reset role';
+  update public.events set google_event_id = 'gev-1', sync_state = 'synced' where id = event_a;
+  execute 'set local role authenticated';
+  perform set_config('request.jwt.claims', json_build_object('sub', user_a, 'role', 'authenticated')::text, true);
+
+  delete from public.events where id = event_a;
+  execute 'reset role';
+  select count(*) into n from public.google_event_tombstones
+    where user_id = user_a and google_event_id = 'gev-1';
+  if n <> 1 then raise exception 'FAIL: deleting a synced event left no tombstone for Google'; end if;
+
+  -- Deleting an app-only event must never reach Google.
+  execute 'set local role authenticated';
+  perform set_config('request.jwt.claims', json_build_object('sub', user_a, 'role', 'authenticated')::text, true);
+  delete from public.events where id = event_local;
+  execute 'reset role';
+  select count(*) into n from public.google_event_tombstones where user_id = user_a;
+  if n <> 1 then raise exception 'FAIL: deleting an app-only event produced a Google tombstone'; end if;
+
+  -- Switching the sync off on an event that is already in Google takes it out
+  -- of Google rather than leaving a second copy behind (§14).
+  execute 'set local role authenticated';
+  perform set_config('request.jwt.claims', json_build_object('sub', user_a, 'role', 'authenticated')::text, true);
+  insert into public.events (user_id, title, start_at, end_at, google_calendar_id, sync_enabled)
+    values (user_a, 'Wird lokal', '2026-09-04T09:00', '2026-09-04T10:00', 'a-privat', true)
+    returning id into event_a;
+  execute 'reset role';
+  update public.events set google_event_id = 'gev-2', sync_state = 'synced' where id = event_a;
+  execute 'set local role authenticated';
+  perform set_config('request.jwt.claims', json_build_object('sub', user_a, 'role', 'authenticated')::text, true);
+  update public.events set sync_enabled = false where id = event_a;
+
+  execute 'reset role';
+  select count(*) into n from public.google_event_tombstones
+    where user_id = user_a and google_event_id = 'gev-2';
+  if n <> 1 then raise exception 'FAIL: switching the sync off left the Google copy in place'; end if;
+  select sync_state into strict ok_text from public.events where id = event_a;
+  if ok_text <> 'local' then
+    raise exception 'FAIL: an event taken out of Google is still %', ok_text;
+  end if;
+  select count(*) into n from public.events where id = event_a and google_event_id is null;
+  if n <> 1 then raise exception 'FAIL: an event taken out of Google kept its Google id'; end if;
+
+  -- ── 10. Every personal table actually has RLS switched on ────────────────
   execute 'reset role';
   select count(*) into n
   from pg_tables t

@@ -56,6 +56,23 @@ nothing (see *Supabase* below).
   moment, over Supabase Realtime — no manual refresh, no polling, and no full
   reload: exactly the one row that changed is folded into the list. A dropped
   connection is caught up as soon as it comes back.
+- **Google Kalender** — the calendar can be connected to a Google account, and
+  then runs in both directions: Google's appointments appear here, this app's
+  appointments appear in Google, and a change on either side reaches the other
+  without anybody pressing refresh. Google's own calendars keep their names,
+  their colours and their rights — a holiday calendar is read-only because
+  Google says so, and a birthday is written back to Google *Contacts*, where
+  Google actually keeps it, rather than to the calendar that only displays it.
+  Recurring appointments stay one rule, not three hundred rows. The newest
+  change wins, whichever side made it. Every appointment carries a switch: off
+  means it lives only here, and Google never sees it. **Nothing about a Google
+  event is a second kind of event** — it is a row in the same `events` table
+  with an external identity, so every screen, search and drag in the calendar
+  works on it unchanged. Setup: [`supabase/GOOGLE-KALENDER.md`](supabase/GOOGLE-KALENDER.md).
+- **Profil** — the account, and *Integrationen → Google Kalender*: connect,
+  choose which calendars sync, set the default calendar for new appointments,
+  see when the last sync ran, disconnect. Disconnecting keeps every
+  appointment; the synced ones simply become app-only.
 - **Mehr** placeholder route, with a preview of upcoming modules.
 
 Everything else (Morning Briefing, schedule, greeting quote) is intentionally
@@ -79,7 +96,10 @@ npm run build        # production build → dist/
 npm run preview      # preview the production build
 npm run smoke        # headless runtime smoke test (jsdom) across all routes
 npm run test:logic   # pure-logic tests: drag/resize math, search, timezone-safety,
-                     # greeting boundaries, the quote-per-day rotation
+                     # greeting boundaries, the quote-per-day rotation, and the
+                     # Google sync (mapping, conflicts, two-way create/update/
+                     # delete, DST, duplicates) against a fake Google
+npm run test:rls     # the RLS policies against a throwaway Postgres
 ```
 
 ---
@@ -91,11 +111,12 @@ the redirect URLs for password resets and how to add a new personal table:
 [`supabase/README.md`](supabase/README.md).
 
 **1. Create the schema.** Run
-[`supabase/migrations/`](supabase/migrations/) `0001` → `0002` → `0003` → `0004`
-in the SQL Editor (or `supabase db push`). They create `profiles`, `tasks` and
-`events`, each with indexes, constraints, an `updated_at` trigger, and Row Level
-Security policies that scope every statement to `auth.uid()`; `0004` publishes
-`tasks` and `events` to Supabase Realtime so open devices hear about changes.
+[`supabase/migrations/`](supabase/migrations/) `0001` → … → `0005` in the SQL
+Editor (or `supabase db push`). They create `profiles`, `tasks` and `events`,
+each with indexes, constraints, an `updated_at` trigger, and Row Level Security
+policies that scope every statement to `auth.uid()`; `0004` publishes `tasks`
+and `events` to Supabase Realtime so open devices hear about changes; `0005`
+adds the Google-Kalender tables and the Google columns on `events`.
 
 **2. Create the user.** Dashboard → Authentication → Users → *Add user*. There
 is no registration screen; the profile row is created by a trigger.
@@ -107,10 +128,19 @@ VITE_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
 ```
 
-**4. Verify the policies.** `npm run test:rls`, or run
+**4. Connect Google (optional).** The Google-Kalender integration needs a
+Google Cloud project and three Edge-Function secrets, none of which belong in
+this repository. The complete, exact list of manual steps is in
+[`supabase/GOOGLE-KALENDER.md`](supabase/GOOGLE-KALENDER.md). Until they are
+set the app runs normally and the integration screen says it is not configured
+yet.
+
+**5. Verify the policies.** `npm run test:rls`, or run
 [`supabase/tests/rls.sql`](supabase/tests/rls.sql) in the SQL Editor. It proves
 against the real schema that one user cannot read, change or delete another
-user's rows, and that an unauthenticated client gets nothing.
+user's rows, that an unauthenticated client gets nothing, and that **no client
+role can reach the Google tokens at all** — not another user's, not even its
+own.
 
 > Both values are public and belong in the client: the URL names the project,
 > the anon key is the browser's identity before login, and RLS decides the rest.
@@ -154,11 +184,17 @@ uses a hash router so deep links work on Pages without server rewrites.
 index.html                  Vite entry
 vite.config.js              base path + React plugin
 tailwind.config.js          design tokens (colors, radii, animations)
-supabase/migrations/        SQL: profiles + tasks + events, indexes, RLS policies
+supabase/migrations/        SQL: profiles + tasks + events + Google, indexes, RLS policies
+supabase/functions/         Edge Functions — the only place Google tokens exist
+  _shared/                  the sync engine, in plain JS so the Node tests run it
+  google-api/               everything the signed-in app asks for (verify_jwt)
+  google-hooks/             OAuth callback + Google push (public, self-verifying)
 supabase/tests/rls.sql      proves the policies against the real schema
 tools/supabaseStub.mjs      PostgREST-shaped backend the smoke test runs against
 tools/realtimeStub.mjs      Phoenix-speaking Realtime server for the smoke test
 tools/smoke.mjs             jsdom runtime smoke test (incl. calendar views + two-device sync)
+tools/googleSyncFake.mjs    a fake Google Calendar + in-memory database, so the
+                            real sync engine can be run without a network
 src/
   main.jsx                  bootstrap (HashRouter)
   App.jsx                   providers, auth gate, routes, app shell
@@ -168,6 +204,8 @@ src/
     config.js               the two public Supabase values, read at build time
     supabase.js             the shared Supabase client (null without config)
     realtimeSync.js         pure rules for folding a Realtime change into a row list
+    googleCalendar.js       calendar colours, labels and — shared with the Edge
+                            Functions — which calendars may be written to
     useRealtimeSync.js      the subscription's life cycle (one channel per table)
     auth.js                 pure auth logic: the gate's phases, error messages
     date.js                 dates, ISO weeks, section grouping, formatting
@@ -183,14 +221,16 @@ src/
     taskRepository.js       tasks in Supabase (+ taskDefaults.js: writable columns)
     eventRepository.js      events in Supabase (+ eventDefaults.js)
     profileRepository.js    the signed-in user's profile row
-  context/                  Auth · Tasks · Events · UI (overlays) · Toast
+    googleRepository.js     reads the two token-free Google tables; every write
+                            goes through an Edge Function
+  context/                  Auth · Tasks · Events · Google · UI (overlays) · Toast
   components/               TopBar (the global header of every main area),
                             BottomNav, Sidebar, ActionSheet, BottomSheet, TaskForm,
                             EventForm, InlineCalendar, MiniCalendar, FilterSheet,
                             TaskRow, EventDetailSheet, ConfirmDialog, ScrollList
                             (a list that scrolls inside its own height budget), …
-  screens/                  Home, TasksList, TaskDetail, Kalender, Mehr,
-                            Login, NewPassword, BackendMissing
+  screens/                  Home, TasksList, TaskDetail, Kalender, Mehr, Profil,
+                            ProfilGoogle, Login, NewPassword, BackendMissing
     home/                   HomeGreeting, AgendaCard, TasksCard and the HomeCard
                             shell every Heute block is built from
     calendar/               DayView, WeekView, MonthView, parts (shared grid pieces),

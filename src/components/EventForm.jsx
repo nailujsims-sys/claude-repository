@@ -9,6 +9,7 @@ import {
   X,
   ChevronRight,
   Check,
+  RefreshCw,
 } from 'lucide-react'
 import BottomSheet from './BottomSheet'
 import MiniCalendar from './MiniCalendar'
@@ -24,6 +25,8 @@ import {
   recurrenceLabel,
   reminderLabel,
 } from '../lib/eventOptions'
+import { useGoogle } from '../context/GoogleContext'
+import { APP_EVENT_COLOR, calendarById, safeHexColor } from '../lib/googleCalendar'
 
 const p2 = (n) => String(n).padStart(2, '0')
 const hm = (d) => `${p2(d.getHours())}:${p2(d.getMinutes())}`
@@ -42,6 +45,10 @@ function emptyForm() {
     reminder: 30,
     location: '',
     description: '',
+    // Filled in from the configured default calendar once the sheet opens;
+    // null means "this event lives only in the app".
+    calendarId: null,
+    syncEnabled: true,
   }
 }
 
@@ -61,6 +68,10 @@ function formFromEvent(ev) {
     reminder: ev.reminder ?? null,
     location: ev.location || '',
     description: ev.description || '',
+    calendarId: ev.google_calendar_id ?? null,
+    // An event that already belongs to a Google calendar is being synced; one
+    // that does not is app-only, whatever the column happens to say.
+    syncEnabled: !!ev.google_calendar_id,
   }
 }
 
@@ -72,6 +83,7 @@ export default function EventForm() {
   const { eventForm, closeEventForm } = useUI()
   const { getEvent, createEvent, updateEvent } = useEvents()
   const { showToast } = useToast()
+  const { canSync, usableCalendars, defaultCalendar } = useGoogle()
 
   const open = !!eventForm
   // Retained so the header keeps saying "Termin bearbeiten" while the sheet
@@ -87,10 +99,15 @@ export default function EventForm() {
   // (Re)initialize whenever the sheet opens.
   useEffect(() => {
     if (!open) return
-    const next =
-      editing && getEvent(eventForm.eventId)
-        ? formFromEvent(getEvent(eventForm.eventId))
-        : emptyForm()
+    const existing = editing ? getEvent(eventForm.eventId) : null
+    const next = existing ? formFromEvent(existing) : emptyForm()
+    // A new event starts in the calendar the user configured as their default
+    // (Profil → Google Kalender). Without a connection both stay off and the
+    // section below is not rendered at all.
+    if (!existing) {
+      next.calendarId = defaultCalendar?.google_calendar_id ?? null
+      next.syncEnabled = !!defaultCalendar
+    }
     setForm(next)
     setPicker(null)
     setLocOpen(!!next.location)
@@ -105,6 +122,11 @@ export default function EventForm() {
   const allDay = isBirthday || form.all_day
   const showTimes = !allDay
   const effectiveRecurrence = isBirthday ? 'FREQ=YEARLY' : form.recurrence
+
+  // The sync section only exists while there is a Google calendar to sync to.
+  // Without a connection the sheet is exactly the sheet it has always been.
+  const selectedCalendar = calendarById(usableCalendars, form.calendarId)
+  const syncOn = canSync && form.syncEnabled && !!form.calendarId
 
   // Keep start ≤ end while picking dates (ISO strings compare lexicographically).
   const pickStartDate = (iso) => {
@@ -144,6 +166,11 @@ export default function EventForm() {
       recurrence: isBirthday ? 'FREQ=YEARLY' : form.recurrence,
       reminder: form.reminder,
       is_birthday: isBirthday,
+      // The two columns the client owns. Everything else about the Google side
+      // — the event id, the etag, the sync state — is written by the sync
+      // service, and a database trigger decides what this change owes Google.
+      sync_enabled: syncOn,
+      google_calendar_id: syncOn ? form.calendarId : null,
     }
     try {
       if (editing) await updateEvent(eventForm.eventId, payload)
@@ -356,8 +383,107 @@ export default function EventForm() {
         ) : (
           <RevealRow icon={FileText} label="Notizen hinzufügen" onClick={() => setNotesOpen(true)} />
         )}
+
+        {/* Kalender + Google-Synchronisierung. Added at the foot of the sheet
+            that already existed: the fields above are untouched, and this
+            block is not rendered at all until a Google account is connected,
+            so the form has exactly one appearance for anyone who never
+            connects one. */}
+        {canSync && (
+          <div className="overflow-hidden rounded-card border border-subtle bg-bg-card">
+            <PickerRow
+              icon={CalendarDays}
+              label="Kalender"
+              value={syncOn ? selectedCalendar?.summary || 'Wählen' : 'Nur in dieser App'}
+              open={picker === 'calendar'}
+              disabled={!form.syncEnabled}
+              onToggle={() => toggle('calendar')}
+              leading={
+                <ColorDot color={syncOn ? selectedCalendar?.background_color : null} />
+              }
+            >
+              <CalendarOptions
+                calendars={usableCalendars}
+                value={form.calendarId}
+                onSelect={(id) => {
+                  set({ calendarId: id })
+                  setPicker(null)
+                }}
+              />
+            </PickerRow>
+
+            <Divider />
+
+            <div className="flex items-center gap-3 px-4 py-3">
+              <RefreshCw size={18} className="shrink-0 text-text-secondary" />
+              <span className="flex-1 text-[15px] text-text-primary">
+                Mit Google Kalender synchronisieren
+              </span>
+              <Toggle
+                checked={form.syncEnabled}
+                onChange={(v) =>
+                  set({
+                    syncEnabled: v,
+                    // Turning it back on lands in the default calendar rather
+                    // than in nothing, so the switch is never on with no
+                    // destination.
+                    calendarId: v
+                      ? form.calendarId || defaultCalendar?.google_calendar_id || null
+                      : form.calendarId,
+                  })
+                }
+              />
+            </div>
+
+            {/* Only ever shown for the case it describes: an appointment that
+                is already in Google and is being taken back out of it. */}
+            {editing && !form.syncEnabled && eventForm?.eventId && getEvent(eventForm.eventId)?.google_event_id && (
+              <p className="border-t border-subtle px-4 py-3 text-[13px] text-text-secondary">
+                Der Termin wird aus Google entfernt und bleibt in dieser App erhalten.
+              </p>
+            )}
+          </div>
+        )}
       </div>
     </BottomSheet>
+  )
+}
+
+// A calendar's Google colour, so the picker row and the option list identify a
+// calendar the same way the calendar module does. Falls back to the app accent
+// for "nur in dieser App", which is the colour those events are drawn in.
+function ColorDot({ color }) {
+  return (
+    <span
+      className="h-3 w-3 shrink-0 rounded-full"
+      style={{ background: safeHexColor(color) || APP_EVENT_COLOR }}
+    />
+  )
+}
+
+// Same list, same rows, same check mark as the Wiederholen and Erinnerung
+// pickers above — with the calendar's colour in front of its name.
+function CalendarOptions({ calendars, value, onSelect }) {
+  return (
+    <div className="overflow-hidden rounded-input bg-bg-input">
+      {calendars.map((c, i) => {
+        const sel = c.google_calendar_id === value
+        return (
+          <button
+            key={c.google_calendar_id}
+            type="button"
+            onClick={() => onSelect(c.google_calendar_id)}
+            className={`press-tint flex w-full items-center gap-2 px-3 py-2.5 text-left text-[14px] ${
+              i > 0 ? 'border-t border-subtle' : ''
+            } ${sel ? 'font-medium text-accent' : 'text-text-primary'}`}
+          >
+            <ColorDot color={c.background_color} />
+            <span className="flex-1 truncate">{c.summary}</span>
+            {sel && <Check size={16} className="text-accent" />}
+          </button>
+        )
+      })}
+    </div>
   )
 }
 
@@ -425,7 +551,9 @@ function DateTimeRow({
   )
 }
 
-function PickerRow({ icon: Icon, label, value, open, onToggle, disabled = false, children }) {
+// `leading` is an optional swatch shown next to the value — the calendar row
+// needs it, and every other row passes nothing and looks exactly as before.
+function PickerRow({ icon: Icon, label, value, open, onToggle, disabled = false, leading = null, children }) {
   return (
     <div>
       <button
@@ -436,7 +564,8 @@ function PickerRow({ icon: Icon, label, value, open, onToggle, disabled = false,
       >
         <Icon size={18} className="shrink-0 text-text-secondary" />
         <span className="flex-1 text-[15px] text-text-primary">{label}</span>
-        <span className="text-[14px] text-text-secondary">{value}</span>
+        {leading}
+        <span className="max-w-[45%] truncate text-[14px] text-text-secondary">{value}</span>
         <ChevronRight
           size={16}
           className={`text-text-muted transition-transform ${open ? 'rotate-90' : ''}`}

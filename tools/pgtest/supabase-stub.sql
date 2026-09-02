@@ -11,6 +11,13 @@ grant usage on schema public to anon, authenticated, service_role;
 alter default privileges in schema public
   grant all on tables to anon, authenticated, service_role;
 
+-- Supabase ships this publication with every project; Realtime reads the WAL
+-- through it, and 0004_realtime.sql adds tables to it. A throwaway cluster has
+-- no such publication, so `alter publication ... add table` aborted the whole
+-- run before it reached a single assertion — which is why this file has to
+-- create it too. Empty on purpose: the migrations put the tables in.
+create publication supabase_realtime;
+
 create schema if not exists auth;
 
 -- Only the columns the app and the migrations actually touch.
