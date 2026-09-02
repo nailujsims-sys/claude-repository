@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { Lock, User, X } from 'lucide-react'
+import { Lock, LogOut, User, X } from 'lucide-react'
 import IconButton from './IconButton'
 import Overlay, { useOverlayPanel } from './Overlay'
 import { useUI } from '../context/UIContext'
@@ -22,7 +22,7 @@ export default function Sidebar() {
 // Separate component so it can read the overlay phase from the context —
 // useOverlayPanel only works below <Overlay>.
 function Panel({ onClose: closeSidebar }) {
-  const { displayName } = useAuth()
+  const { displayName, email, signOut } = useAuth()
   const panel = useOverlayPanel(
     'ov-panel-left',
     'pointer-events-auto absolute inset-y-0 left-0 flex h-full w-[80%] max-w-[340px] flex-col bg-bg-card border-r border-subtle'
@@ -39,8 +39,10 @@ function Panel({ onClose: closeSidebar }) {
             <User size={24} />
           </div>
           <div>
-            <p className="text-[17px] font-bold text-text-primary">{displayName}</p>
-            <p className="text-[12px] text-text-secondary">Mind Whiteboard</p>
+            <p className="text-heading font-bold text-text-primary">{displayName}</p>
+            <p className="max-w-[190px] truncate text-caption text-text-secondary">
+              {email || 'Mind Whiteboard'}
+            </p>
           </div>
         </div>
         <IconButton
@@ -103,6 +105,16 @@ function Panel({ onClose: closeSidebar }) {
           )
         })}
       </nav>
+
+      <div className="border-t border-subtle px-3 py-3">
+        <button
+          onClick={signOut}
+          className="press-tint flex w-full items-center gap-3 rounded-btn px-3 py-3 text-body font-medium text-text-secondary"
+        >
+          <LogOut size={20} />
+          <span>Abmelden</span>
+        </button>
+      </div>
     </aside>
   )
 }

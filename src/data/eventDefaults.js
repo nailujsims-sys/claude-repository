@@ -1,5 +1,5 @@
-// Shared shape for a calendar event, kept identical between the local and
-// Supabase repositories (snake_case columns matching the `events` table).
+// Shared field vocabulary for a calendar event: snake_case columns matching
+// the `events` table, so what the UI builds is what the database stores.
 //
 // The model is intentionally forward-looking: recurrence, reminder, birthday
 // and timezone are stored now even though some are not yet surfaced in the UI,
@@ -12,27 +12,6 @@ export function defaultTimeZone() {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Berlin'
   } catch {
     return 'Europe/Berlin'
-  }
-}
-
-export function buildEventRow(userId, data = {}) {
-  const now = new Date().toISOString()
-  return {
-    id: data.id ?? crypto.randomUUID(),
-    user_id: userId,
-    title: data.title ?? '',
-    description: data.description ?? null,
-    location: data.location ?? null,
-    // Local 'YYYY-MM-DDTHH:MM' wall-clock strings (see lib/calendar.js).
-    start_at: data.start_at ?? null,
-    end_at: data.end_at ?? null,
-    all_day: data.all_day ?? false,
-    recurrence: data.recurrence ?? null, // RRULE-style string | null
-    reminder: data.reminder ?? null, // minutes before start (int) | null
-    is_birthday: data.is_birthday ?? false,
-    timezone: data.timezone ?? defaultTimeZone(),
-    created_at: data.created_at ?? now,
-    updated_at: data.updated_at ?? now,
   }
 }
 

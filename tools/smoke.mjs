@@ -1,11 +1,39 @@
 // Runtime smoke test: bundle the app with esbuild and mount it in jsdom so we
 // actually execute React (catching crash-on-mount / bad-hook / import errors
-// that a production build alone won't surface). No network or browser needed.
+// that a production build alone won't surface).
+//
+// Since the app has no local store any more, the harness supplies the only
+// thing it can read from: a stubbed Supabase (tools/supabaseStub.mjs) that
+// answers the very requests supabase-js sends. So a rendered task is a task
+// that came over the wire — which is exactly the property that used to be
+// missing, and the reason two devices never saw the same data.
+//
+// No real network and no browser: the stub is installed as `window.fetch`.
 import { build } from 'esbuild'
 import { JSDOM } from 'jsdom'
 import { webcrypto } from 'node:crypto'
+import {
+  makeBackend,
+  STORAGE_KEY,
+  SUPABASE_URL,
+  SUPABASE_ANON_KEY,
+  TEST_USER_ID,
+  TEST_EMAIL,
+} from './supabaseStub.mjs'
+import { seedTasks } from './fixtures/seedTasks.mjs'
+import { seedEvents } from './fixtures/seedEvents.mjs'
 
-async function bundle() {
+const TEST_PASSWORD = 'richtiges-passwort'
+
+async function bundle({ configured = true } = {}) {
+  const env = {
+    MODE: 'test',
+    DEV: false,
+    PROD: true,
+    ...(configured
+      ? { VITE_SUPABASE_URL: SUPABASE_URL, VITE_SUPABASE_ANON_KEY: SUPABASE_ANON_KEY }
+      : {}),
+  }
   const result = await build({
     entryPoints: ['src/main.jsx'],
     bundle: true,
@@ -14,7 +42,7 @@ async function bundle() {
     jsx: 'automatic',
     loader: { '.css': 'empty' },
     define: {
-      'import.meta.env': '{"MODE":"test","DEV":false,"PROD":true}',
+      'import.meta.env': JSON.stringify(env),
       'process.env.NODE_ENV': '"production"',
     },
     write: false,
@@ -23,10 +51,35 @@ async function bundle() {
   return result.outputFiles[0].text
 }
 
-function makeDom(hash, storage) {
+// One window = one browser = one device. `seed` fills the stubbed database;
+// `signedIn` decides whether this device has a session, which is how the login
+// and logout paths are exercised.
+function makeDom(hash, seed = {}, options = {}) {
+  const { signedIn = true, backend: existing = null, search = '' } = options
+  const window = makeBareDom(hash, search)
+  const backend =
+    existing ??
+    makeBackend({
+      tasks: seed.tasks ?? seedTasks(),
+      events: seed.events ?? seedEvents(),
+      password: TEST_PASSWORD,
+      failTable: seed.failTable ?? null,
+    })
+
+  // jsdom ships no fetch, so the app gets Node's classes plus the stub.
+  window.fetch = (...args) => backend.fetch(...args)
+  window.Headers = Headers
+  window.Request = Request
+  window.Response = Response
+  if (signedIn) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(backend.session))
+  window.__backend = backend
+  return window
+}
+
+function makeBareDom(hash, search = '') {
   const dom = new JSDOM(
     `<!DOCTYPE html><html><body><div id="root"></div></body></html>`,
-    { url: `http://localhost/${hash}`, pretendToBeVisual: true, runScripts: 'outside-only' }
+    { url: `http://localhost/${search}${hash}`, pretendToBeVisual: true, runScripts: 'outside-only' }
   )
   const { window } = dom
   try {
@@ -39,17 +92,20 @@ function makeDom(hash, storage) {
   window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
   window.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} takeRecords() { return [] } }
   window.scrollTo = () => {}
-  if (storage) {
-    for (const [k, v] of Object.entries(storage)) window.localStorage.setItem(k, v)
-  }
   return window
 }
 
 const errors = []
-function mount(window, code, name) {
-  window.addEventListener('error', (e) => errors.push(`[${name}] ${e.message}`))
+// `expectErrors` is for the cases whose subject IS a failure — a database that
+// answers 500 logs, and must log, on its way to the banner.
+function mount(window, code, name, { expectErrors = false } = {}) {
+  window.addEventListener('error', (e) => {
+    if (!expectErrors) errors.push(`[${name}] ${e.message}`)
+  })
   const orig = console.error
-  console.error = (...a) => errors.push(`[${name}] console.error: ${a.join(' ').slice(0, 200)}`)
+  console.error = (...a) => {
+    if (!expectErrors) errors.push(`[${name}] console.error: ${a.join(' ').slice(0, 200)}`)
+  }
   try {
     window.eval(code)
   } finally {
@@ -233,15 +289,13 @@ async function run() {
     monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7))
     const mondayIso = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`
     const task = {
-      id: 'seed-1', user_id: 'local-julian', title: 'Testaufgabe Detail',
+      id: 'seed-1', user_id: TEST_USER_ID, title: 'Testaufgabe Detail',
       category: 'Uni', subcategory: 'Test', details: 'Ein Detailtext.',
       due_date: mondayIso, due_time: null, due_type: 'week',
       is_favorite: true, is_completed: false, is_deleted: false,
       completed_at: null, deleted_at: null, sort_order: 0, created_at: now, updated_at: now,
     }
-    const window = makeDom('#/aufgaben/seed-1', {
-      'mw.tasks.local-julian': JSON.stringify([task]),
-    })
+    const window = makeDom('#/aufgaben/seed-1', { tasks: [task] })
     mount(window, code, 'Detail')
     await wait(250)
     window.__restoreConsole?.()
@@ -258,16 +312,14 @@ async function run() {
   {
     const now = new Date().toISOString()
     const task = {
-      id: 'seed-del', user_id: 'local-julian', title: 'Löschbare Aufgabe',
+      id: 'seed-del', user_id: TEST_USER_ID, title: 'Löschbare Aufgabe',
       category: 'Privat', subcategory: null, details: null,
       due_date: null, due_time: null, due_type: 'day',
       is_favorite: false, is_completed: false, is_deleted: false,
       completed_at: null, deleted_at: null, sort_order: 0,
       created_at: now, updated_at: now,
     }
-    const window = makeDom('#/aufgaben/seed-del', {
-      'mw.tasks.local-julian': JSON.stringify([task]),
-    })
+    const window = makeDom('#/aufgaben/seed-del', { tasks: [task] })
     mount(window, code, 'Undo')
     await wait(250)
 
@@ -311,16 +363,14 @@ async function run() {
   {
     const now = new Date().toISOString()
     const task = {
-      id: 'seed-done', user_id: 'local-julian', title: 'Erledigbare Aufgabe',
+      id: 'seed-done', user_id: TEST_USER_ID, title: 'Erledigbare Aufgabe',
       category: 'Privat', subcategory: null, details: null,
       due_date: null, due_time: null, due_type: 'day',
       is_favorite: false, is_completed: false, is_deleted: false,
       completed_at: null, deleted_at: null, sort_order: 0,
       created_at: now, updated_at: now,
     }
-    const window = makeDom('#/aufgaben', {
-      'mw.tasks.local-julian': JSON.stringify([task]),
-    })
+    const window = makeDom('#/aufgaben', { tasks: [task] })
     mount(window, code, 'Complete')
     await wait(250)
 
@@ -357,16 +407,14 @@ async function run() {
   {
     const now = new Date().toISOString()
     const task = {
-      id: 'seed-visible', user_id: 'local-julian', title: 'Sichtbare Aufgabe',
+      id: 'seed-visible', user_id: TEST_USER_ID, title: 'Sichtbare Aufgabe',
       category: 'Privat', subcategory: null, details: null,
       due_date: null, due_time: null, due_type: 'day',
       is_favorite: false, is_completed: false, is_deleted: false,
       completed_at: null, deleted_at: null, sort_order: 0,
       created_at: now, updated_at: now,
     }
-    const window = makeDom('#/aufgaben', {
-      'mw.tasks.local-julian': JSON.stringify([task]),
-    })
+    const window = makeDom('#/aufgaben', { tasks: [task] })
     mount(window, code, 'CompleteVisible')
     await wait(250)
 
@@ -402,7 +450,7 @@ async function run() {
   {
     const now = new Date().toISOString()
     const mk = (id, title, sort_order, over = {}) => ({
-      id, user_id: 'local-julian', title,
+      id, user_id: TEST_USER_ID, title,
       category: 'Privat', subcategory: null, details: null,
       due_date: null, due_time: null, due_type: 'day',
       is_favorite: false, is_completed: false, is_deleted: false,
@@ -414,9 +462,7 @@ async function run() {
       mk('r-mid', 'Papierkorb Aufgabe', 1, { is_deleted: true, deleted_at: now }),
       mk('r-last', 'Letzte Aufgabe', 2),
     ]
-    const window = makeDom('#/aufgaben', {
-      'mw.tasks.local-julian': JSON.stringify(seeded),
-    })
+    const window = makeDom('#/aufgaben', { tasks: seeded })
     mount(window, code, 'Restore')
     await wait(250)
 
@@ -474,16 +520,14 @@ async function run() {
   {
     const now = new Date().toISOString()
     const task = {
-      id: 'seed-trash', user_id: 'local-julian', title: 'Gelöschte Aufgabe',
+      id: 'seed-trash', user_id: TEST_USER_ID, title: 'Gelöschte Aufgabe',
       category: 'Privat', subcategory: null, details: null,
       due_date: null, due_time: null, due_type: 'day',
       is_favorite: false, is_completed: false, is_deleted: true,
       completed_at: null, deleted_at: now, sort_order: 0,
       created_at: now, updated_at: now,
     }
-    const window = makeDom('#/aufgaben/seed-trash', {
-      'mw.tasks.local-julian': JSON.stringify([task]),
-    })
+    const window = makeDom('#/aufgaben/seed-trash', { tasks: [task] })
     mount(window, code, 'TrashDetail')
     await wait(250)
 
@@ -949,7 +993,7 @@ async function run() {
   const seedTask = (extra = {}) => {
     const now = new Date().toISOString()
     return {
-      id: 'seed-done', user_id: 'local-julian', title: 'Erledigbare Aufgabe',
+      id: 'seed-done', user_id: TEST_USER_ID, title: 'Erledigbare Aufgabe',
       category: 'Privat', subcategory: null, details: null,
       due_date: null, due_time: null, due_type: 'day',
       is_favorite: false, is_completed: false, is_deleted: false,
@@ -957,7 +1001,7 @@ async function run() {
       created_at: now, updated_at: now, ...extra,
     }
   }
-  const seedStore = (extra) => ({ 'mw.tasks.local-julian': JSON.stringify([seedTask(extra)]) })
+  const seedStore = (extra) => ({ tasks: [seedTask(extra)] })
 
   // 9a) A sheet opened while the undo is still on screen. The toast stays, it
   //     becomes the last Tab stop, both seam crossings work, the middle of the
@@ -1544,6 +1588,239 @@ async function run() {
     if (first !== second)
       errors.push(`[HeuteQuote] a reload changed the quote: "${first}" → "${second}"`)
     console.log(`\n=== HeuteQuote (stabil über einen Reload) ===\n  stable=${first === second}`)
+  }
+
+  // ── 12) The data foundation ───────────────────────────────────────────────
+  //
+  // Everything below is about where personal data lives. These are the checks
+  // that would have caught the old behaviour, where the app looked healthy on
+  // every device precisely because each device had its own database.
+
+  // 12a) No backend configured → the app says so and stores nothing. It used
+  //      to open a private localStorage database here instead, which is the
+  //      whole reason two devices never agreed on anything.
+  {
+    const unconfigured = await bundle({ configured: false })
+    const window = makeDom('#/', {}, { signedIn: false })
+    // Any request at all would already be wrong — there is no project to ask.
+    window.fetch = () => {
+      errors.push('[NoBackend] the app made a request although nothing is configured')
+      return Promise.reject(new Error('no backend'))
+    }
+    mount(window, unconfigured, 'NoBackend')
+    await wait(250)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== NoBackend (ohne Konfiguration) ===\n  ${text.slice(0, 120)}`)
+    for (const needle of ['Keine Datenbank verbunden', 'VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY']) {
+      if (!text.includes(needle)) errors.push(`[NoBackend] missing "${needle}"`)
+    }
+    if (window.document.querySelector('[data-topbar]') || text.includes('Willkommen zurück'))
+      errors.push('[NoBackend] the app rendered its screens without a backend')
+    const keys = Object.keys(window.localStorage)
+    if (keys.length) errors.push(`[NoBackend] wrote to localStorage: ${keys.join(', ')}`)
+  }
+
+  // 12b) Configured but no session → login, and not one row is requested.
+  {
+    const window = makeDom('#/aufgaben', {}, { signedIn: false })
+    mount(window, code, 'SignedOut')
+    await wait(250)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    const restCalls = window.__backend.calls.filter((c) => c.path.startsWith('/rest/v1/'))
+    console.log(`\n=== SignedOut (angemeldet: nein) ===\n  rest=${restCalls.length} :: ${text.slice(0, 90)}`)
+    if (!text.includes('Anmelden')) errors.push('[SignedOut] no login screen')
+    if (text.includes('Überfällig')) errors.push('[SignedOut] task data was rendered without a session')
+    if (restCalls.length)
+      errors.push(`[SignedOut] ${restCalls.length} data request(s) were made without a session`)
+  }
+
+  // 12c) Session restoration: a stored session must survive a reload without
+  //      a login screen flashing in between.
+  {
+    const window = makeDom('#/aufgaben')
+    mount(window, code, 'Session')
+    await wait(60)
+    const early = txt(window)
+    if (early.includes('Willkommen zurück'))
+      errors.push('[Session] the login screen flashed although a session was stored')
+    await wait(250)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    const reads = window.__backend.calls.filter((c) => c.method === 'GET' && c.path === '/rest/v1/tasks')
+    console.log(`\n=== Session (Wiederherstellung) ===\n  reads=${reads.length} :: ${text.slice(0, 90)}`)
+    if (!text.includes('Überfällig')) errors.push('[Session] the restored session shows no tasks')
+    if (!reads.length) errors.push('[Session] the task list was not read from the database')
+    if (!reads.some((c) => c.search.includes(`user_id=eq.${TEST_USER_ID}`)))
+      errors.push('[Session] the read was not scoped to the signed-in user')
+  }
+
+  // 12d) Login: the wrong password says so, the right one gets in.
+  {
+    const window = makeDom('#/', {}, { signedIn: false })
+    mount(window, code, 'Login')
+    await wait(250)
+
+    typeInto(window, 'input[type="email"]', TEST_EMAIL)
+    typeInto(window, 'input[type="password"]', 'falsches-passwort')
+    await wait(30)
+    click(window, (el) => el.textContent.trim() === 'Anmelden')
+    await wait(200)
+    let text = txt(window)
+    if (!text.includes('E-Mail oder Passwort stimmt nicht.'))
+      errors.push('[Login] a wrong password produced no readable error')
+    if (text.includes('Heute')) errors.push('[Login] a wrong password got into the app')
+
+    typeInto(window, 'input[type="password"]', TEST_PASSWORD)
+    await wait(30)
+    click(window, (el) => el.textContent.trim() === 'Anmelden')
+    await wait(400)
+    window.__restoreConsole?.()
+    text = txt(window)
+    console.log(`\n=== Login ===\n  ${text.slice(0, 110)}`)
+    if (!text.includes('Heute')) errors.push('[Login] the correct password did not get into the app')
+    const stored = window.localStorage.getItem(STORAGE_KEY)
+    if (!stored) errors.push('[Login] no session was persisted, so a reload would sign the user out')
+  }
+
+  // 12e) Password reset: the mail is requested, and the screen never reveals
+  //      whether that address has an account.
+  {
+    const window = makeDom('#/', {}, { signedIn: false })
+    mount(window, code, 'Reset')
+    await wait(250)
+    click(window, (el) => el.textContent.trim() === 'Passwort vergessen?')
+    await wait(80)
+    typeInto(window, 'input[type="email"]', 'wer-auch-immer@example.com')
+    await wait(30)
+    click(window, (el) => el.textContent.trim() === 'Link senden')
+    await wait(200)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    const asked = window.__backend.auth.recoverEmails
+    console.log(`\n=== Reset (Passwort vergessen) ===\n  recover=${asked.length} :: ${text.slice(0, 110)}`)
+    if (!asked.includes('wer-auch-immer@example.com'))
+      errors.push('[Reset] no reset mail was requested')
+    if (!text.includes('Wenn es zu dieser Adresse ein Konto gibt'))
+      errors.push('[Reset] no confirmation was shown')
+  }
+
+  // 12f) Coming back from the reset mail: set a new password, then straight
+  //      into the app — no second login.
+  {
+    const window = makeDom('#/', {}, { search: '?recovery=1' })
+    mount(window, code, 'Recovery')
+    await wait(300)
+    let text = txt(window)
+    if (!text.includes('Neues Passwort'))
+      errors.push('[Recovery] ?recovery=1 did not lead to the new-password screen')
+    if (text.includes('Aufgaben'))
+      errors.push('[Recovery] the app was reachable before the password was set')
+
+    const fields = [...window.document.querySelectorAll('input[type="password"]')]
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    for (const field of fields) {
+      setter.call(field, 'neues-sicheres-passwort')
+      field.dispatchEvent(new window.Event('input', { bubbles: true }))
+    }
+    await wait(30)
+    click(window, (el) => el.textContent.trim() === 'Passwort speichern')
+    await wait(300)
+    window.__restoreConsole?.()
+    text = txt(window)
+    console.log(`\n=== Recovery (neues Passwort) ===\n  gesetzt=${window.__backend.auth.newPasswords.length} :: ${text.slice(0, 90)}`)
+    if (!window.__backend.auth.newPasswords.includes('neues-sicheres-passwort'))
+      errors.push('[Recovery] the new password was never sent')
+    if (!text.includes('Heute')) errors.push('[Recovery] setting a password did not continue into the app')
+  }
+
+  // 12g) Logout: from the sidebar, ends the session and the screen behind it.
+  {
+    const window = makeDom('#/aufgaben')
+    mount(window, code, 'Logout')
+    await wait(300)
+    click(window, (el) => el.getAttribute('aria-label') === 'Menü öffnen')
+    await wait(200)
+    if (!click(window, (el) => el.textContent.trim() === 'Abmelden'))
+      errors.push('[Logout] no "Abmelden" in the sidebar')
+    await wait(300)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== Logout ===\n  signedOut=${window.__backend.auth.signedOut} :: ${text.slice(0, 90)}`)
+    if (!window.__backend.auth.signedOut) errors.push('[Logout] the session was not ended server-side')
+    if (!text.includes('Willkommen zurück')) errors.push('[Logout] the login screen did not come back')
+    if (text.includes('Überfällig')) errors.push('[Logout] task data was still on screen after signing out')
+  }
+
+  // 12h) A write goes to the database, and a second device sees it. This is
+  //      the whole point of the change: the row outlives this browser.
+  {
+    const window = makeDom('#/aufgaben', { tasks: [] })
+    mount(window, code, 'Write')
+    await wait(300)
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Neu erstellen'))
+      errors.push('[Write] the plus button was not found')
+    await wait(200)
+    if (!click(window, (el) => el.textContent.trim() === 'Neue Aufgabe'))
+      errors.push('[Write] the action sheet has no "Neue Aufgabe"')
+    await wait(250)
+    if (!typeInto(window, 'input[placeholder="Titel der Aufgabe"]', 'Auf allen Geräten'))
+      errors.push('[Write] the title field was not found')
+    await wait(30)
+    if (!click(window, (el) => el.textContent.trim() === 'Erstellen'))
+      errors.push('[Write] "Erstellen" was not found')
+    await wait(300)
+    window.__restoreConsole?.()
+
+    const stored = window.__backend.tables.tasks
+    console.log(`\n=== Write (Gerät A schreibt) ===\n  rows=${stored.length} :: ${stored[0]?.title}`)
+    if (stored.length !== 1 || stored[0].title !== 'Auf allen Geräten')
+      errors.push('[Write] the new task did not reach the database')
+    if (stored[0] && stored[0].user_id !== TEST_USER_ID)
+      errors.push('[Write] the stored row does not belong to the signed-in user')
+
+    // Device B: a different browser, same database.
+    const deviceB = makeDom('#/aufgaben', {}, { backend: window.__backend })
+    mount(deviceB, code, 'Read')
+    await wait(300)
+    deviceB.__restoreConsole?.()
+    const text = txt(deviceB)
+    console.log(`=== Read (Gerät B liest) ===\n  ${text.slice(0, 110)}`)
+    if (!text.includes('Auf allen Geräten'))
+      errors.push('[Read] the second device does not see what the first one wrote')
+  }
+
+  // 12i) A database that cannot be reached is said out loud, not swallowed
+  //      into an empty screen.
+  {
+    const window = makeDom('#/aufgaben', { failTable: 'tasks' })
+    mount(window, code, 'Down', { expectErrors: true })
+    await wait(400)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== Down (Datenbank antwortet 500) ===\n  ${text.slice(0, 130)}`)
+    if (!text.includes('konnten nicht geladen werden') && !text.includes('Keine Internetverbindung'))
+      errors.push('[Down] a failing database produced no visible error')
+    const keys = Object.keys(window.localStorage).filter((k) => k !== STORAGE_KEY)
+    if (keys.length)
+      errors.push(`[Down] the app fell back to local storage: ${keys.join(', ')}`)
+  }
+
+  // 12j) The standing guarantee, checked on a window that did real work: the
+  //      only thing this app is allowed to keep in the browser is the session.
+  {
+    const window = makeDom('#/aufgaben')
+    mount(window, code, 'NoLocalData')
+    await wait(300)
+    click(window, (el) => el.getAttribute('aria-label') === 'Als erledigt markieren')
+    await wait(200)
+    window.__restoreConsole?.()
+    const keys = Object.keys(window.localStorage)
+    console.log(`\n=== NoLocalData (localStorage nach Nutzung) ===\n  keys=${JSON.stringify(keys)}`)
+    const strays = keys.filter((k) => k !== STORAGE_KEY)
+    if (strays.length)
+      errors.push(`[NoLocalData] personal data was written to the browser: ${strays.join(', ')}`)
   }
 
   console.log('\n--- result ---')

@@ -6,17 +6,18 @@ import {
   useMemo,
   useState,
 } from 'react'
-import { getTaskRepository } from '../data/taskRepository'
+import { taskRepository } from '../data/taskRepository'
 import { useAuth } from './AuthContext'
 
 const TasksContext = createContext(null)
 
 // Holds the full task list (including completed/deleted — screens filter via
-// selectors) plus all mutations. Updates state optimistically and persists
-// through the repository, so Supabase and local mode behave identically.
+// selectors) plus all mutations. State updates optimistically and is persisted
+// to Supabase; a failed write resyncs from the database rather than leaving the
+// screen showing something that was never stored.
 export function TasksProvider({ children }) {
   const { user } = useAuth()
-  const repo = getTaskRepository()
+  const repo = taskRepository
 
   const [tasks, setTasks] = useState([])
   const [loading, setLoading] = useState(true)

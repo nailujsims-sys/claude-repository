@@ -1,31 +1,6 @@
-// Fills a partial task with the same defaults the database uses, producing a
-// complete row. Shared by the local repository and used to keep the in-app
-// task shape identical to the Supabase `tasks` table (snake_case columns).
-export function buildTaskRow(userId, data = {}) {
-  const now = new Date().toISOString()
-  return {
-    id: data.id ?? crypto.randomUUID(),
-    user_id: userId,
-    title: data.title ?? '',
-    category: data.category ?? 'Privat',
-    subcategory: data.subcategory ?? null,
-    details: data.details ?? null,
-    due_date: data.due_date ?? null,
-    due_time: data.due_time ?? null,
-    due_type: data.due_type ?? 'day',
-    is_favorite: data.is_favorite ?? false,
-    is_completed: data.is_completed ?? false,
-    is_deleted: data.is_deleted ?? false,
-    completed_at: data.completed_at ?? null,
-    deleted_at: data.deleted_at ?? null,
-    sort_order: data.sort_order ?? 0,
-    created_at: data.created_at ?? now,
-    updated_at: data.updated_at ?? now,
-  }
-}
-
-// Whitelist of columns a client may write, so updates never try to set
-// server-managed fields incorrectly.
+// The columns a client may write. Everything else on a task row is the
+// database's business: `id`, `user_id`, `created_at` are set once on insert,
+// and the `updated_at` trigger keeps that column honest.
 export const WRITABLE_FIELDS = [
   'title',
   'category',

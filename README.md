@@ -6,9 +6,11 @@ ships three fully functional modules — the **Startseite** (home dashboard), th
 architecture (bottom bar, sidebar, action sheet) built to be extended module by
 module.
 
-Built with **React + Vite + Tailwind CSS**, with a data layer that talks to
-**Supabase** when configured and otherwise falls back to **localStorage**, so the
-app is fully usable the moment it loads.
+Built with **React + Vite + Tailwind CSS** on a single central data source:
+**Supabase**, with email/password login and Row Level Security. Tasks and events
+belong to an account, not to a browser — the same data on every device. There is
+no local fallback store: without a configured backend the app says so and holds
+nothing (see *Supabase* below).
 
 ---
 
@@ -62,9 +64,9 @@ npm install
 npm run dev          # http://localhost:5173
 ```
 
-By default the app runs in **local mode** (no login) and seeds a set of demo
-tasks in your browser's localStorage, so it looks and behaves exactly like the
-design out of the box.
+The app needs a backend to do anything: copy `.env.example` to `.env` and fill
+in the two public Supabase values first (see *Supabase* below). Without them it
+starts into "Keine Datenbank verbunden".
 
 ```bash
 npm run build        # production build → dist/
@@ -76,33 +78,37 @@ npm run test:logic   # pure-logic tests: drag/resize math, search, timezone-safe
 
 ---
 
-## 🔌 Connect Supabase (optional)
+## 🔌 Supabase (required)
 
-The app becomes a real, synced, single-user app the moment you provide Supabase
-credentials. Three steps:
+One project holds everything; the app is a client to it. Full setup, including
+the redirect URLs for password resets and how to add a new personal table:
+[`supabase/README.md`](supabase/README.md).
 
-**1. Create the tables + RLS.** In your Supabase project open the SQL Editor and
-run [`supabase/migrations/0001_create_tasks.sql`](supabase/migrations/0001_create_tasks.sql)
-and then [`supabase/migrations/0002_create_events.sql`](supabase/migrations/0002_create_events.sql).
-They create the `tasks` and `events` tables, indexes, an `updated_at` trigger, and
-Row Level Security policies so each user only sees their own rows.
+**1. Create the schema.** Run
+[`supabase/migrations/`](supabase/migrations/) `0001` → `0002` → `0003` in the
+SQL Editor (or `supabase db push`). They create `profiles`, `tasks` and
+`events`, each with indexes, constraints, an `updated_at` trigger, and Row Level
+Security policies that scope every statement to `auth.uid()`.
 
-**2. Create Julian's user.** Supabase Dashboard → Authentication → Users → *Add
-user* → set his email + password. (There is no registration screen — Julian is
-the only user.)
+**2. Create the user.** Dashboard → Authentication → Users → *Add user*. There
+is no registration screen; the profile row is created by a trigger.
 
-**3. Point the app at the project.** Copy `.env.example` to `.env` and fill in:
+**3. Point the app at the project.** Copy `.env.example` to `.env`:
 
 ```bash
 VITE_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
 ```
 
-Restart `npm run dev`. When both vars are set the app shows the login screen and
-reads/writes the `tasks` table; when either is missing it stays in local mode.
+**4. Verify the policies.** `npm run test:rls`, or run
+[`supabase/tests/rls.sql`](supabase/tests/rls.sql) in the SQL Editor. It proves
+against the real schema that one user cannot read, change or delete another
+user's rows, and that an unauthenticated client gets nothing.
 
-> The anon key is meant to be shipped in client code — it's protected by RLS — so
-> committing it as a build-time variable is safe.
+> Both values are public and belong in the client: the URL names the project,
+> the anon key is the browser's identity before login, and RLS decides the rest.
+> The **service-role key** and the **database password** must never appear in
+> this repository, in the bundle, or in a GitHub variable.
 
 ---
 
@@ -115,9 +121,10 @@ else on purpose: the `github-pages` environment refuses deployments from any
 other branch, so a feature-branch trigger would only produce failing runs.
 
 1. Repo **Settings → Pages → Build and deployment → Source: "GitHub Actions"**.
-2. *(Optional, to use Supabase in production)* Repo **Settings → Secrets and
-   variables → Actions → Variables**: add `VITE_SUPABASE_URL` and
-   `VITE_SUPABASE_ANON_KEY`. Without them the deployed app runs in local mode.
+2. **Required:** Repo **Settings → Secrets and variables → Actions → Variables**
+   (secrets work too): add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
+   The workflow checks both before building and fails the run if either is
+   missing — a deployed app without a database is worse than a red build.
 3. Merge into the default branch — the workflow prints the live URL.
 
 **Releasing a feature branch**, in order: `npm run verify` (`test:logic` →
@@ -140,7 +147,9 @@ uses a hash router so deep links work on Pages without server rewrites.
 index.html                  Vite entry
 vite.config.js              base path + React plugin
 tailwind.config.js          design tokens (colors, radii, animations)
-supabase/migrations/        SQL: tasks + events tables + RLS
+supabase/migrations/        SQL: profiles + tasks + events, indexes, RLS policies
+supabase/tests/rls.sql      proves the policies against the real schema
+tools/supabaseStub.mjs      PostgREST-shaped backend the smoke test runs against
 tools/smoke.mjs             jsdom runtime smoke test (incl. calendar views)
 src/
   main.jsx                  bootstrap (HashRouter)
@@ -148,8 +157,9 @@ src/
   index.css                 Tailwind + base styles + keyframes
   config/navigation.js      bottom nav / sidebar / action-sheet / modules (config arrays)
   lib/
-    config.js               env detection (Supabase vs local)
-    supabase.js             Supabase client (or null)
+    config.js               the two public Supabase values, read at build time
+    supabase.js             the shared Supabase client (null without config)
+    auth.js                 pure auth logic: the gate's phases, error messages
     date.js                 dates, ISO weeks, section grouping, formatting
     calendar.js             event geometry: parsing, overlap layout, bar packing, drag/resize math,
                             plus the day-as-a-list helpers the Heute agenda reads
@@ -159,19 +169,18 @@ src/
     eventSearch.js          calendar search (title / location / notes, upcoming-first)
     useNow.js               ticking clock hook for the live time indicator
     taskSelectors.js        derive grouped/filtered views (incl. tasksForDay)
-    seed.js / eventSeed.js  demo tasks / events for local mode
   data/
-    taskRepository.js       factory: picks Supabase or local impl
-    supabaseTaskRepository.js · localTaskRepository.js · taskDefaults.js
-    eventRepository.js      factory for calendar events (Supabase or local)
-    supabaseEventRepository.js · localEventRepository.js · eventDefaults.js
+    taskRepository.js       tasks in Supabase (+ taskDefaults.js: writable columns)
+    eventRepository.js      events in Supabase (+ eventDefaults.js)
+    profileRepository.js    the signed-in user's profile row
   context/                  Auth · Tasks · Events · UI (overlays) · Toast
   components/               TopBar (the global header of every main area),
                             BottomNav, Sidebar, ActionSheet, BottomSheet, TaskForm,
                             EventForm, InlineCalendar, MiniCalendar, FilterSheet,
                             TaskRow, EventDetailSheet, ConfirmDialog, ScrollList
                             (a list that scrolls inside its own height budget), …
-  screens/                  Home, TasksList, TaskDetail, Kalender, Mehr, Login
+  screens/                  Home, TasksList, TaskDetail, Kalender, Mehr,
+                            Login, NewPassword, BackendMissing
     home/                   HomeGreeting, AgendaCard, TasksCard and the HomeCard
                             shell every Heute block is built from
     calendar/               DayView, WeekView, MonthView, parts (shared grid pieces),

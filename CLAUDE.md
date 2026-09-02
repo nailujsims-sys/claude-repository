@@ -1,9 +1,40 @@
 # Mind Whiteboard — project instructions for Claude Code
 
 Mind Whiteboard is a dark, mobile-first personal productivity app (React + Vite +
-Tailwind, Supabase with a localStorage fallback). Modules today: Startseite,
-Aufgaben, Kalender — built to grow module by module. See `README.md` for the
-architecture, data layer and setup.
+Tailwind). Supabase is the single source of truth: email/password login, one
+account, Row Level Security on every personal table, and no local fallback store
+— without a configured backend the app says so and holds nothing. Modules today:
+Startseite, Aufgaben, Kalender — built to grow module by module. See
+`README.md` for the architecture and `supabase/README.md` for the backend.
+
+## Deliverables — binding
+
+**Every artifact is handed over as a PDF.** Analyses, reports, concepts,
+reviews — anything that is a document rather than code ships as a `.pdf` file
+sent to the user, not as chat text alone and not as an HTML artifact alone. An
+artifact page may accompany it when a link is useful; the PDF is the deliverable
+either way.
+
+How to produce one in this environment (no extra dependencies needed):
+
+1. Author the page as HTML (the design standard applies to it — see below).
+2. Embed the fonts: fetch the Google Fonts CSS, inline each `woff2` as a
+   `data:` URI. A PDF must not depend on a network at print time.
+3. Prepend `<!doctype html><html lang="de"><head><meta charset="utf-8">` —
+   without the charset, headless Chromium reads the file as windows-1252 and
+   every umlaut in the PDF turns to mojibake.
+4. Add a print block: `@page { size: A4; margin: 15mm 14mm 16mm; }`,
+   `print-color-adjust: exact`, and `break-inside: avoid` on cards, table
+   wrappers and list items.
+5. Render:
+   ```bash
+   /opt/pw-browsers/chromium --headless --no-sandbox --disable-gpu \
+     --no-pdf-header-footer --virtual-time-budget=8000 \
+     --print-to-pdf=<Name>.pdf <datei>.html
+   ```
+6. Check the first page once (`--screenshot`), then send the PDF.
+
+German file names, spelled out — the file name is read by a human.
 
 ## Design system — binding
 

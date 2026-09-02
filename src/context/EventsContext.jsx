@@ -6,17 +6,17 @@ import {
   useMemo,
   useState,
 } from 'react'
-import { getEventRepository } from '../data/eventRepository'
+import { eventRepository } from '../data/eventRepository'
 import { useAuth } from './AuthContext'
 
 const EventsContext = createContext(null)
 
-// Holds the full calendar-event list plus mutations, mirroring TasksProvider so
-// Supabase and local mode behave identically. Views derive day/week/month
-// slices from `events` via the pure helpers in lib/calendar.js.
+// Holds the full calendar-event list plus mutations, mirroring TasksProvider.
+// Views derive day/week/month slices from `events` via the pure helpers in
+// lib/calendar.js.
 export function EventsProvider({ children }) {
   const { user } = useAuth()
-  const repo = getEventRepository()
+  const repo = eventRepository
 
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
@@ -54,9 +54,15 @@ export function EventsProvider({ children }) {
 
   const createEvent = useCallback(
     async (data) => {
-      const row = await repo.createEvent(user.id, data)
-      upsertLocal(row)
-      return row
+      try {
+        const row = await repo.createEvent(user.id, data)
+        upsertLocal(row)
+        return row
+      } catch (err) {
+        console.error(err)
+        setError(err)
+        throw err
+      }
     },
     [repo, user]
   )

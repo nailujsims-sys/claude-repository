@@ -59,6 +59,7 @@ export default function TasksList() {
   const {
     tasks,
     loading,
+    error,
     toggleFavorite,
     completeTask,
     uncompleteTask,
@@ -326,7 +327,7 @@ export default function TasksList() {
         {loading ? (
           <SkeletonTaskList />
         ) : isEmpty ? (
-          <EmptyState />
+          <EmptyState failed={Boolean(error)} />
         ) : (
           <DndContext
             sensors={sensors}
@@ -442,12 +443,20 @@ function SortableTaskRow({ task, ...rest }) {
   )
 }
 
-function EmptyState() {
+// An empty list means two very different things. "Nothing to do" is good news;
+// "we could not reach the database" is not, and congratulating the user for it
+// (with the banner right above saying the opposite) is how a screen loses
+// trust. Same layout, honest words.
+function EmptyState({ failed = false }) {
   return (
     <div className="flex flex-col items-center justify-center py-24 text-center">
-      <p className="text-[18px] font-semibold text-text-secondary">Keine Aufgaben 🎉</p>
-      <p className="mt-1 text-[14px] text-text-secondary">
-        Tippe auf + um eine neue Aufgabe zu erstellen
+      <p className="text-section font-semibold text-text-secondary">
+        {failed ? 'Keine Daten geladen' : 'Keine Aufgaben 🎉'}
+      </p>
+      <p className="mt-1 text-ui text-text-secondary">
+        {failed
+          ? 'Sobald die Verbindung wieder steht, sind deine Aufgaben da.'
+          : 'Tippe auf + um eine neue Aufgabe zu erstellen'}
       </p>
     </div>
   )

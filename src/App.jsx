@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
+import { resolveAuthPhase } from './lib/auth'
 import { ToastProvider } from './context/ToastContext'
 import { UIProvider } from './context/UIContext'
 import { TasksProvider } from './context/TasksContext'
@@ -20,6 +21,8 @@ import Kalender from './screens/Kalender'
 import Mehr from './screens/Mehr'
 import Version from './screens/Version'
 import Login from './screens/Login'
+import NewPassword from './screens/NewPassword'
+import BackendMissing from './screens/BackendMissing'
 
 export default function App() {
   return (
@@ -31,23 +34,42 @@ export default function App() {
   )
 }
 
-// Decides between the loading splash, the login screen (Supabase mode only),
-// and the full app.
+// The security boundary of the whole app. Nothing that can read or write
+// personal data is even mounted until Supabase has said who this is: the data
+// providers live *inside* the signed-in branch, so there is no path where a
+// repository runs without a user id.
 function Gate() {
-  const { loading, isConfigured, user } = useAuth()
+  const { status, user, recovery, isConfigured } = useAuth()
+  const phase = resolveAuthPhase({ configured: isConfigured, status, user, recovery })
 
-  if (loading) {
+  if (phase === 'backend-missing') {
     return (
-      <div className="app-frame grid min-h-screen place-items-center bg-bg-base">
-        <p className="text-[14px] text-text-secondary">Lädt…</p>
+      <div className="app-frame bg-bg-base">
+        <BackendMissing />
       </div>
     )
   }
 
-  if (isConfigured && !user) {
+  if (phase === 'loading') {
+    return (
+      <div className="app-frame grid min-h-screen place-items-center bg-bg-base">
+        <p className="text-ui text-text-secondary">Lädt…</p>
+      </div>
+    )
+  }
+
+  if (phase === 'login') {
     return (
       <div className="app-frame bg-bg-base">
         <Login />
+      </div>
+    )
+  }
+
+  if (phase === 'recovery') {
+    return (
+      <div className="app-frame bg-bg-base">
+        <NewPassword />
       </div>
     )
   }
