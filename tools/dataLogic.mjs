@@ -138,6 +138,18 @@ const res = await build({
   logLevel: 'silent',
 })
 
+// Creating a Supabase client also builds its realtime client, and that one
+// insists on a WebSocket implementation. Browsers have one, Node 22 has one,
+// Node 20 — which CI pins — does not, so the suite passed locally and failed
+// on the runner. The app opens no realtime connection (that is the next piece
+// of work, not this one), so a stub that would throw if anything ever used it
+// is both enough and honest.
+globalThis.WebSocket ??= class RealtimeIsNotUnderTest {
+  constructor() {
+    throw new Error('dataLogic: the repositories must not open a realtime connection')
+  }
+}
+
 const out = `${process.env.SCRATCH || '/tmp'}/dataLogic.bundled.mjs`
 writeFileSync(out, res.outputFiles[0].text)
 await import(pathToFileURL(out).href)
