@@ -27,6 +27,13 @@ import {
   applyIncomingEvent,
 } from '../supabase/functions/_shared/sync.js'
 import { makeGoogle, makeStore, deps } from './googleSyncFake.mjs'
+import { BIRTHDAY_SCOPES, SCOPES } from '../supabase/functions/_shared/google.js'
+import {
+  completeConnection,
+  CONNECT_OK,
+  CONNECT_MISSING_SCOPES,
+  CONNECT_NO_CALENDARS,
+} from '../supabase/functions/_shared/connect.js'
 
 let pass = 0
 let fail = 0
@@ -249,22 +256,34 @@ const select = async (store, userId, ids) => {
   eq('und wird als Fehler an der Zeile vermerkt', store.db.events.find((e) => e.id === holiday.id).sync_state, 'error')
   eq('in Google ist der Feiertag unverändert', [...google.events.get('de.german#holiday@group.v.calendar.google.com').values()][0].summary, 'Tag der Deutschen Einheit')
 
-  // Ein Geburtstag dagegen wird über die People API geschrieben — nicht als
-  // Kalendereintrag, denn Google verwaltet ihn im Kontakt.
+  // Und jetzt der Punkt, an dem sich die Verbindung geändert hat: eine normale
+  // Kalenderverbindung fragt die Kontakte *nicht* mehr ab. Der Geburtstag ist
+  // gelesen und sichtbar — ihn in Google zu ändern geht nicht, und die App
+  // sagt das, statt es still zu verschlucken.
   store.deviceUpdate(birthday.id, { start_at: '2026-04-13T00:00', end_at: '2026-04-13T00:00' })
-  await pushPending(d, { userId: A, calendars: await store.listCalendars(A) })
-  const contact = google.contacts.get('people/c1')
-  eq('der Kontakt hat das neue Datum', contact.birthdays[0].date.day, 13)
-  eq('der Geburtstag gilt als synchronisiert', store.db.events.find((e) => e.id === birthday.id).sync_state, 'synced')
-  ok('es wurde die People API benutzt', google.calls.some((c) => c.url.includes('people/c1:updateContact')))
-  ok('und kein Kalender-Schreibvorgang', !google.calls.some((c) => c.method === 'PATCH' && c.url.includes('addressbook')))
+  const ohneKontakte = await pushPending(d, { userId: A, calendars: await store.listCalendars(A) })
+  ok(
+    'ohne Kontakte-Recht wird die Geburtstagsänderung gemeldet',
+    ohneKontakte.failures.some((f) => /Kontakte-Berechtigung/.test(f.message))
+  )
+  eq('der Kontakt bleibt unverändert', google.contacts.get('people/c1').birthdays[0].date.day, 12)
+  ok('und es wurde nichts an die People API geschickt', !google.calls.some((c) => c.url.includes(':updateContact')))
+  // Der Termin selbst bleibt in der App erhalten und lesbar.
+  eq('der Geburtstag ist weiterhin da', store.db.events.find((e) => e.id === birthday.id).title, 'Mama')
 
-  // Ohne die Kontakte-Berechtigung sagt die App das, statt es still zu ignorieren.
-  const noScope = makeGoogle({ scopes: 'openid email https://www.googleapis.com/auth/calendar.events' })
-  const d2 = deps(noScope.client(), store)
-  store.deviceUpdate(birthday.id, { start_at: '2026-04-14T00:00' })
-  const result = await pushPending(d2, { userId: A, calendars: await store.listCalendars(A) })
-  ok('fehlende Kontakte-Berechtigung wird gemeldet', result.failures.some((f) => /Kontakte-Berechtigung/.test(f.message)))
+  // Mit ausdrücklich erteiltem Kontakte-Recht — der spätere eigene
+  // Zustimmungsbildschirm — funktioniert der Weg über die People API wie
+  // gehabt. Der Code dafür bleibt also scharf, er wird nur nicht mehr
+  // unaufgefordert verlangt.
+  const mitKontakten = makeGoogle({ scopes: BIRTHDAY_SCOPES.join(' ') })
+  mitKontakten.contacts.set('people/c1', { resourceName: 'people/c1', etag: 'petag-1', birthdays: [{ date: { year: 1965, month: 4, day: 12 } }] })
+  const d3 = deps(mitKontakten.client(), store)
+  store.deviceUpdate(birthday.id, { start_at: '2026-04-13T00:00', end_at: '2026-04-13T00:00' })
+  await pushPending(d3, { userId: A, calendars: await store.listCalendars(A) })
+  eq('mit Kontakte-Recht hat der Kontakt das neue Datum', mitKontakten.contacts.get('people/c1').birthdays[0].date.day, 13)
+  eq('und der Geburtstag gilt als synchronisiert', store.db.events.find((e) => e.id === birthday.id).sync_state, 'synced')
+  ok('es wurde die People API benutzt', mitKontakten.calls.some((c) => c.url.includes('people/c1:updateContact')))
+  ok('und kein Kalender-Schreibvorgang', !mitKontakten.calls.some((c) => c.method === 'PATCH' && c.url.includes('addressbook')))
 }
 
 // ── 7. Wiederholungen bleiben Regeln, in beide Richtungen ───────────────────
@@ -586,6 +605,128 @@ const select = async (store, userId, ids) => {
   const result = await runSync(plain.d, { userId: A, userTimeZone: TZ })
   eq('ohne Push-Adresse läuft der Sync normal', result.status, 'connected')
   eq('und es entsteht kein Kanal', plain.store.db.channels.length, 0)
+}
+
+// ── 16. Verbinden: entweder ganz, oder gar nicht ────────────────────────────
+// Der Fehler, den das hier festhält: der Callback hat Zugangsdaten gespeichert
+// und die Verbindung auf „connected" gesetzt, *bevor* er zum ersten Mal mit
+// Google gesprochen hat. Scheiterte dieser Abruf, blieb eine Verbindung
+// zurück, die sich verbunden nannte und keinen einzigen Kalender hatte.
+{
+  const tokensFor = (scopes) => ({
+    access_token: 'access-1',
+    refresh_token: 'refresh-1',
+    expires_at: new Date(Date.parse('2026-09-02T13:00:00Z')).toISOString(),
+    token_type: 'Bearer',
+    scopes,
+  })
+  const identity = { email: 'julian@example.test', sub: 'sub-1' }
+
+  // Der gute Fall: Rechte vollständig, Kalender kommen an.
+  {
+    const google = makeGoogle()
+    google.addCalendar({ id: 'privat@gmail.com', summary: 'Privat', primary: true, accessRole: 'owner' })
+    const store = makeStore()
+    const outcome = await completeConnection(
+      { store, now: () => Date.parse('2026-09-02T12:00:00Z'), makeClient: async () => google.client() },
+      { userId: A, tokens: tokensFor(SCOPES.join(' ')), identity }
+    )
+    eq('vollständige Zustimmung verbindet', outcome.status, CONNECT_OK)
+    eq('das Konto ist hinterlegt', store.db.connections.get(A).google_account_email, 'julian@example.test')
+    eq('die Zugangsdaten liegen serverseitig', store.db.credentials.get(A).refresh_token, 'refresh-1')
+    eq('und es gibt einen Kalender', (await store.listCalendars(A)).length, 1)
+    ok('der Hauptkalender ist aktiv', (await store.listCalendars(A))[0].is_selected)
+  }
+
+  // Der Fall aus dem Fehlerbericht: auf dem Zustimmungsbildschirm wurde ein
+  // Häkchen entfernt. Früher fiel das erst beim ersten Abruf auf, als
+  // „Request had insufficient authentication scopes"; jetzt an der Tür.
+  {
+    const google = makeGoogle()
+    google.addCalendar({ id: 'privat@gmail.com', summary: 'Privat', primary: true, accessRole: 'owner' })
+    const store = makeStore()
+    const outcome = await completeConnection(
+      { store, now: Date.now, makeClient: async () => google.client() },
+      { userId: A, tokens: tokensFor('openid email'), identity }
+    )
+    eq('fehlende Rechte werden erkannt', outcome.status, CONNECT_MISSING_SCOPES)
+    eq('und einzeln benannt', outcome.missing.length, 2)
+    // Nichts angefangen heißt: nichts zurückgelassen.
+    ok('es wurden keine Zugangsdaten gespeichert', !store.db.credentials.has(A))
+    ok('und keine Verbindung angelegt', !store.db.connections.has(A))
+    ok('Google wurde gar nicht erst gefragt', google.calls.length === 0)
+  }
+
+  // Rechte in Ordnung, aber Google antwortet auf die Kalenderliste nicht.
+  // Genau hier entstand die „verbunden, aber leer"-Anzeige.
+  {
+    const google = makeGoogle()
+    google.addCalendar({ id: 'privat@gmail.com', summary: 'Privat', primary: true, accessRole: 'owner' })
+    const store = makeStore()
+    // Dauerhaft kaputt, auch über die Wiederholungen des Clients hinweg.
+    for (let i = 0; i < 6; i++) {
+      google.failNext('calendarList', { status: 500, body: { error: { code: 500, message: 'Backend Error' } } })
+    }
+    const outcome = await completeConnection(
+      { store, now: Date.now, makeClient: async () => google.client() },
+      { userId: A, tokens: tokensFor(SCOPES.join(' ')), identity }
+    )
+    eq('ein fehlgeschlagener Abruf ist keine Verbindung', outcome.status, CONNECT_NO_CALENDARS)
+    ok('die Zugangsdaten sind wieder weg', !store.db.credentials.has(A))
+    ok('die Verbindung ist wieder weg', !store.db.connections.has(A))
+    eq('und es steht kein halber Kalenderbestand herum', (await store.listCalendars(A)).length, 0)
+  }
+
+  // Und der stille Fall: Google antwortet, liefert aber nichts. Jedes Konto
+  // hat einen Hauptkalender, also ist eine leere Liste kein „nichts zu tun".
+  {
+    const google = makeGoogle() // gar keine Kalender angelegt
+    const store = makeStore()
+    const outcome = await completeConnection(
+      { store, now: Date.now, makeClient: async () => google.client() },
+      { userId: A, tokens: tokensFor(SCOPES.join(' ')), identity }
+    )
+    eq('eine leere Kalenderliste zählt als Fehlschlag', outcome.status, CONNECT_NO_CALENDARS)
+    ok('auch hier bleibt nichts zurück', !store.db.connections.has(A) && !store.db.credentials.has(A))
+  }
+
+  // Ein zweiter Nutzer in derselben Datenbank darf von einem gescheiterten
+  // Verbindungsversuch nichts merken.
+  {
+    const google = makeGoogle()
+    const store = makeStore()
+    store.db.connections.set(B, { user_id: B, status: 'connected' })
+    store.db.credentials.set(B, { user_id: B, refresh_token: 'refresh-b' })
+    store.db.calendars.push({ user_id: B, google_calendar_id: 'b@gmail.com', summary: 'B', is_selected: true, is_available: true, kind: 'normal', access_role: 'owner' })
+
+    const outcome = await completeConnection(
+      { store, now: Date.now, makeClient: async () => google.client() },
+      { userId: A, tokens: tokensFor(SCOPES.join(' ')), identity }
+    )
+    eq('As Versuch scheitert', outcome.status, CONNECT_NO_CALENDARS)
+    ok('Bs Verbindung steht noch', store.db.connections.has(B))
+    ok('Bs Zugangsdaten stehen noch', store.db.credentials.has(B))
+    eq('und Bs Kalender auch', (await store.listCalendars(B)).length, 1)
+  }
+
+  // Ein zweiter Anlauf nach einem Fehlschlag funktioniert ganz normal — der
+  // Rollback hat nichts hinterlassen, das im Weg steht.
+  {
+    const google = makeGoogle()
+    google.addCalendar({ id: 'privat@gmail.com', summary: 'Privat', primary: true, accessRole: 'owner' })
+    const store = makeStore()
+    for (let i = 0; i < 6; i++) {
+      google.failNext('calendarList', { status: 503, body: { error: { code: 503, message: 'unavailable' } } })
+    }
+    const args = [
+      { store, now: Date.now, makeClient: async () => google.client() },
+      { userId: A, tokens: tokensFor(SCOPES.join(' ')), identity },
+    ]
+    eq('erster Anlauf scheitert', (await completeConnection(...args)).status, CONNECT_NO_CALENDARS)
+    eq('zweiter Anlauf gelingt', (await completeConnection(...args)).status, CONNECT_OK)
+    eq('und legt genau einen Kalender an', (await store.listCalendars(A)).length, 1)
+    eq('genau eine Verbindung', store.db.connections.size, 1)
+  }
 }
 
 console.log(`  ${pass} passed, ${fail} failed`)

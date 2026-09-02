@@ -44,10 +44,11 @@ für jede Änderung eine Edge Function auf. Die Tokens liegen in
    <https://console.cloud.google.com/projectcreate>
 
 2. **APIs aktivieren** — *APIs & Services → Library*:
-   - **Google Calendar API** (Kalender und Termine)
-   - **People API** (nur für Geburtstage: Google verwaltet die im Kontakt,
-     nicht im Kalender — ohne diese API bleiben Geburtstage lesbar, aber nicht
-     änderbar)
+   - **Google Calendar API** (Kalender und Termine) — das ist alles, was die
+     Verbindung braucht.
+   - **People API** — vorerst *nicht* nötig. Sie gehört zum Bearbeiten von
+     Geburtstagen, und das bekommt einen eigenen Schalter; siehe
+     „Geburtstage" unten.
 
 3. **OAuth Consent Screen** — *APIs & Services → OAuth consent screen*:
    - User Type: **External**, Publishing status **Testing** genügt für ein
@@ -59,10 +60,9 @@ für jede Änderung eine Edge Function auf. Die Tokens liegen in
      email
      https://www.googleapis.com/auth/calendar.calendarlist.readonly
      https://www.googleapis.com/auth/calendar.events
-     https://www.googleapis.com/auth/contacts
      ```
-     Mehr wird nicht verlangt: Kalender *lesen* (Liste, Farben, Rechte),
-     Termine *lesen und schreiben*, Kontakte für Geburtstage.
+     Mehr wird nicht verlangt: Kalender *lesen* (Liste, Farben, Rechte) und
+     Termine *lesen und schreiben*. **Kein Kontakte-Zugriff** — siehe unten.
 
 4. **OAuth-Client anlegen** — *Credentials → Create credentials → OAuth client
    ID → Web application*:
@@ -155,7 +155,32 @@ Der Hauptkalender ist sofort aktiv, alle weiteren stehen in der Liste zum
 Einschalten. Der erste Import holt **zwei Jahre Vergangenheit** und die
 gesamte verfügbare Zukunft.
 
-## 8. Was in welchem Kalender geht
+## 8. Geburtstage und der Kontakte-Zugriff
+
+Die Verbindung fragt **keinen Zugriff auf die Google-Kontakte** an. Das war
+einmal anders, und es war ein Fehler: Google verwaltet einen Geburtstag im
+Kontakt, nicht im Kalender, also brauchte das *Bearbeiten* eines Geburtstags
+den Scope `contacts` — und weil er Teil der normalen Verbindung war, wurde der
+Zugriff auf das gesamte Adressbuch zur Bedingung dafür, den Kalender überhaupt
+zu benutzen. Wer ihn auf dem Zustimmungsbildschirm abwählte, bekam ein Token
+ohne die nötigen Rechte und danach „Request had insufficient authentication
+scopes".
+
+Was heute gilt:
+
+* **Geburtstage lesen: ja.** Der Geburtstagskalender kommt wie jeder andere
+  über `calendar.events` und erscheint ganz normal in der App.
+* **Geburtstage in Google ändern: noch nicht.** Der Versuch meldet
+  „Geburtstage in Google ändern ist noch nicht freigegeben"; der Termin bleibt
+  in der App erhalten und unverändert in Google.
+
+Der Weg dorthin steht schon im Code: `BIRTHDAY_SCOPES` in
+`_shared/google.js` ist der Satz, den ein späterer, ausdrücklich aktivierter
+Zustimmungsbildschirm anfordern wird — die Kalenderrechte plus `contacts`.
+Erst dann werden auch die People API und der zusätzliche Scope im Consent
+Screen gebraucht.
+
+## 9. Was in welchem Kalender geht
 
 Entscheidend ist Googles `accessRole`, **nicht** der Name des Kalenders.
 
@@ -164,16 +189,16 @@ Entscheidend ist Googles `accessRole`, **nicht** der Name des Kalenders.
 | Privat, Familie (`owner`/`writer`) | ja | ja | Calendar API |
 | Geteilt, nur lesbar (`reader`) | ja | nein | — |
 | Feiertage (`reader`) | ja | nein | Google lässt es nicht zu, die App bietet es nicht an |
-| Geburtstage | ja | ja | **People API** — der Geburtstag steht im Kontakt, nicht im Kalender |
+| Geburtstage | ja | noch nicht | Bearbeiten braucht die People API und einen eigenen Zustimmungsbildschirm (Abschnitt 8) |
 
-## 9. Trennen
+## 10. Trennen
 
 *Verbindung trennen* beendet die Synchronisierung, löscht Zugangsdaten,
 Kalenderliste und Push-Kanäle — **und behält jeden Termin**. Aus
 synchronisierten Terminen werden reine App-Termine. Es wird nichts gelöscht,
 weder hier noch in Google.
 
-## 10. Fehlerbilder
+## 11. Fehlerbilder
 
 | Anzeige | Bedeutung | Was hilft |
 |---|---|---|
@@ -181,5 +206,7 @@ weder hier noch in Google.
 | „Verbindung abgelaufen" | Google hat den Zugriff widerrufen oder das Passwort wurde geändert | *Verbindung erneuern* |
 | „Letzte Synchronisierung fehlerhaft" | ein Kalender oder ein Termin scheiterte, der Rest lief | Fehlertext am betroffenen Kalender lesen |
 | „Dieser Kalender ist in Google schreibgeschützt" | Schreibversuch auf `reader` | anderen Kalender wählen |
-| „Für Geburtstage fehlt die Kontakte-Berechtigung" | Verbindung ohne `contacts`-Scope | People API aktivieren, neu verbinden |
+| „Geburtstage in Google ändern ist noch nicht freigegeben" | erwartet — die Verbindung fragt keine Kontakte an (Abschnitt 8) | nichts; Lesen funktioniert weiter |
+| „Es fehlen Berechtigungen" beim Verbinden | auf dem Zustimmungsbildschirm wurde ein Kalender-Häkchen entfernt | erneut verbinden und alle Häkchen gesetzt lassen |
+| „Die Kalender konnten nicht geladen werden" | Google hat zugestimmt, aber die Kalenderliste nicht geliefert | der unvollständige Zugang wurde automatisch entfernt; in einem Moment erneut versuchen |
 | „In Google nicht mehr vorhanden — nur noch in der App" | der Termin wurde in Google gelöscht, während er hier bearbeitet wurde | nichts; der Termin bleibt als App-Termin erhalten |

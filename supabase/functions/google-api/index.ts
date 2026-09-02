@@ -97,6 +97,10 @@ Deno.serve(async (req: Request) => {
       // Hands back the Google consent URL. The state is signed and short-lived,
       // and it carries the return address, which the callback re-checks against
       // its allowlist.
+      //
+      // SCOPES is the calendar-only set: connecting never asks for the address
+      // book. Birthdays get their own consent screen when that feature exists
+      // (BIRTHDAY_SCOPES in _shared/google.js).
       case 'connect': {
         const redirect = String(payload.redirect ?? '')
         const state = await signState(

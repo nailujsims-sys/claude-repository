@@ -33,6 +33,14 @@ import {
   defaultSelection,
 } from '../supabase/functions/_shared/calendars.js'
 import { signState, verifyState, isAllowedRedirect } from '../supabase/functions/_shared/state.js'
+import {
+  SCOPES,
+  BIRTHDAY_SCOPES,
+  CONTACTS_SCOPE,
+  REQUIRED_SCOPES,
+  missingScopes,
+  consentUrl,
+} from '../supabase/functions/_shared/google.js'
 import { applyConnectionChange } from '../src/lib/googleCalendar.js'
 import {
   wallClockInZone,
@@ -473,6 +481,57 @@ const privat = {
     'dieselbe Zeile gibt dasselbe Objekt zurück',
     applyConnectionChange(connection, { eventType: 'UPDATE', new: { ...connection } }, USER) === connection
   )
+}
+
+// ── 13. Die Verbindung fragt nur nach Kalenderrechten ───────────────────────
+// Der Kontakte-Scope war einmal Teil der normalen Verbindung, damit ein
+// Geburtstag in den Kontakt zurückgeschrieben werden kann. Damit war der
+// Zugriff auf das gesamte Adressbuch aber die *Bedingung* dafür, den Kalender
+// überhaupt zu benutzen — und wer ihn ablehnte, bekam eine Verbindung, der
+// beim ersten Abruf die Rechte fehlten.
+{
+  ok('die Verbindung fragt keine Kontakte an', !SCOPES.some((s) => s.includes('contacts')))
+  ok('auch nicht in der Zustimmungs-URL', !consentUrl({ clientId: 'a', redirectUri: 'b', state: 'c' }).includes('contacts'))
+
+  // Was übrig bleibt, ist genau das, was der Kalender braucht.
+  eq('vier Scopes, mehr nicht', SCOPES.length, 4)
+  ok('Kalenderliste lesen', SCOPES.includes('https://www.googleapis.com/auth/calendar.calendarlist.readonly'))
+  ok('Termine lesen und schreiben', SCOPES.includes('https://www.googleapis.com/auth/calendar.events'))
+  ok('Konto anzeigen', SCOPES.includes('openid') && SCOPES.includes('email'))
+
+  // Geburtstage sind geparkt, nicht verloren: ein eigener Satz für einen
+  // eigenen, später ausdrücklich aktivierten Zustimmungsbildschirm.
+  ok('der Geburtstags-Satz enthält die Kontakte', BIRTHDAY_SCOPES.includes(CONTACTS_SCOPE))
+  ok('und alles, was die Verbindung ohnehin hat', SCOPES.every((s) => BIRTHDAY_SCOPES.includes(s)))
+  ok('er ist nicht der Standard', BIRTHDAY_SCOPES.length > SCOPES.length)
+}
+
+// ── 14. Fehlende Häkchen werden an der Tür erkannt ──────────────────────────
+// Google stellt auch dann ein Token aus, wenn auf dem Zustimmungsbildschirm
+// einzelne Rechte abgewählt wurden — nur die erteilten Scopes stehen in der
+// Antwort. Ohne diese Prüfung merkt man das erst am ersten API-Aufruf, und
+// zwar als „Request had insufficient authentication scopes".
+{
+  eq('vollständige Zustimmung: nichts fehlt', missingScopes(SCOPES.join(' ')).length, 0)
+  eq('mehr als nötig ist auch in Ordnung', missingScopes(BIRTHDAY_SCOPES.join(' ')).length, 0)
+
+  // Nur angemeldet, keine Kalenderrechte.
+  eq('ohne Kalenderrechte fehlen beide', missingScopes('openid email').length, 2)
+
+  // Der Fall aus der Praxis: Termine ja, Kalenderliste abgewählt.
+  const teilweise = 'openid email https://www.googleapis.com/auth/calendar.events'
+  const fehlt = missingScopes(teilweise)
+  eq('ein fehlendes Recht wird einzeln benannt', fehlt.length, 1)
+  ok('und zwar das richtige', fehlt[0].endsWith('calendar.calendarlist.readonly'))
+
+  // Der Kontakte-Scope ist nie eine Bedingung.
+  ok('Kontakte gehören nicht zu den Pflichtrechten', !REQUIRED_SCOPES.includes(CONTACTS_SCOPE))
+  eq('ohne Kontakte fehlt trotzdem nichts', missingScopes(SCOPES.join(' ')).length, 0)
+
+  // Ein leeres oder fehlendes Feld ist keine Zustimmung.
+  eq('leeres Scope-Feld', missingScopes('').length, 2)
+  eq('fehlendes Scope-Feld', missingScopes(null).length, 2)
+  eq('undefiniertes Scope-Feld', missingScopes(undefined).length, 2)
 }
 
 console.log(`  ${pass} passed, ${fail} failed`)

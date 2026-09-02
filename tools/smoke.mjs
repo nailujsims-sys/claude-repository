@@ -785,6 +785,59 @@ async function run() {
   }
 
   {
+    // Ein gescheiterter Verbindungsversuch. Der Callback hat den halben Zugang
+    // wieder entfernt, also ist hier *nichts* verbunden — ohne einen stehenden
+    // Hinweis sähe der Bildschirm aus wie beim allerersten Öffnen, als hätte
+    // der Nutzer es nie versucht.
+    const window = makeDom('#/profil/google-kalender', {}, { search: '?google=rechte-fehlen' })
+    mount(window, code, 'ProfilGoogleRechte')
+    await wait(400)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== Profil/Google (Rechte fehlen) ===\n  ${text.slice(150, 460)}`)
+
+    if (!text.includes('Es fehlen Berechtigungen'))
+      errors.push('[ProfilGoogleRechte] the missing-permission notice is not shown')
+    if (!text.includes('Erneut versuchen'))
+      errors.push('[ProfilGoogleRechte] the button does not offer a retry')
+    // Der Zustand muss ehrlich sein: nicht verbunden, keine Kalenderliste.
+    if (text.includes('Synchronisierte Kalender'))
+      errors.push('[ProfilGoogleRechte] a failed attempt still rendered the connected screen')
+    // Und der Marker verschwindet aus der URL, damit ein Reload den Hinweis
+    // nicht ewig wiederholt.
+    if (window.location.search.includes('google='))
+      errors.push('[ProfilGoogleRechte] the marker stayed in the URL')
+  }
+
+  {
+    // Derselbe Weg für den anderen Fall: Google hat bestätigt, aber keine
+    // Kalender geliefert.
+    const window = makeDom('#/profil/google-kalender', {}, { search: '?google=kalender-fehler' })
+    mount(window, code, 'ProfilGoogleKalender')
+    await wait(400)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== Profil/Google (keine Kalender) ===\n  ${text.slice(0, 200)}`)
+    if (!text.includes('Die Kalender konnten nicht geladen werden'))
+      errors.push('[ProfilGoogleKalender] the calendar-failure notice is not shown')
+    if (!text.includes('wieder entfernt'))
+      errors.push('[ProfilGoogleKalender] the notice does not say the access was removed')
+  }
+
+  {
+    // Ein Abbruch ist kein Fehler — da darf keine rote Meldung stehen.
+    const window = makeDom('#/profil/google-kalender', {}, { search: '?google=abgebrochen' })
+    mount(window, code, 'ProfilGoogleAbbruch')
+    await wait(400)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    if (text.includes('Es fehlen Berechtigungen') || text.includes('Die Kalender konnten nicht geladen werden'))
+      errors.push('[ProfilGoogleAbbruch] a cancelled connect was reported as a failure')
+    if (!text.includes('Mit Google verbinden'))
+      errors.push('[ProfilGoogleAbbruch] the plain connect button is missing')
+  }
+
+  {
     // Profil itself: the shape of the screen, and the way into the integration.
     const window = makeDom('#/profil', GOOGLE_SEED)
     mount(window, code, 'Profil')

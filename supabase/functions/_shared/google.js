@@ -10,26 +10,53 @@ export const PEOPLE_API = 'https://people.googleapis.com/v1'
 export const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 export const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 
-// The least we can ask for and still do what the app promises:
+// What connecting a calendar asks for, and nothing beyond it:
 //   calendar.calendarlist.readonly — which calendars exist, their colours and
 //                                    the access role that decides writability
 //   calendar.events               — read and write events (not calendar
 //                                    settings, not sharing, not deleting
 //                                    calendars)
-//   contacts                      — birthdays. A birthday is a *contact* in
-//                                    Google, so editing one is a People API
-//                                    write; without this scope birthdays stay
-//                                    readable and the app says so.
 //   openid, email                 — to show which account is connected
+//
+// `contacts` is deliberately NOT in here. It used to be, so that a birthday
+// could be written back to the contact Google actually keeps it in — but that
+// made access to the user's whole address book a condition of using the
+// calendar at all. Anyone who declined it ended up with a grant that was
+// missing scopes and a connection that failed on its first request.
+//
+// Reading birthdays never needed it: the birthday calendar comes over
+// `calendar.events` like any other. Only *editing* one does, and that is its
+// own feature with its own consent screen — see BIRTHDAY_SCOPES.
 export const SCOPES = [
   'openid',
   'email',
   'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
   'https://www.googleapis.com/auth/calendar.events',
-  'https://www.googleapis.com/auth/contacts',
 ]
 
 export const CONTACTS_SCOPE = 'https://www.googleapis.com/auth/contacts'
+
+// The set a future "Geburtstage in Google bearbeiten" switch will ask for: the
+// calendar scopes the connection already has, plus contacts. Kept next to
+// SCOPES so it is obvious that the address book was parked, not lost — and so
+// that turning it on later is one named constant rather than a rediscovery.
+export const BIRTHDAY_SCOPES = [...SCOPES, CONTACTS_SCOPE]
+
+// Without these two there is no calendar to speak of. Google lets the user
+// untick individual permissions on the consent screen, and the token comes
+// back regardless — only the granted `scope` string says what actually
+// happened. Checking it at the door turns a later, unreadable
+// "Request had insufficient authentication scopes" into a specific sentence
+// about the permission that is missing.
+export const REQUIRED_SCOPES = [
+  'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+  'https://www.googleapis.com/auth/calendar.events',
+]
+
+export function missingScopes(granted, required = REQUIRED_SCOPES) {
+  const have = new Set(String(granted ?? '').split(/\s+/).filter(Boolean))
+  return required.filter((scope) => !have.has(scope))
+}
 
 // An error we can name, so the UI can say something better than "Fehler".
 export class GoogleError extends Error {

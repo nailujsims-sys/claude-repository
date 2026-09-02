@@ -7,7 +7,7 @@
 // the 401 retry, the 429 backoff, the 412 etag conflict and the 410 expired
 // sync token are all exercised as written, not as described.
 
-import { createGoogleClient } from '../supabase/functions/_shared/google.js'
+import { createGoogleClient, SCOPES } from '../supabase/functions/_shared/google.js'
 
 let seq = 0
 const nextId = (prefix) => `${prefix}${++seq}`
@@ -17,7 +17,10 @@ export function makeGoogle({
   now = () => Date.parse('2026-09-02T12:00:00Z'),
   refreshToken = 'refresh-1',
   accessToken = 'access-1',
-  scopes = 'openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/contacts',
+  // Dieselben Scopes, die eine echte Verbindung heute erteilt bekommt — ohne
+  // Kontakte. Ein Test, der Geburtstage in Google schreiben will, muss sie
+  // ausdrücklich anfordern, genau wie der Nutzer es später tun wird.
+  scopes = SCOPES.join(' '),
 } = {}) {
   const state = {
     calendars: new Map(),      // id -> calendarList entry
