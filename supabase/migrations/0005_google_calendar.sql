@@ -392,6 +392,18 @@ grant select, insert, update, delete on public.events to service_role;
 -- wall-clock time a Google instant is written as.
 grant select on public.profiles to service_role;
 
+
+-- Both trigger functions are `security definer`, and Postgres grants EXECUTE
+-- on a new function to PUBLIC — so PostgREST offers them at
+-- /rest/v1/rpc/<name>. Calling one directly fails ("can only be called as a
+-- trigger"), but a definer function reachable by an unauthenticated role is a
+-- standing invitation to a future mistake, and Supabase's own linter flags it.
+-- The triggers keep working: EXECUTE is checked when a trigger is created,
+-- not each time it fires (proved by supabase/tests/rls.sql, which asserts the
+-- tombstone behaviour after these revokes).
+revoke all on function public.events_leave_tombstone() from public, anon, authenticated;
+revoke all on function public.events_detach_from_google() from public, anon, authenticated;
+
 -- ── Realtime ────────────────────────────────────────────────────────────────
 -- The settings screen is live for the same reason the calendar is: a sync that
 -- finishes on the phone should show up on the Mac without a reload. Only the
