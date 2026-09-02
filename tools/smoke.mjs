@@ -116,6 +116,15 @@ async function run() {
   const code = await bundle()
 
   // 1) Each route mounts and renders.
+  //
+  //    The global top bar is collected on the way through: every main area
+  //    renders the same `TopBar`, so its markup must come out byte-identical
+  //    from route to route (see the comparison right after the loop). jsdom
+  //    does no layout, so this checks the *structure* the geometry follows
+  //    from — the classes that carry the height and the insets, the menu
+  //    button, the title block and the action rail. The measured pixel
+  //    positions are verified in a real browser, not here.
+  const topbars = []
   for (const [name, hash] of [
     ['Home (/)', '#/'],
     ['Aufgaben (/aufgaben)', '#/aufgaben'],
@@ -142,6 +151,76 @@ async function run() {
         if (!text.includes(needle)) errors.push(`[${name}] missing "${needle}"`)
       }
     }
+
+    const bar = window.document.querySelector('[data-topbar]')
+    if (!bar) {
+      errors.push(`[${name}] no global top bar`)
+    } else {
+      const menu = bar.querySelector('button[aria-label="Menü öffnen"]')
+      const row = bar.firstElementChild
+      const title = bar.querySelector('h1')
+      const rail = bar.querySelector('[data-topbar-actions]')
+      if (!menu) errors.push(`[${name}] the top bar has no menu button`)
+      if (!title) errors.push(`[${name}] the top bar has no title`)
+      if (!rail) errors.push(`[${name}] the top bar has no action pair`)
+      // The menu button must be the row's first child: same slot everywhere.
+      if (menu && row && row.firstElementChild !== menu)
+        errors.push(`[${name}] the menu button is not the first item in the bar`)
+      // No screen may nudge the bar or its menu button by itself — that is
+      // exactly what the per-screen headers used to do (`-ml-1`, `pt-3` vs
+      // `pt-5`) and what made the hamburger land somewhere else on every page.
+      if (menu && /-m[lrtb]?-/.test(menu.className))
+        errors.push(`[${name}] the menu button carries a per-screen offset: ${menu.className}`)
+      // The page title is the module's name and nothing else. The calendar's
+      // date in particular is content and belongs under the bar — putting it in
+      // the title is what made the bar page-dependent in the first place.
+      const expected = {
+        'Home (/)': 'Heute',
+        'Aufgaben (/aufgaben)': 'Aufgaben',
+        'Mehr (/mehr)': 'Mehr',
+        'Version (/version)': 'Version',
+        'Kalender (/kalender)': 'Kalender',
+      }[name]
+      const shown = title?.textContent.trim()
+      if (shown !== expected) errors.push(`[${name}] top bar title is "${shown}", expected "${expected}"`)
+      topbars.push([
+        name,
+        [
+          bar.className,
+          bar.getAttribute('style') || '',
+          row?.className,
+          menu?.className,
+          // The title's own classes carry size, weight and leading: one style
+          // for every screen, no per-page typography.
+          title?.className,
+          rail?.className,
+          // Action count and box size — the pair is right-anchored, so equal
+          // counts of equally sized targets means equal positions.
+          [...(rail?.children || [])]
+            .map((el) => el.className.match(/h-\d+ w-\d+/)?.[0] || el.className)
+            .join('|'),
+        ].join(' ~ '),
+      ])
+    }
+  }
+
+  // 1b) One bar, not five. Every route's bar — geometry, title typography and
+  //     the trailing pair — must produce the exact same signature.
+  {
+    const groups = new Map()
+    for (const [name, sig] of topbars) {
+      if (!groups.has(sig)) groups.set(sig, [])
+      groups.get(sig).push(name)
+    }
+    if (groups.size !== 1) {
+      errors.push(
+        `[TopBar] the bar differs between routes: ${[...groups.values()].map((g) => g.join('+')).join(' vs ')}`
+      )
+    }
+    console.log(
+      `\n=== TopBar (global) ===\n  routes=${topbars.length} identisch=${groups.size === 1} ` +
+        `:: ${topbars[0]?.[1].slice(0, 130)}`
+    )
   }
 
   // 2) Detail view for a known, pre-seeded task (exercises formatDueLabel etc.).

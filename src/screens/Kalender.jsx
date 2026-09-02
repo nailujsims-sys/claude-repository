@@ -1,6 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
-import { Menu, CalendarDays, Search, ChevronLeft, ChevronRight, X } from 'lucide-react'
-import { useUI } from '../context/UIContext'
+import { CalendarDays, Search, ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { useEvents } from '../context/EventsContext'
 import { useTasks } from '../context/TasksContext'
 import {
@@ -27,6 +26,7 @@ import MonthView from './calendar/MonthView'
 import EventDetailSheet from '../components/EventDetailSheet'
 import { useSwipe } from './calendar/useSwipe'
 import IconButton from '../components/IconButton'
+import TopBar from '../components/TopBar'
 import { usePresence } from '../components/Overlay'
 
 const VIEWS = [
@@ -39,7 +39,6 @@ const VIEWS = [
 // three views, which each manage their own internal scrolling. Events come from
 // EventsContext; tasks are reused from TasksContext (no duplicate data).
 export default function Kalender() {
-  const { openSidebar } = useUI()
   const { events } = useEvents()
   const { tasks } = useTasks()
 
@@ -123,35 +122,37 @@ export default function Kalender() {
       className="relative flex flex-col overflow-hidden"
       style={{ height: '100dvh', paddingBottom: 'calc(64px + env(safe-area-inset-bottom))' }}
     >
-      {/* Header — deliberately identical in structure for Tag / Woche / Monat:
-          the title block keeps its height even when a view has no subtitle, so
-          switching views never moves the menu, the Heute icon, the search or
-          the row below them. Only the text inside changes. */}
-      <header className="shrink-0 px-4 pt-4 pb-2">
-        <div className="flex h-[42px] items-center gap-2">
-          <IconButton onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 text-text-primary">
-            <Menu size={26} />
-          </IconButton>
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-[19px] font-bold leading-[24px] text-text-primary">
-              {primary}
-            </h1>
-            <p className="truncate text-[12px] leading-[16px] text-text-secondary">
-              {sub || '\u00A0'}
-            </p>
-          </div>
-          <IconButton
-            onClick={goToday}
-            aria-label="Heute"
-            className={viewingToday ? 'text-text-secondary' : 'text-accent'}
-          >
-            <CalendarDays size={22} />
-          </IconButton>
-          <IconButton onClick={() => setSearchOpen(true)} aria-label="Suche" className="text-text-primary">
-            <Search size={22} />
-          </IconButton>
+      {/* The global bar carries the module's name, exactly like every other
+          main area. The period the calendar is showing is content, not the
+          page's identity, so it sits below — with the two controls that act on
+          it. */}
+      <TopBar title="Kalender" />
+
+      {/* Period header — deliberately identical in structure for Tag / Woche /
+          Monat: the title block keeps its height even when a view has no
+          subtitle (the reserved line below), so switching views never moves the
+          Heute icon, the search or the view switch under them. Only the text
+          inside changes. */}
+      <div className="flex shrink-0 items-center gap-2 px-4 pb-2">
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-section font-bold leading-[24px] text-text-primary">
+            {primary}
+          </h2>
+          <p className="truncate text-caption leading-[16px] text-text-secondary">
+            {sub || '\u00A0'}
+          </p>
         </div>
-      </header>
+        <IconButton
+          onClick={goToday}
+          aria-label="Heute"
+          className={viewingToday ? 'text-text-secondary' : 'text-accent'}
+        >
+          <CalendarDays size={22} />
+        </IconButton>
+        <IconButton onClick={() => setSearchOpen(true)} aria-label="Suche" className="text-text-primary">
+          <Search size={22} />
+        </IconButton>
+      </div>
 
       {/* View switch + period navigation */}
       <div className="flex shrink-0 items-center justify-between gap-2 px-4 pb-3">

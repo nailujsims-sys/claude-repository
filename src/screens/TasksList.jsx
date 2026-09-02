@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Menu, Search, SlidersHorizontal, X } from 'lucide-react'
+import { Search, SlidersHorizontal, X } from 'lucide-react'
 import {
   DndContext,
   DragOverlay,
@@ -19,12 +19,12 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 
-import { useUI } from '../context/UIContext'
 import { useTasks } from '../context/TasksContext'
 import { useToast } from '../context/ToastContext'
 import { buildSections, CATEGORIES } from '../lib/taskSelectors'
 import { addDays, endOfMonth, isOverdue, startOfDay, startOfISOWeek, toISODate } from '../lib/date'
 import IconButton from '../components/IconButton'
+import TopBar from '../components/TopBar'
 import TaskRow from '../components/TaskRow'
 import FilterSheet, { FILTER_DEFAULTS } from '../components/FilterSheet'
 import { SkeletonTaskList } from '../components/Skeleton'
@@ -56,7 +56,6 @@ function dueForSection(key) {
 }
 
 export default function TasksList() {
-  const { openSidebar } = useUI()
   const {
     tasks,
     loading,
@@ -245,26 +244,7 @@ export default function TasksList() {
       {/* Sticky top — header + search + category tabs stay visible while the
           task list scrolls underneath. */}
       <div className="sticky top-0 z-30 border-b border-subtle bg-bg-base">
-        {/* Header */}
-        <header className="flex items-center gap-2 px-5 pt-5">
-          <IconButton onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 text-text-primary">
-            <Menu size={26} />
-          </IconButton>
-          <h1 className="flex-1 text-[28px] font-bold text-text-primary">Aufgaben</h1>
-          <IconButton
-            onClick={() => {
-              setSearchOpen((v) => !v)
-              if (searchOpen) setSearch('')
-            }}
-            aria-label="Suche"
-            className="text-text-primary"
-          >
-            <Search size={22} />
-          </IconButton>
-          <IconButton onClick={() => setFilterOpen(true)} aria-label="Filter" className="text-text-primary">
-            <SlidersHorizontal size={22} />
-          </IconButton>
-        </header>
+        <TopBar title="Aufgaben" />
 
         {/* Search bar */}
         {searchOpen && (
@@ -287,22 +267,57 @@ export default function TasksList() {
           </div>
         )}
 
-        {/* Category tabs. The row scrolls horizontally, which also clips it
-            vertically — so 4px of the top margin is carried as padding instead,
-            leaving room for a chip's focus ring inside the scroll box. Same
-            12px above the chips as before. */}
-        <div className="no-scrollbar mt-2 flex gap-2 overflow-x-auto px-5 pb-3 pt-1">
-          {TABS.map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setCategory(tab)}
-              className={`press-tint shrink-0 rounded-chip px-4 py-1.5 text-[14px] font-medium transition-colors ${
-                category === tab ? 'bg-accent text-white' : 'text-text-secondary'
-              }`}
+        {/* Category tabs plus this screen's own actions — they sit in the first
+            content row rather than in the global bar, so the bar stays the same
+            on every page (see src/components/TopBar.jsx).
+
+            The four categories have to be readable at a glance on a phone, so
+            the row is measured, not guessed: at `px-4`/`gap-2` the chips need
+            269px and a 390px screen offers 262 — "Arbeit" was cut off on first
+            paint, which reads as a rendering fault rather than as "there is
+            more to the right". `px-3` is the padding Home's chips already use
+            and the 6px/4px gaps are the smallest steps on the scale; together
+            they bring the row to 231px, so all four fit from 360px upwards with
+            room to spare. Type size and the 36×36 targets are untouched — this
+            is spacing, not shrinking.
+
+            Below 360px the row still scrolls, which is the honest answer: four
+            German category names plus two actions do not fit on a 320px screen
+            without making something too small to hit.
+
+            The scroll box also clips vertically, so 4px of the top margin is
+            carried as padding instead, leaving room for a chip's focus ring
+            inside it. The two buttons stay outside the box, so they never
+            scroll away. */}
+        <div className="mt-2 flex items-center gap-2 px-5 pb-3">
+          <div className="no-scrollbar flex min-w-0 flex-1 gap-1.5 overflow-x-auto pt-1">
+            {TABS.map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setCategory(tab)}
+                className={`press-tint shrink-0 rounded-chip px-3 py-1.5 text-[14px] font-medium transition-colors ${
+                  category === tab ? 'bg-accent text-white' : 'text-text-secondary'
+                }`}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <IconButton
+              onClick={() => {
+                setSearchOpen((v) => !v)
+                if (searchOpen) setSearch('')
+              }}
+              aria-label="Suche"
+              className="text-text-primary"
             >
-              {tab}
-            </button>
-          ))}
+              <Search size={22} />
+            </IconButton>
+            <IconButton onClick={() => setFilterOpen(true)} aria-label="Filter" className="text-text-primary">
+              <SlidersHorizontal size={22} />
+            </IconButton>
+          </div>
         </div>
       </div>
 

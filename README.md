@@ -105,13 +105,25 @@ reads/writes the `tasks` table; when either is missing it stays in local mode.
 ## 🚀 Deploy (GitHub Pages)
 
 The included workflow (`.github/workflows/deploy.yml`) builds the app and
-publishes `dist/` on every push to `main`, `master`, or this feature branch.
+publishes `dist/` on every push to the repository's **default branch**
+(`claude/zen-mayer-bKTbe`; `main`/`master` are listed too). It runs nowhere
+else on purpose: the `github-pages` environment refuses deployments from any
+other branch, so a feature-branch trigger would only produce failing runs.
 
 1. Repo **Settings → Pages → Build and deployment → Source: "GitHub Actions"**.
 2. *(Optional, to use Supabase in production)* Repo **Settings → Secrets and
    variables → Actions → Variables**: add `VITE_SUPABASE_URL` and
    `VITE_SUPABASE_ANON_KEY`. Without them the deployed app runs in local mode.
-3. Push — the workflow prints the live URL.
+3. Merge into the default branch — the workflow prints the live URL.
+
+**Releasing a feature branch**, in order: `npm run verify` (`test:logic` →
+`smoke` → `build`, exactly the checks CI gates on), push, open a PR against the
+default branch, merge, then wait for that workflow run and read its conclusion.
+The run's last step polls the live `version.json` and fails unless the site
+serves the commit it just built, so a green run is proof the live site is
+current — and `/version` in the app shows the same commit. A red build or red
+tests are never deployed. The binding procedure is written down in
+[`CLAUDE.md`](CLAUDE.md) → *Deployment*.
 
 The site is served from `/claude-repository/` (set as Vite's `base`), and routing
 uses a hash router so deep links work on Pages without server rewrites.
@@ -147,7 +159,8 @@ src/
     eventRepository.js      factory for calendar events (Supabase or local)
     supabaseEventRepository.js · localEventRepository.js · eventDefaults.js
   context/                  Auth · Tasks · Events · UI (overlays) · Toast
-  components/               BottomNav, Sidebar, ActionSheet, BottomSheet, TaskForm,
+  components/               TopBar (the global header of every main area),
+                            BottomNav, Sidebar, ActionSheet, BottomSheet, TaskForm,
                             EventForm, InlineCalendar, MiniCalendar, FilterSheet,
                             TaskRow, EventDetailSheet, ConfirmDialog, …
   screens/                  Home, TasksList, TaskDetail, Kalender, Mehr, Login
@@ -161,6 +174,14 @@ Adding a nav item, sidebar link, action-sheet entry, or "coming soon" module is 
 one-line edit to the arrays in **`src/config/navigation.js`** — no component
 changes required. Build a new module by adding its `<Route>` in `App.jsx` and
 flipping it from `futureModules` into the active nav lists.
+
+A new main area gets the app's header for free: render
+**`<TopBar title="…" />`** as the first element of the screen and put the
+screen's own content below it. `title` is the only prop — height, insets, the
+hamburger, the title's typography and the notification/profile pair live in
+`src/components/TopBar.jsx`, so no screen can shift them. Controls that belong
+to one screen (a search, a filter, the calendar's period switch and its date)
+go into that screen's first content row, under the bar.
 
 ---
 

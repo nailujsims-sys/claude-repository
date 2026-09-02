@@ -1,7 +1,7 @@
 # Known gaps — current app vs. design system
 
 Status: **the mandatory G phase is finished** (2026-08/09). G1–G5, G7, G8,
-G10–G21 are done or deliberately closed; nothing on this list blocks new
+G10–G22 are done or deliberately closed; nothing on this list blocks new
 product work. What remains are two polish-phase candidates, G6 and G9, which
 §26 wants judged after real use rather than built now.
 
@@ -65,6 +65,65 @@ never as a task of its own.
   ever wanted as a system, that is a §26 decision, not a precedent set here.
 
 ## Closed
+
+### G22 · Every screen built its own header — closed 2026-09 (`src/components/TopBar.jsx`, `src/screens/Home.jsx`, `src/screens/Kalender.jsx`, `src/screens/TasksList.jsx`, `src/screens/Mehr.jsx`, `src/screens/Version.jsx`, `tools/smoke.mjs`)
+§2 asks the modules to feel like one app, and the one element on literally every
+screen was the one that was different everywhere. Measured before the fix, at
+390px:
+
+| Screen | inset | top | row | title | hamburger |
+|---|---|---|---|---|---|
+| Heute | `px-5` | `pt-3` + `py-2` | 36px | *none* (the greeting was the only title) | x 16 / y 20 |
+| Kalender | `px-4` | `pt-4` | 42px | the date, 19px + subtitle | x 12 / y 16 |
+| Aufgaben | `px-5` | `pt-5` | 36px | 28px inline | x 16 / y 20 |
+| Mehr · Version | `px-5` | `pt-5` | 36px | 28px inline | x 16 / y 20 |
+
+So the menu button moved on both axes while navigating, the title was in a
+different place and a different size on every screen (and missing on Heute), and
+the right-hand actions started at three different x positions. Every one of the
+five headers also carried the same `-ml-1` on its menu button — a per-screen
+correction for a horizontal inset that was itself per-screen.
+
+`TopBar` replaces all five, and it is the same bar every time: hamburger, page
+title, notifications, profile. **`title` is its only prop.** The geometry is
+fixed inside the component — `px-4` (chosen so the 26px menu glyph lands at
+21px, optically flush with the `px-5` content column below it, which is what the
+`-ml-1` was doing by hand), `calc(12px + env(safe-area-inset-top))` above, a
+40px row, a right-anchored 36×36 pair with an 8px gap — and the title is one
+style for every screen: `text-heading`, bold, one line, truncated if it does not
+fit. No per-screen size, no autofit, no special case for a long title; a title
+that shrinks or wraps is precisely how the bar stopped being the same bar.
+
+Measured after the fix, every route at 320/360/390/430/768/1280px reports the
+identical bar: height 60, menu at 16/14, glyph at 21/19, title at x 60 / y 21 at
+17px/700/22px, the pair at 279 and 323 (390px).
+
+**What the bar does not carry.** Anything that belongs to *this* screen —
+a search, a filter, the calendar's period switch — goes into the screen's own
+first content row, below the bar. In particular the calendar's date is content,
+not the page's identity: the bar says `Kalender`, and `2. September 2026` +
+`Mittwoch` sit underneath next to the Heute and search buttons, in the same
+fixed-height block they always had, so switching Tag/Woche/Monat still moves
+nothing. Aufgaben's search and filter moved onto the category-chip row the same
+way. This is what keeps the bar page-independent instead of merely
+similar-looking.
+
+Two further consequences worth knowing:
+- Heute gained the title it never had; its greeting stays where it was, as page
+  content, and is now an `<h2>` since the bar owns the `<h1>`.
+- **The bar is `sticky`.** Aufgaben's header already was; Kalender's shell does
+  not scroll, so it resolves to a normal position there; Heute, Mehr and Version
+  keep their bar in view like Aufgaben does.
+
+Deliberately *not* changed: the task detail screen (its leading control is a
+back button, not the menu) and the calendar's full-screen search (it covers the
+calendar and carries its own chrome). Both are contexts, not main areas — if a
+third one appears, give `TopBar` a `leading` slot rather than a second header.
+
+`tools/smoke.mjs` compares the rendered bar across all five routes — geometry,
+title typography and the trailing pair — checks that each route's title is its
+module's name, and fails if a screen re-introduces a per-screen offset on the
+menu button.
 
 ### G10 · Typography values were literals, not tokens — closed 2026-09 (`tailwind.config.js`)
 Sizes were written inline as `text-[15px]`, `text-[17px]`, `text-[12px]` and so

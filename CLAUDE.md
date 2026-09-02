@@ -50,6 +50,66 @@ Non-negotiables, so they apply even before the skill is loaded:
 If a task conflicts with these rules, say so and propose the smallest coherent
 change — do not silently widen the scope.
 
+## Deployment — binding
+
+**A finished change is a change that is live** — or one explicitly reported as
+not live, with the reason. "Pushed" is not "deployed".
+
+### How production works here
+
+Production is GitHub Pages, published by `.github/workflows/deploy.yml`. Two
+facts decide the whole procedure:
+
+- The workflow runs **only on the repository's default branch**
+  (`claude/zen-mayer-bKTbe`). The `github-pages` environment refuses
+  deployments from any other branch, so a push to a feature branch deploys
+  nothing and adding feature branches to the trigger list only produces
+  guaranteed-failing runs — that was tried and removed. Getting a commit live
+  therefore means getting it onto the default branch.
+- The workflow **is** the test gate and the live check: `npm run test:logic` →
+  `npm run smoke` → `npm run build`, a check that the bundle carries
+  `github.sha`, the Pages deploy, and finally a poll of the public
+  `version.json` that fails the run unless the live site serves exactly that
+  commit. **A green run is proof that the live site is current** — that is what
+  makes the API-based verification below sufficient.
+
+### The order of work, every time
+
+1. Implement the change.
+2. `npm run verify` — `test:logic`, `smoke`, `build`, the same three checks in
+   the same order as CI.
+3. Only when it is green: commit and push the feature branch
+   (`git push -u origin <branch>`).
+4. Deploy: open a pull request from the feature branch to
+   `claude/zen-mayer-bKTbe` and merge it. The merge push starts the workflow.
+5. Verify the deployment — do not assume it. Read the workflow run for the
+   merge commit (GitHub Actions, or `actions_list` → `list_workflow_runs` for
+   `deploy.yml`) and wait for it to complete. `success` = live. Anything else =
+   not live.
+6. Only then report the work as finished.
+
+**Never deploy a red build or red tests.** If deploying is impossible — no
+permission to merge, the workflow does not start, the run fails — report
+**"NICHT LIVE"** and the reason. Never imply a change is live when it is not.
+
+Note for sandboxed sessions: the live host (`*.github.io`) may be unreachable
+through the egress proxy. Verify through the GitHub API then, and say so —
+the run's own live check is what carries the proof, not a fetch you did.
+
+### Report after every finished task
+
+Every completion report must state, explicitly:
+
+- **Commit** — the SHA (and the merge commit, if there is one)
+- **Version** — `package.json`, when it changed
+- **Tests / build** — the result of `npm run verify`
+- **Deployment: LIVE or NICHT LIVE**
+- If live: the confirmation that the new version is reachable in production
+  (the green run, and what `/version` in the app now shows)
+
+Versioning: a product change bumps `package.json` (a closed gap the minor
+version, a fix the patch version); a process-only change does not.
+
 ## Working conventions
 
 - Mobile-first at ~390px; the frame is capped to `max-width: 430px` (`.app-frame`).
