@@ -1,9 +1,9 @@
-import { addDays, startOfDay, startOfISOWeek, toISODate } from './date'
+import { addDays, startOfDay, startOfISOWeek, toISODate } from '../../src/lib/date.js'
 
-// Demo tasks used the first time the app runs in LOCAL mode, so the UI looks
-// alive and matches the design. Dates are computed relative to "today" so the
-// sections (HEUTE / MORGEN / …) always populate sensibly. Never used when
-// Supabase is configured.
+// Demo rows for the test harness only — they are NOT shipped with the app.
+// tools/smoke.mjs feeds them to its stubbed Supabase backend. Dates are
+// computed relative to "today" so the sections always populate sensibly.
+
 export function seedTasks() {
   const today = startOfDay(new Date())
   const tomorrow = addDays(today, 1)

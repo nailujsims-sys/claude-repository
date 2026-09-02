@@ -1,10 +1,11 @@
-import { addDays, startOfDay, startOfISOWeek, startOfMonth, toISODate } from './date'
+import { addDays, startOfDay, startOfISOWeek, startOfMonth, toISODate } from '../../src/lib/date.js'
 
-// Demo calendar events for local mode, computed relative to "today" so every
-// view (day / week / month) always looks alive and exercises the tricky cases:
-// overlapping timed events, stacked multi-day bars, an all-day birthday, and a
-// day dense enough to trigger the month view's "+X weitere". Never used when
-// Supabase is configured.
+// Demo events for the test harness only — they are NOT shipped with the app.
+// tools/smoke.mjs feeds them to its stubbed Supabase backend. Computed
+// relative to "today" so every view exercises the tricky cases: overlapping
+// timed events, stacked multi-day bars, an all-day birthday, and a day dense
+// enough to trigger the month view's "+X weitere".
+
 export function seedEvents() {
   const today = startOfDay(new Date())
   const monday = startOfISOWeek(today)

@@ -6,11 +6,17 @@ name: Deploy Mind Whiteboard to GitHub Pages
 # One-time setup: repo Settings → Pages → Build and deployment → Source:
 # "GitHub Actions".
 #
-# Optional Supabase wiring: set repository variables (Settings → Secrets and
-# variables → Actions → Variables) VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.
-# When unset, the app deploys in local (localStorage) mode. The anon key is
-# safe to expose in a client app (protected by RLS), so a repo *variable* is
-# fine — a secret works too.
+# REQUIRED one-time setup: the two public Supabase values, as repository
+# variables (Settings → Secrets and variables → Actions → Variables) or as
+# secrets — VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY. Both are public: the
+# URL names the project, the anon key is the browser's identity before login,
+# and every row behind them is guarded by Row Level Security. The service-role
+# key and the database password must never appear here.
+#
+# Without them the build stops (see "Check the Supabase configuration"). That
+# is on purpose: a build without a backend produces an app that cannot store
+# anything, and shipping it silently is what this whole setup replaced.
+# Details: supabase/README.md
 
 on:
   # Only the default branch. The `github-pages` environment refuses deployments
@@ -58,12 +64,32 @@ jobs:
       - name: Smoke test
         run: npm run smoke
 
+      # Fail before the build rather than after the deploy: an app without a
+      # database is not a degraded app, it is a different one.
+      - name: Check the Supabase configuration
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${VITE_SUPABASE_URL:-}" ] || missing="$missing VITE_SUPABASE_URL"
+          [ -n "${VITE_SUPABASE_ANON_KEY:-}" ] || missing="$missing VITE_SUPABASE_ANON_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing Supabase configuration:$missing — set it under Settings → Secrets and variables → Actions (variable or secret). See supabase/README.md"
+            exit 1
+          fi
+          # The URL is not secret, so printing it makes the run self-documenting;
+          # the key is only ever confirmed as present.
+          echo "Supabase project: $VITE_SUPABASE_URL"
+          echo "Anon key: present (${#VITE_SUPABASE_ANON_KEY} characters)"
+
       - name: Build
         env:
           # vite.config.js stamps this into the bundle and into version.json.
           GITHUB_SHA: ${{ github.sha }}
-          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.VITE_SUPABASE_ANON_KEY }}
         run: npm run build
 
       - name: Check the build stamped the right commit

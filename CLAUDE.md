@@ -1,9 +1,11 @@
 # Mind Whiteboard — project instructions for Claude Code
 
 Mind Whiteboard is a dark, mobile-first personal productivity app (React + Vite +
-Tailwind, Supabase with a localStorage fallback). Modules today: Startseite,
-Aufgaben, Kalender — built to grow module by module. See `README.md` for the
-architecture, data layer and setup.
+Tailwind). Supabase is the single source of truth: email/password login, one
+account, Row Level Security on every personal table, and no local fallback store
+— without a configured backend the app says so and holds nothing. Modules today:
+Startseite, Aufgaben, Kalender — built to grow module by module. See
+`README.md` for the architecture and `supabase/README.md` for the backend.
 
 ## Deliverables — binding
 
