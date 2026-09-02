@@ -107,6 +107,69 @@ export function eventRangeLabel(ev) {
   return e && isSameDay(s, e) ? `${fmt(s)} – ${fmt(e)}` : fmt(s)
 }
 
+// ── The day as a list ───────────────────────────────────────────────────────
+// The Tag/Woche views place events on an hour grid; the Heute screen shows the
+// same day as a plain chronological list, so it needs the day flattened rather
+// than laid out. Bars come first — they cover the whole day and have no
+// position in it — then the timed events in start order, which is the order
+// `splitDayEvents` already sorts both halves into.
+export function dayAgenda(events, dayDate) {
+  const { bars, timed } = splitDayEvents(events, dayDate)
+  return [...bars, ...timed]
+}
+
+// What goes in the list's leading time column: the start time for a timed
+// event, and for a bar the reason it has none.
+//
+// (`hitTime` in src/screens/Kalender.jsx derives the same three cases for a
+// search hit. It stays where it is — Rule 0 — and should adopt this helper the
+// next time that code is edited anyway.)
+export function eventSlotLabel(ev) {
+  const s = eventStart(ev)
+  if (!s) return ''
+  if (!isBarEvent(ev)) return eventTimeLabel(ev)
+  const e = eventEnd(ev)
+  return e && !isSameDay(s, e) ? 'Mehrtägig' : 'Ganztägig'
+}
+
+// "45 Min" / "2 Std" / "1 Std 30 Min" — how long a timed event runs. The
+// agenda pairs it with the start time, where repeating the end time would say
+// the same thing twice and read as a second timestamp to decode.
+export function eventDurationLabel(ev) {
+  const s = eventStart(ev)
+  const e = eventEnd(ev)
+  if (!s || !e) return ''
+  const min = Math.max(0, Math.round((e - s) / 60000))
+  if (min < 60) return `${min} Min`
+  const hours = Math.floor(min / 60)
+  const rest = min % 60
+  return rest ? `${hours} Std ${rest} Min` : `${hours} Std`
+}
+
+// Has the event already finished at `ref`? The agenda dims those, so the part
+// of the day that is still ahead is the part that stands out (§17).
+//
+// A bar is measured in whole days, not in minutes: an all-day event is stored
+// as `…T00:00` on both ends, so comparing its end timestamp would declare it
+// over one minute after midnight — on the very day it is happening.
+export function eventIsPast(ev, ref = new Date()) {
+  if (isBarEvent(ev)) {
+    const [, end] = eventDayRange(ev)
+    return end < startOfDay(ref)
+  }
+  const e = eventEnd(ev) || eventStart(ev)
+  return e ? e < ref : false
+}
+
+// Is it running right now? A bar counts while its day range covers `ref`.
+export function eventIsNow(ev, ref = new Date()) {
+  const s = eventStart(ev)
+  if (!s) return false
+  if (isBarEvent(ev)) return eventCoversDay(ev, ref)
+  const e = eventEnd(ev) || s
+  return s <= ref && ref < e
+}
+
 // ── Overlapping timed-event layout (interval partition into columns) ────────
 // Google-Calendar-style packing for the Tag / Woche grids:
 //   1. mutually overlapping events are split into columns and placed side by

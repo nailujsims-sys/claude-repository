@@ -1,174 +1,61 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Sparkles, ArrowRight, Quote, Globe } from 'lucide-react'
+import { useCallback, useState } from 'react'
 import TopBar from '../components/TopBar'
-import { useAuth } from '../context/AuthContext'
+import EventDetailSheet from '../components/EventDetailSheet'
+import { useEvents } from '../context/EventsContext'
 import { useTasks } from '../context/TasksContext'
-import { homePreview, openTodayCount } from '../lib/taskSelectors'
-import { formatTime, isToday } from '../lib/date'
+import HomeGreeting from './home/HomeGreeting'
+import AgendaCard from './home/AgendaCard'
+import TasksCard from './home/TasksCard'
 
-function greeting() {
-  const h = new Date().getHours()
-  if (h >= 5 && h < 12) return 'Guten Morgen'
-  if (h >= 12 && h < 18) return 'Guten Tag'
-  if (h >= 18 && h < 22) return 'Guten Abend'
-  return 'Gute Nacht'
-}
-
-// Static schedule preview (placeholder per spec — no functionality).
-const SCHEDULE = [
-  { time: '09:00', title: 'Vorlesung Finanzierung', sub: 'Raum A213 · Prof. Müller' },
-  { time: '14:00', title: 'Gruppenarbeit Projekt', sub: 'Bibliothek' },
-  { time: '18:00', title: 'Sport', sub: 'Gym' },
-]
-
+// ── Heute ───────────────────────────────────────────────────────────────────
+//
+// The screen is a composition and nothing else: the greeting block, then one
+// card per subject, in the order they are needed — what day it is, what is on
+// today, what is still open. Each card owns its data and its interactions, so a
+// later block is added here as one more line and cannot disturb the two that
+// exist.
+//
+// Both lists live inside their own height budget (`HomeCard` → `ScrollList`),
+// which is what keeps this an overview: the page has one shape whether the day
+// holds two events or twenty, and the two lists scroll past each other
+// independently instead of pushing each other down the page.
+//
+// Nothing here is new chrome. The bar is the global `TopBar`, the rows are the
+// app's own `TaskRow`, and tapping an event opens the same `EventDetailSheet`
+// the calendar opens — the screen is a new arrangement of the product, not a
+// second version of it.
 export default function Home() {
-  const { displayName } = useAuth()
-  const { tasks, loading } = useTasks()
-  const navigate = useNavigate()
-  const [scope, setScope] = useState('today')
+  const { events, loading: eventsLoading } = useEvents()
+  const { tasks, loading: tasksLoading } = useTasks()
+  const [selectedEvent, setSelectedEvent] = useState(null)
 
-  const preview = homePreview(tasks, scope).slice(0, 4)
-  const openCount = openTodayCount(tasks)
+  const selectEvent = useCallback((ev) => setSelectedEvent(ev), [])
 
   return (
     <>
-      {/* The global bar — same component, same geometry as every other main
-          area (src/components/TopBar.jsx). The greeting below is page content
-          and stays exactly as it was. */}
       <TopBar title="Heute" />
 
       <div className="px-5 pb-28">
-        {/* Greeting */}
-        <section className="mb-5 mt-2">
-          <h2 className="text-[28px] font-bold leading-tight text-text-primary">
-            {greeting()}, {displayName}
-          </h2>
-          <div className="mt-2 flex gap-2">
-            <Quote size={20} className="mt-0.5 shrink-0 fill-accent-dim text-accent-dim" />
-            <p className="text-[15px] leading-snug text-text-secondary">
-              Disziplin ist der Schlüssel zwischen Zielen und Erreichen.
-            </p>
-          </div>
-        </section>
+        <HomeGreeting />
 
-        {/* Morning Briefing (static) */}
-        <section
-          className="relative mb-3 overflow-hidden rounded-card border border-subtle p-4"
-          style={{
-            background:
-              'linear-gradient(135deg, #1E3A6E 0%, #15264a 60%, #0F1629 100%)',
-          }}
-        >
-          <Globe
-            size={140}
-            className="pointer-events-none absolute -right-6 -top-4 text-white/10"
-            strokeWidth={1}
+        <div className="space-y-3">
+          <AgendaCard
+            events={events}
+            loading={eventsLoading}
+            onSelect={selectEvent}
           />
-          <div className="relative">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Sparkles size={18} className="text-white" />
-                <h2 className="text-[16px] font-bold text-text-primary">Morning Briefing</h2>
-              </div>
-              <span className="text-[12px] text-text-secondary">07:30 Uhr</span>
-            </div>
-            <p className="mt-2 max-w-[80%] text-[14px] leading-snug text-text-secondary">
-              EZB-Sitzung 14:15 Uhr · DAX leicht im Plus · Nvidia-Zahlen nachbörslich.
-            </p>
-            <button className="press-fade mt-3 flex items-center gap-1 text-[14px] font-semibold text-accent">
-              Briefing öffnen <ArrowRight size={16} />
-            </button>
-          </div>
-        </section>
-
-        {/* Heute im Überblick (static) */}
-        <section className="mb-3 rounded-card border border-subtle bg-bg-card p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-[16px] font-bold text-text-primary">Heute im Überblick</h2>
-            <button className="press-fade text-[13px] font-semibold text-accent">Mehr anzeigen</button>
-          </div>
-          <div className="space-y-3">
-            {SCHEDULE.map((e) => (
-              <div key={e.time} className="flex gap-3">
-                <span className="w-12 shrink-0 text-[14px] font-medium text-text-secondary">
-                  {e.time}
-                </span>
-                <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-accent" />
-                <div className="min-w-0">
-                  <p className="text-[15px] font-semibold text-text-primary">{e.title}</p>
-                  <p className="truncate text-[13px] text-text-secondary">{e.sub}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        {/* Aufgaben preview (live) */}
-        <section
-          className="press-tint rounded-card border border-subtle bg-bg-card p-4"
-          onClick={() => navigate('/aufgaben')}
-          role="button"
-        >
-          <div className="mb-3 flex items-center justify-between">
-            <div>
-              <h2 className="text-[16px] font-bold text-text-primary">Aufgaben</h2>
-              <p className="text-[12px] text-text-secondary">{openCount} offen</p>
-            </div>
-            <div
-              className="flex rounded-chip bg-bg-input p-1"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {[
-                { id: 'today', label: 'Heute' },
-                { id: 'week', label: 'Diese Woche' },
-              ].map((t) => (
-                <button
-                  key={t.id}
-                  onClick={() => setScope(t.id)}
-                  className={`press-tint rounded-chip px-3 py-1 text-[13px] font-medium transition-colors ${
-                    scope === t.id ? 'bg-accent text-white' : 'text-text-secondary'
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {loading ? (
-            <div className="space-y-3 py-1">
-              {[0, 1, 2].map((i) => (
-                <div key={i} className="h-5 skeleton-shimmer rounded bg-bg-elevated" />
-              ))}
-            </div>
-          ) : preview.length === 0 ? (
-            <p className="py-2 text-[14px] text-text-secondary">
-              Keine offenen Aufgaben {scope === 'today' ? 'heute' : 'diese Woche'}.
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {preview.map((task) => (
-                <div key={task.id} className="flex items-center gap-3 py-1.5">
-                  <span className="h-[18px] w-[18px] shrink-0 rounded-md border-2 border-text-muted" />
-                  <span className="min-w-0 flex-1 truncate text-[15px] text-text-primary">
-                    {task.title}
-                  </span>
-                  {task.due_time && (
-                    <span
-                      className={`text-[12px] ${
-                        isToday(task.due_date) ? 'text-accent' : 'text-text-secondary'
-                      }`}
-                    >
-                      {formatTime(task.due_time)}
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+          <TasksCard tasks={tasks} loading={tasksLoading} />
+        </div>
       </div>
+
+      {/* The same sheet the calendar uses, owned by the screen that opens it —
+          `onReopen` is what lets a sheet that was flicked away be caught on its
+          way out (G16). */}
+      <EventDetailSheet
+        event={selectedEvent}
+        onClose={() => setSelectedEvent(null)}
+        onReopen={selectEvent}
+      />
     </>
   )
 }

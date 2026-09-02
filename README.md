@@ -14,8 +14,11 @@ app is fully usable the moment it loads.
 
 ## ✨ What's in V1
 
-- **Startseite** — time-aware greeting, static Morning Briefing & schedule cards,
-  and a live Aufgaben preview (Heute / Diese Woche).
+- **Startseite** — a calm overview of the day: a greeting that follows the clock
+  (Morgen / Tag / Abend), the date, one motivation line per calendar day, the
+  day's calendar entries and the open tasks (Heute / Diese Woche). Both lists
+  are live, complete, and scroll inside their own height budget, so the page
+  keeps its shape whether the day holds two entries or twenty.
 - **Aufgaben** — sectioned task list (HEUTE · MORGEN · DIESE WOCHE · DIESEN MONAT ·
   SPÄTER), category tabs, search, filters (favorites / completed / deleted),
   complete & favorite with animations, and **drag-and-drop** reordering — including
@@ -67,7 +70,8 @@ design out of the box.
 npm run build        # production build → dist/
 npm run preview      # preview the production build
 npm run smoke        # headless runtime smoke test (jsdom) across all routes
-npm run test:logic   # pure-logic tests: drag/resize math, search, timezone-safety
+npm run test:logic   # pure-logic tests: drag/resize math, search, timezone-safety,
+                     # greeting boundaries, the quote-per-day rotation
 ```
 
 ---
@@ -147,7 +151,10 @@ src/
     config.js               env detection (Supabase vs local)
     supabase.js             Supabase client (or null)
     date.js                 dates, ISO weeks, section grouping, formatting
-    calendar.js             event geometry: parsing, overlap layout, bar packing, drag/resize math
+    calendar.js             event geometry: parsing, overlap layout, bar packing, drag/resize math,
+                            plus the day-as-a-list helpers the Heute agenda reads
+    greeting.js             the time-of-day greeting and its boundaries
+    quotes.js               the ten motivation lines + the day-of-year rotation
     eventOptions.js         recurrence + reminder option lists and labels
     eventSearch.js          calendar search (title / location / notes, upcoming-first)
     useNow.js               ticking clock hook for the live time indicator
@@ -162,8 +169,11 @@ src/
   components/               TopBar (the global header of every main area),
                             BottomNav, Sidebar, ActionSheet, BottomSheet, TaskForm,
                             EventForm, InlineCalendar, MiniCalendar, FilterSheet,
-                            TaskRow, EventDetailSheet, ConfirmDialog, …
+                            TaskRow, EventDetailSheet, ConfirmDialog, ScrollList
+                            (a list that scrolls inside its own height budget), …
   screens/                  Home, TasksList, TaskDetail, Kalender, Mehr, Login
+    home/                   HomeGreeting, AgendaCard, TasksCard and the HomeCard
+                            shell every Heute block is built from
     calendar/               DayView, WeekView, MonthView, parts (shared grid pieces),
                             useSwipe (period navigation), useTimedGesture (move/resize),
                             useElementWidth (measured column width for the layout)

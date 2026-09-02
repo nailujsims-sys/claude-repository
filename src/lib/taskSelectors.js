@@ -87,17 +87,32 @@ export function buildSections(tasks, filters, ref = new Date()) {
     .filter((b) => b.active.length || b.completed.length || b.deleted.length)
 }
 
-// Home preview lists (max 4), always active only.
+// The two lists behind the Heute screen's [ Heute | Diese Woche ] switch.
+// Active tasks only, and never truncated — the screen bounds the *height* of
+// the list and lets it scroll, so cutting the data as well would hide rows
+// that the scroll would otherwise reach.
+//
+//   'today' — due today, plus everything overdue. That is the same rule the
+//             Aufgaben list's HEUTE section uses (`isDueToday`), so a task
+//             cannot appear under Heute in one screen and not the other.
+//   'week'  — the current Mon–Sun week, *plus* the Heute set. Overdue tasks
+//             from an earlier week roll forward into today and would otherwise
+//             be missing from the wider of the two lists, which would let
+//             "Diese Woche" show fewer rows than "Heute" — the switch has to
+//             widen the selection, never narrow it.
+//
+// Sorted chronologically (oldest due date first, dateless last) and only then
+// by the user's own order: a week spans several days, so due date is the axis
+// the list is read along. Overdue tasks sort to the top by construction.
 export function homePreview(tasks, scope, ref = new Date()) {
   const active = tasks.filter(isActive)
   const inScope =
     scope === 'week'
-      ? active.filter((t) => isInCurrentWeek(t.due_date, ref))
+      ? active.filter((t) => isInCurrentWeek(t.due_date, ref) || isDueToday(t, ref))
       : active.filter((t) => isDueToday(t, ref))
-  return inScope.sort((a, b) => a.sort_order - b.sort_order)
-}
-
-// Count of open (active) tasks due today (incl. overdue) — shown on the home card.
-export function openTodayCount(tasks, ref = new Date()) {
-  return tasks.filter((t) => isActive(t) && isDueToday(t, ref)).length
+  return inScope.sort(
+    (a, b) =>
+      (a.due_date || '9999-12-31').localeCompare(b.due_date || '9999-12-31') ||
+      a.sort_order - b.sort_order
+  )
 }

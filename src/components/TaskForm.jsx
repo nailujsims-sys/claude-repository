@@ -47,7 +47,9 @@ export default function TaskForm() {
         return
       }
     }
-    setForm(EMPTY)
+    // A create may arrive with a due date already decided by its caller (see
+    // UIContext). Everything else stays empty, so the sheet is the same sheet.
+    setForm(taskForm?.due ? { ...EMPTY, due: taskForm.due } : EMPTY)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, taskForm?.taskId])
 
