@@ -74,7 +74,7 @@ screen was the one that was different everywhere. Measured before the fix, at
 | Screen | inset | top | row | title | hamburger |
 |---|---|---|---|---|---|
 | Heute | `px-5` | `pt-3` + `py-2` | 36px | *none* (the greeting was the only title) | x 16 / y 20 |
-| Kalender | `px-4` | `pt-4` | 42px | 19px + 12px subtitle | x 12 / y 16 |
+| Kalender | `px-4` | `pt-4` | 42px | the date, 19px + subtitle | x 12 / y 16 |
 | Aufgaben | `px-5` | `pt-5` | 36px | 28px inline | x 16 / y 20 |
 | Mehr · Version | `px-5` | `pt-5` | 36px | 28px inline | x 16 / y 20 |
 
@@ -84,35 +84,46 @@ the right-hand actions started at three different x positions. Every one of the
 five headers also carried the same `-ml-1` on its menu button — a per-screen
 correction for a horizontal inset that was itself per-screen.
 
-`TopBar` replaces all five. The geometry is fixed inside the component and is
-not exposed as props, so a screen cannot shift it: `px-4` (which is chosen so
-the 26px menu glyph lands at 21px, optically flush with the `px-5` content
-column below — no nudge needed), `calc(12px + env(safe-area-inset-top))` above,
-a 40px row, a title block that always reserves its subtitle line, and a
-right-anchored 36×36 action rail with an 8px gap. Measured after the fix, every
-route at 320/360/390/430/768/1280px reports the identical bar: height 60,
-menu at 16/14, glyph at 21/19, title at x 60 / y 13 — and the calendar's title
-switching between `2. September 2026`, `31. August – 6. September 2026` and
-`September 2026` moves nothing.
+`TopBar` replaces all five, and it is the same bar every time: hamburger, page
+title, notifications, profile. **`title` is its only prop.** The geometry is
+fixed inside the component — `px-4` (chosen so the 26px menu glyph lands at
+21px, optically flush with the `px-5` content column below it, which is what the
+`-ml-1` was doing by hand), `calc(12px + env(safe-area-inset-top))` above, a
+40px row, a right-anchored 36×36 pair with an 8px gap — and the title is one
+style for every screen: `text-heading`, bold, one line, truncated if it does not
+fit. No per-screen size, no autofit, no special case for a long title; a title
+that shrinks or wraps is precisely how the bar stopped being the same bar.
 
-Two consequences worth knowing:
-- **The screen title is now `text-heading` everywhere** (17px bold, the app's
-  "title of a surface" token). 28px could not be the shared size — the
-  calendar's week range does not fit at 28px even at 430px — and per-screen
-  sizes are what this gap was about. Heute gained the title it never had
-  ("Heute"); its greeting stays where it was, as page content, and is now an
-  `<h2>` since the bar owns the `<h1>`.
+Measured after the fix, every route at 320/360/390/430/768/1280px reports the
+identical bar: height 60, menu at 16/14, glyph at 21/19, title at x 60 / y 21 at
+17px/700/22px, the pair at 279 and 323 (390px).
+
+**What the bar does not carry.** Anything that belongs to *this* screen —
+a search, a filter, the calendar's period switch — goes into the screen's own
+first content row, below the bar. In particular the calendar's date is content,
+not the page's identity: the bar says `Kalender`, and `2. September 2026` +
+`Mittwoch` sit underneath next to the Heute and search buttons, in the same
+fixed-height block they always had, so switching Tag/Woche/Monat still moves
+nothing. Aufgaben's search and filter moved onto the category-chip row the same
+way. This is what keeps the bar page-independent instead of merely
+similar-looking.
+
+Two further consequences worth knowing:
+- Heute gained the title it never had; its greeting stays where it was, as page
+  content, and is now an `<h2>` since the bar owns the `<h1>`.
 - **The bar is `sticky`.** Aufgaben's header already was; Kalender's shell does
-  not scroll, so it resolves to a normal position there; Heute and Mehr keep
-  their bar in view like Aufgaben does.
+  not scroll, so it resolves to a normal position there; Heute, Mehr and Version
+  keep their bar in view like Aufgaben does.
 
 Deliberately *not* changed: the task detail screen (its leading control is a
 back button, not the menu) and the calendar's full-screen search (it covers the
 calendar and carries its own chrome). Both are contexts, not main areas — if a
 third one appears, give `TopBar` a `leading` slot rather than a second header.
 
-`tools/smoke.mjs` compares the rendered bar across all five routes and fails if
-one of them diverges or re-introduces a per-screen offset on the menu button.
+`tools/smoke.mjs` compares the rendered bar across all five routes — geometry,
+title typography and the trailing pair — checks that each route's title is its
+module's name, and fails if a screen re-introduces a per-screen offset on the
+menu button.
 
 ### G10 · Typography values were literals, not tokens — closed 2026-09 (`tailwind.config.js`)
 Sizes were written inline as `text-[15px]`, `text-[17px]`, `text-[12px]` and so

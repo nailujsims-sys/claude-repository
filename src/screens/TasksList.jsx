@@ -244,26 +244,7 @@ export default function TasksList() {
       {/* Sticky top — header + search + category tabs stay visible while the
           task list scrolls underneath. */}
       <div className="sticky top-0 z-30 border-b border-subtle bg-bg-base">
-        <TopBar
-          title="Aufgaben"
-          actions={
-            <>
-              <IconButton
-                onClick={() => {
-                  setSearchOpen((v) => !v)
-                  if (searchOpen) setSearch('')
-                }}
-                aria-label="Suche"
-                className="text-text-primary"
-              >
-                <Search size={22} />
-              </IconButton>
-              <IconButton onClick={() => setFilterOpen(true)} aria-label="Filter" className="text-text-primary">
-                <SlidersHorizontal size={22} />
-              </IconButton>
-            </>
-          }
-        />
+        <TopBar title="Aufgaben" />
 
         {/* Search bar */}
         {searchOpen && (
@@ -286,22 +267,42 @@ export default function TasksList() {
           </div>
         )}
 
-        {/* Category tabs. The row scrolls horizontally, which also clips it
-            vertically — so 4px of the top margin is carried as padding instead,
-            leaving room for a chip's focus ring inside the scroll box. Same
-            12px above the chips as before. */}
-        <div className="no-scrollbar mt-2 flex gap-2 overflow-x-auto px-5 pb-3 pt-1">
-          {TABS.map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setCategory(tab)}
-              className={`press-tint shrink-0 rounded-chip px-4 py-1.5 text-[14px] font-medium transition-colors ${
-                category === tab ? 'bg-accent text-white' : 'text-text-secondary'
-              }`}
-            >
-              {tab}
-            </button>
-          ))}
+        {/* Category tabs plus this screen's own actions — they sit in the first
+            content row rather than in the global bar, so the bar stays the same
+            on every page (see src/components/TopBar.jsx).
+
+            The chip row scrolls horizontally, which also clips it vertically —
+            so 4px of the top margin is carried as padding instead, leaving room
+            for a chip's focus ring inside the scroll box. Same 12px above the
+            chips as before. The two buttons stay outside the scroll box, so
+            they never scroll away. */}
+        <div className="mt-2 flex items-center gap-2 px-5 pb-3">
+          <div className="no-scrollbar flex min-w-0 flex-1 gap-2 overflow-x-auto pt-1">
+            {TABS.map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setCategory(tab)}
+                className={`press-tint shrink-0 rounded-chip px-4 py-1.5 text-[14px] font-medium transition-colors ${
+                  category === tab ? 'bg-accent text-white' : 'text-text-secondary'
+                }`}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+          <IconButton
+            onClick={() => {
+              setSearchOpen((v) => !v)
+              if (searchOpen) setSearch('')
+            }}
+            aria-label="Suche"
+            className="text-text-primary"
+          >
+            <Search size={22} />
+          </IconButton>
+          <IconButton onClick={() => setFilterOpen(true)} aria-label="Filter" className="text-text-primary">
+            <SlidersHorizontal size={22} />
+          </IconButton>
         </div>
       </div>
 

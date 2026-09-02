@@ -122,29 +122,37 @@ export default function Kalender() {
       className="relative flex flex-col overflow-hidden"
       style={{ height: '100dvh', paddingBottom: 'calc(64px + env(safe-area-inset-bottom))' }}
     >
-      {/* The global bar. It was this screen's header that first kept its
-          height across Tag / Woche / Monat — the title block reserves its
-          subtitle line either way — and TopBar now does that for the whole
-          app, so switching views still never moves the menu, the Heute icon,
-          the search or the row below them. Only the text inside changes. */}
-      <TopBar
-        title={primary}
-        subtitle={sub}
-        actions={
-          <>
-            <IconButton
-              onClick={goToday}
-              aria-label="Heute"
-              className={viewingToday ? 'text-text-secondary' : 'text-accent'}
-            >
-              <CalendarDays size={22} />
-            </IconButton>
-            <IconButton onClick={() => setSearchOpen(true)} aria-label="Suche" className="text-text-primary">
-              <Search size={22} />
-            </IconButton>
-          </>
-        }
-      />
+      {/* The global bar carries the module's name, exactly like every other
+          main area. The period the calendar is showing is content, not the
+          page's identity, so it sits below — with the two controls that act on
+          it. */}
+      <TopBar title="Kalender" />
+
+      {/* Period header — deliberately identical in structure for Tag / Woche /
+          Monat: the title block keeps its height even when a view has no
+          subtitle (the reserved line below), so switching views never moves the
+          Heute icon, the search or the view switch under them. Only the text
+          inside changes. */}
+      <div className="flex shrink-0 items-center gap-2 px-4 pb-2">
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-section font-bold leading-[24px] text-text-primary">
+            {primary}
+          </h2>
+          <p className="truncate text-caption leading-[16px] text-text-secondary">
+            {sub || '\u00A0'}
+          </p>
+        </div>
+        <IconButton
+          onClick={goToday}
+          aria-label="Heute"
+          className={viewingToday ? 'text-text-secondary' : 'text-accent'}
+        >
+          <CalendarDays size={22} />
+        </IconButton>
+        <IconButton onClick={() => setSearchOpen(true)} aria-label="Suche" className="text-text-primary">
+          <Search size={22} />
+        </IconButton>
+      </div>
 
       {/* View switch + period navigation */}
       <div className="flex shrink-0 items-center justify-between gap-2 px-4 pb-3">

@@ -162,6 +162,7 @@ async function run() {
       const rail = bar.querySelector('[data-topbar-actions]')
       if (!menu) errors.push(`[${name}] the top bar has no menu button`)
       if (!title) errors.push(`[${name}] the top bar has no title`)
+      if (!rail) errors.push(`[${name}] the top bar has no action pair`)
       // The menu button must be the row's first child: same slot everywhere.
       if (menu && row && row.firstElementChild !== menu)
         errors.push(`[${name}] the menu button is not the first item in the bar`)
@@ -170,6 +171,18 @@ async function run() {
       // `pt-5`) and what made the hamburger land somewhere else on every page.
       if (menu && /-m[lrtb]?-/.test(menu.className))
         errors.push(`[${name}] the menu button carries a per-screen offset: ${menu.className}`)
+      // The page title is the module's name and nothing else. The calendar's
+      // date in particular is content and belongs under the bar — putting it in
+      // the title is what made the bar page-dependent in the first place.
+      const expected = {
+        'Home (/)': 'Heute',
+        'Aufgaben (/aufgaben)': 'Aufgaben',
+        'Mehr (/mehr)': 'Mehr',
+        'Version (/version)': 'Version',
+        'Kalender (/kalender)': 'Kalender',
+      }[name]
+      const shown = title?.textContent.trim()
+      if (shown !== expected) errors.push(`[${name}] top bar title is "${shown}", expected "${expected}"`)
       topbars.push([
         name,
         [
@@ -177,40 +190,36 @@ async function run() {
           bar.getAttribute('style') || '',
           row?.className,
           menu?.className,
+          // The title's own classes carry size, weight and leading: one style
+          // for every screen, no per-page typography.
           title?.className,
-          bar.querySelector('h1 + p')?.className,
-          rail?.className || 'no-actions',
-          // Action count and box size — the rail is right-anchored, so equal
+          rail?.className,
+          // Action count and box size — the pair is right-anchored, so equal
           // counts of equally sized targets means equal positions.
-          [...(rail?.children || [])].map((el) => el.className.match(/h-\d+ w-\d+|h-9 w-9/)?.[0] || el.className).join('|'),
+          [...(rail?.children || [])]
+            .map((el) => el.className.match(/h-\d+ w-\d+/)?.[0] || el.className)
+            .join('|'),
         ].join(' ~ '),
       ])
     }
   }
 
-  // 1b) One bar, not five. Every route's bar must produce the same signature;
-  //     screens with actions must also agree on the rail (Mehr and Version
-  //     have none, which is the one allowed difference).
+  // 1b) One bar, not five. Every route's bar — geometry, title typography and
+  //     the trailing pair — must produce the exact same signature.
   {
-    const withActions = topbars.filter(([, sig]) => !sig.includes('no-actions'))
     const groups = new Map()
     for (const [name, sig] of topbars) {
-      // Compare everything except the rail for all routes…
-      const base = sig.split(' ~ ').slice(0, 6).join(' ~ ')
-      if (!groups.has(base)) groups.set(base, [])
-      groups.get(base).push(name)
+      if (!groups.has(sig)) groups.set(sig, [])
+      groups.get(sig).push(name)
     }
     if (groups.size !== 1) {
       errors.push(
         `[TopBar] the bar differs between routes: ${[...groups.values()].map((g) => g.join('+')).join(' vs ')}`
       )
     }
-    // …and the action rail for the routes that have one.
-    const rails = new Set(withActions.map(([, sig]) => sig.split(' ~ ').slice(6).join(' ~ ')))
-    if (rails.size > 1) errors.push(`[TopBar] the action rails differ: ${[...rails].join(' vs ')}`)
     console.log(
       `\n=== TopBar (global) ===\n  routes=${topbars.length} identisch=${groups.size === 1} ` +
-        `rails=${rails.size} :: ${topbars[0]?.[1].slice(0, 120)}`
+        `:: ${topbars[0]?.[1].slice(0, 130)}`
     )
   }
 

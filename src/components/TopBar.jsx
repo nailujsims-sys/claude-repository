@@ -1,17 +1,18 @@
-import { Menu } from 'lucide-react'
+import { Menu, Bell, User } from 'lucide-react'
 import IconButton from './IconButton'
 import { useUI } from '../context/UIContext'
 
 // ── The app's global top bar ────────────────────────────────────────────────
 //
-// One bar for every main area. Before this component each screen built its own
-// header: Heute sat at `px-5 pt-3` with a `py-2` row and no title, Kalender at
-// `px-4 pt-4` with a 42px row and a 19px title, Aufgaben at `px-5 pt-5` with a
-// 28px title — so the hamburger landed on a different x *and* y on every page
-// and the whole bar jumped while navigating. Nothing about that was per-screen
-// on purpose; it was three headers that grew apart.
+// One bar for every main area, and it is the same bar every time: hamburger,
+// page title, notifications and profile. Only `title` varies.
 //
-// So the geometry lives here and nowhere else, and it is fixed:
+// Before this component each screen built its own header — Heute at `px-5
+// pt-3` with no title, Kalender at `px-4 pt-4` with a 19px date, Aufgaben at
+// `px-5 pt-5` with a 28px title — so the menu button landed on a different x
+// *and* y on every page and the whole bar jumped while navigating.
+//
+// The geometry lives here and nowhere else, and it is fixed:
 //
 //   • horizontal inset  16px (`px-4`) on both sides. The leading icon button is
 //     36px wide around a 26px glyph, so the glyph starts 5px inside its box —
@@ -22,25 +23,27 @@ import { useUI } from '../context/UIContext'
 //   • top inset  12px plus `env(safe-area-inset-top)`, so the bar keeps the
 //     same distance from the *visible* top edge on a notched device as it does
 //     in a plain browser window (`viewport-fit=cover` is set in index.html).
-//   • row height  40px, always. The title block reserves its subtitle line even
-//     when there is no subtitle (a non-breaking space), so a screen with one
-//     and a screen without are exactly the same height — Kalender already
-//     solved it that way for its own three views and the bar now does it for
-//     every screen.
-//   • the trailing actions are right-anchored with a fixed 8px gap, so the
-//     Aufgaben search sits on the same pixel as the Kalender search and as the
-//     Heute bell. Actions are `IconButton`s, i.e. the same 36×36 target.
+//   • row height  40px, always, with one single-line title in it.
+//   • the trailing pair is right-anchored with a fixed 8px gap and the same
+//     36×36 targets as the menu button.
 //
-// Everything a screen may vary is text and the two action icons. Height,
-// insets, the menu button and the title's position are not props on purpose:
-// a future module gets the identical bar by rendering `<TopBar title="…" />`,
-// and cannot accidentally shift it.
+// **The title is one style for every screen** — `text-heading`, bold, one line,
+// truncated if it does not fit. Deliberately no per-screen size, no autofit, no
+// special case for a long one: a title that shrinks or wraps is exactly how the
+// bar stopped being the same bar. It is also why the *page* title belongs here
+// and nothing else does — the calendar's date is content and lives under the
+// bar, next to the controls that change it.
+//
+// Everything else a screen wants in reach — a search, a filter, a period
+// switch — goes into the screen's own first content row, below this bar.
+// `title` is the only prop for that reason: a future module renders
+// `<TopBar title="…" />` and gets the identical bar, and cannot shift it.
 //
 // The bar sticks to the top of its scroll container (`sticky`), which is what
 // Aufgaben's header already did and what Kalender's fixed-height shell gets for
 // free — in a non-scrolling flex column `sticky` simply resolves to its normal
 // position.
-export default function TopBar({ title, subtitle = null, actions = null }) {
+export default function TopBar({ title }) {
   const { openSidebar } = useUI()
 
   return (
@@ -54,24 +57,24 @@ export default function TopBar({ title, subtitle = null, actions = null }) {
           <Menu size={26} />
         </IconButton>
 
-        {/* `min-w-0` + `truncate`: a long title (the calendar's week range, a
-            future module with a long name) shortens instead of pushing the
-            actions off the right edge — the reason the bar holds still at
-            320px as well as at 430px. */}
-        <div className="min-w-0 flex-1">
-          <h1 className="truncate text-heading font-bold leading-[22px] text-text-primary">
-            {title}
-          </h1>
-          <p className="truncate text-caption leading-[16px] text-text-secondary">
-            {subtitle || '\u00A0'}
-          </p>
-        </div>
+        {/* `min-w-0` + `truncate`: a long title shortens instead of pushing the
+            trailing pair off the right edge — the bar holds still at 320px as
+            well as at 430px, at one unchanged font size. */}
+        <h1 className="min-w-0 flex-1 truncate text-heading font-bold leading-[22px] text-text-primary">
+          {title}
+        </h1>
 
-        {actions && (
-          <div data-topbar-actions="" className="flex shrink-0 items-center gap-2">
-            {actions}
+        <div data-topbar-actions="" className="flex shrink-0 items-center gap-2">
+          <IconButton aria-label="Benachrichtigungen" className="relative text-text-primary">
+            <Bell size={22} />
+            <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-accent" />
+          </IconButton>
+          {/* Not a control (there is no profile screen yet), but it occupies the
+              same 36×36 slot as an action so the pair stays on its pixel. */}
+          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-bg-elevated text-text-secondary">
+            <User size={20} />
           </div>
-        )}
+        </div>
       </div>
     </header>
   )

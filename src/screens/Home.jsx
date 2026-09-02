@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bell, User, Sparkles, ArrowRight, Quote, Globe } from 'lucide-react'
-import IconButton from '../components/IconButton'
+import { Sparkles, ArrowRight, Quote, Globe } from 'lucide-react'
 import TopBar from '../components/TopBar'
 import { useAuth } from '../context/AuthContext'
 import { useTasks } from '../context/TasksContext'
@@ -37,22 +36,7 @@ export default function Home() {
       {/* The global bar — same component, same geometry as every other main
           area (src/components/TopBar.jsx). The greeting below is page content
           and stays exactly as it was. */}
-      <TopBar
-        title="Heute"
-        actions={
-          <>
-            <IconButton aria-label="Benachrichtigungen" className="relative text-text-primary">
-              <Bell size={22} />
-              <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-accent" />
-            </IconButton>
-            {/* Not a control (no profile screen yet), but it occupies the same
-                36×36 slot as an action so the rail stays on its pixel. */}
-            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-bg-elevated text-text-secondary">
-              <User size={20} />
-            </div>
-          </>
-        }
-      />
+      <TopBar title="Heute" />
 
       <div className="px-5 pb-28">
         {/* Greeting */}

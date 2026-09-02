@@ -164,11 +164,12 @@ changes required. Build a new module by adding its `<Route>` in `App.jsx` and
 flipping it from `futureModules` into the active nav lists.
 
 A new main area gets the app's header for free: render
-**`<TopBar title="…" />`** (optionally `subtitle` and up to two `IconButton`
-`actions`) as the first element of the screen and put the screen's own content
-below it. Height, insets, the hamburger and the title's position live in
-`src/components/TopBar.jsx` and are deliberately not props — no screen can shift
-them.
+**`<TopBar title="…" />`** as the first element of the screen and put the
+screen's own content below it. `title` is the only prop — height, insets, the
+hamburger, the title's typography and the notification/profile pair live in
+`src/components/TopBar.jsx`, so no screen can shift them. Controls that belong
+to one screen (a search, a filter, the calendar's period switch and its date)
+go into that screen's first content row, under the bar.
 
 ---
 
