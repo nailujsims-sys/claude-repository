@@ -20,6 +20,7 @@ import {
   TEST_USER_ID,
   TEST_EMAIL,
 } from './supabaseStub.mjs'
+import { makeRealtimeHub } from './realtimeStub.mjs'
 import { seedTasks } from './fixtures/seedTasks.mjs'
 import { seedEvents } from './fixtures/seedEvents.mjs'
 
@@ -55,7 +56,7 @@ async function bundle({ configured = true } = {}) {
 // `signedIn` decides whether this device has a session, which is how the login
 // and logout paths are exercised.
 function makeDom(hash, seed = {}, options = {}) {
-  const { signedIn = true, backend: existing = null, search = '' } = options
+  const { signedIn = true, backend: existing = null, search = '', hub = makeRealtimeHub() } = options
   const window = makeBareDom(hash, search)
   const backend =
     existing ??
@@ -64,6 +65,9 @@ function makeDom(hash, seed = {}, options = {}) {
       events: seed.events ?? seedEvents(),
       password: TEST_PASSWORD,
       failTable: seed.failTable ?? null,
+      // Every committed row change is announced to the Realtime hub, the way
+      // Postgres announces one through the WAL.
+      onChange: hub.emit,
     })
 
   // jsdom ships no fetch, so the app gets Node's classes plus the stub.
@@ -72,7 +76,12 @@ function makeDom(hash, seed = {}, options = {}) {
   window.Request = Request
   window.Response = Response
   if (signedIn) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(backend.session))
+  // The transport @supabase/realtime-js picks up. Every window gets one, so no
+  // test ever reaches for a real socket; windows that share a `hub` are devices
+  // on the same account and see each other's changes.
+  window.WebSocket = hub.WebSocket
   window.__backend = backend
+  window.__hub = hub
   return window
 }
 
@@ -1781,7 +1790,7 @@ async function run() {
       errors.push('[Write] the stored row does not belong to the signed-in user')
 
     // Device B: a different browser, same database.
-    const deviceB = makeDom('#/aufgaben', {}, { backend: window.__backend })
+    const deviceB = makeDom('#/aufgaben', {}, { backend: window.__backend, hub: window.__hub })
     mount(deviceB, code, 'Read')
     await wait(300)
     deviceB.__restoreConsole?.()
@@ -1821,6 +1830,220 @@ async function run() {
     const strays = keys.filter((k) => k !== STORAGE_KEY)
     if (strays.length)
       errors.push(`[NoLocalData] personal data was written to the browser: ${strays.join(', ')}`)
+  }
+
+  // 13) Echtzeit-Synchronisation zwischen Geräten.
+  //
+  //     The point of the feature, and the only way to test it honestly: two
+  //     windows are two devices on one account, sharing one stubbed database
+  //     and one Realtime hub. A write in one window travels the whole way —
+  //     PostgREST, the stub's change notification, the websocket frame,
+  //     @supabase/realtime-js, our subscription, the context, the screen — and
+  //     has to show up in the other without anybody reloading anything.
+  {
+    const hub = makeRealtimeHub()
+    const backend = makeBackend({
+      tasks: [], events: [], password: TEST_PASSWORD, onChange: hub.emit,
+    })
+    // What goes on the wire: @supabase/realtime-js prefixes every channel name
+    // with `realtime:`, so this is `channelTopic()` from src/lib/realtimeSync.js
+    // as the server sees it.
+    const tasksTopic = `realtime:sync:tasks:${TEST_USER_ID}`
+    const eventsTopic = `realtime:sync:events:${TEST_USER_ID}`
+    const reads = (table) =>
+      backend.calls.filter((c) => c.method === 'GET' && c.path === `/rest/v1/${table}`).length
+
+    // A change made by another device: the plain PostgREST request a second
+    // browser would send. The stub reports it exactly like Postgres does.
+    const otherDevice = async (method, table, search = '', body = null) => {
+      const res = await backend.fetch(`${SUPABASE_URL}/rest/v1/${table}${search}`, {
+        method,
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          authorization: `Bearer ${backend.session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      })
+      return res.json()
+    }
+
+    const deviceA = makeDom('#/aufgaben', {}, { backend, hub })
+    mount(deviceA, code, 'RealtimeA')
+    await wait(300)
+    const socketA = hub.sockets[hub.sockets.length - 1]
+
+    const deviceB = makeDom('#/aufgaben', {}, { backend, hub })
+    mount(deviceB, code, 'RealtimeB')
+    await wait(300)
+    const socketB = hub.sockets[hub.sockets.length - 1]
+
+    const deviceC = makeDom('#/kalender', {}, { backend, hub })
+    mount(deviceC, code, 'RealtimeC')
+    await wait(300)
+
+    // 13a) Subscriptions: one channel per table per device, created once — not
+    //      once per render, which is the failure mode that quietly opens a
+    //      dozen sockets.
+    const topics = hub.joinedTopics()
+    const joinedTasks = topics.filter((t) => t === tasksTopic).length
+    const joinedEvents = topics.filter((t) => t === eventsTopic).length
+    console.log(`\n=== Realtime (Abonnements) ===\n  sockets=${hub.openSockets().length} tasks=${joinedTasks} events=${joinedEvents} joins=${hub.joinCount(tasksTopic)}`)
+    if (hub.openSockets().length !== 3)
+      errors.push(`[Realtime] expected one socket per device, got ${hub.openSockets().length}`)
+    if (joinedTasks !== 3 || joinedEvents !== 3)
+      errors.push(`[Realtime] expected one channel per table per device, got tasks=${joinedTasks} events=${joinedEvents}`)
+    if (hub.joinCount(tasksTopic) !== 3)
+      errors.push(`[Realtime] the tasks channel was joined ${hub.joinCount(tasksTopic)}× — a re-subscribe on every render`)
+
+    // 13b) Create on device A, through the real UI. Device B must show it, and
+    //      must not have re-read the table to do so.
+    const readsBefore = reads('tasks')
+    click(deviceA, (el) => el.getAttribute('aria-label') === 'Neu erstellen')
+    await wait(200)
+    click(deviceA, (el) => el.textContent.trim() === 'Neue Aufgabe')
+    await wait(250)
+    if (!typeInto(deviceA, 'input[placeholder="Titel der Aufgabe"]', 'Vom Handy erstellt'))
+      errors.push('[Realtime] the title field was not found on device A')
+    await wait(30)
+    click(deviceA, (el) => el.textContent.trim() === 'Erstellen')
+    await wait(350)
+    console.log(`=== Realtime (Create) ===\n  B: ${txt(deviceB).slice(0, 90)}`)
+    if (!txt(deviceB).includes('Vom Handy erstellt'))
+      errors.push('[Realtime] a task created on device A never reached device B')
+    if (reads('tasks') !== readsBefore)
+      errors.push('[Realtime] the change triggered a full reload instead of a single-row update')
+
+    const created = backend.tables.tasks[0]
+
+    // 13c) Completing on A removes the row from B's active list.
+    click(deviceA, (el) => el.getAttribute('aria-label') === 'Als erledigt markieren')
+    await wait(350)
+    console.log(`=== Realtime (Erledigt) ===\n  B: ${txt(deviceB).slice(0, 90)}`)
+    if (txt(deviceB).includes('Vom Handy erstellt'))
+      errors.push('[Realtime] completing on device A did not update device B')
+
+    // 13d) An edit from a third device reaches both open ones.
+    await otherDevice('PATCH', 'tasks', `?id=eq.${created.id}`, {
+      title: 'Umbenannt', is_completed: false, completed_at: null,
+    })
+    await wait(300)
+    console.log(`=== Realtime (Update) ===\n  A: ${txt(deviceA).slice(0, 70)}\n  B: ${txt(deviceB).slice(0, 70)}`)
+    if (!txt(deviceA).includes('Umbenannt') || !txt(deviceB).includes('Umbenannt'))
+      errors.push('[Realtime] an edit made elsewhere did not reach both open devices')
+
+    // 13e) The Papierkorb is a soft delete — an update, and it must hide the row.
+    await otherDevice('PATCH', 'tasks', `?id=eq.${created.id}`, {
+      is_deleted: true, deleted_at: new Date().toISOString(),
+    })
+    await wait(300)
+    if (txt(deviceB).includes('Umbenannt'))
+      errors.push('[Realtime] a task moved to the Papierkorb elsewhere stayed visible')
+
+    // 13f) A real delete removes the row for good.
+    await otherDevice('DELETE', 'tasks', `?id=eq.${created.id}`)
+    await wait(300)
+    console.log(`=== Realtime (Delete) ===\n  A: ${txt(deviceA).slice(0, 70)}`)
+    if (backend.tables.tasks.length !== 0)
+      errors.push('[Realtime] the delete did not reach the database')
+
+    // 13g) Events: create, update and delete, seen by the open calendar.
+    const today = new Date().toISOString().slice(0, 10)
+    const [event] = await otherDevice('POST', 'events', '', {
+      user_id: TEST_USER_ID,
+      title: 'Zahnarzt',
+      start_at: `${today}T09:00`,
+      end_at: `${today}T10:00`,
+    })
+    await wait(300)
+    console.log(`=== Realtime (Termin) ===\n  C: ${txt(deviceC).slice(0, 90)}`)
+    if (!txt(deviceC).includes('Zahnarzt'))
+      errors.push('[Realtime] an event created elsewhere never reached the open calendar')
+
+    await otherDevice('PATCH', 'events', `?id=eq.${event.id}`, { title: 'Arzttermin' })
+    await wait(300)
+    if (!txt(deviceC).includes('Arzttermin'))
+      errors.push('[Realtime] an edited event did not update the open calendar')
+
+    await otherDevice('DELETE', 'events', `?id=eq.${event.id}`)
+    await wait(300)
+    if (txt(deviceC).includes('Arzttermin'))
+      errors.push('[Realtime] a deleted event stayed on the open calendar')
+
+    // 13h) Nothing of another account, ever. The insert is dropped by the
+    //      server-side filter; the delete that follows cannot be filtered by
+    //      Supabase at all and is dropped by the client, which is the guard
+    //      that matters (see src/lib/realtimeSync.js).
+    const OTHER_USER = '99999999-8888-4777-8666-555555555555'
+    const [foreign] = await otherDevice('POST', 'tasks', '', {
+      user_id: OTHER_USER, title: 'Fremde Aufgabe', sort_order: 1,
+    })
+    await otherDevice('POST', 'tasks', '', {
+      user_id: TEST_USER_ID, title: 'Eigene Aufgabe', sort_order: 2,
+    })
+    await wait(300)
+    console.log(`=== Realtime (fremde Daten) ===\n  A: ${txt(deviceA).slice(0, 90)}`)
+    if (txt(deviceA).includes('Fremde Aufgabe'))
+      errors.push('[Realtime] another user’s row became visible over Realtime')
+    if (!txt(deviceA).includes('Eigene Aufgabe'))
+      errors.push('[Realtime] our own row did not arrive alongside it')
+
+    await otherDevice('DELETE', 'tasks', `?id=eq.${foreign.id}`)
+    await wait(250)
+    if (!txt(deviceA).includes('Eigene Aufgabe'))
+      errors.push('[Realtime] a foreign delete removed one of our own rows')
+
+    // 13i) Reconnect: the socket drops, changes happen unheard, and the
+    //      rejoin has to restore a consistent list — without a skeleton and
+    //      without the user doing anything.
+    socketB.close(1006, 'test: connection lost')
+    await wait(50)
+    await otherDevice('POST', 'tasks', '', {
+      user_id: TEST_USER_ID, title: 'Waehrend der Funkstille', sort_order: 3,
+    })
+    await wait(200)
+    const missedIt = !txt(deviceB).includes('Waehrend der Funkstille')
+    if (!missedIt)
+      errors.push('[Realtime] device B was supposed to be disconnected but still heard the change')
+    if (!txt(deviceA).includes('Waehrend der Funkstille'))
+      errors.push('[Realtime] device A missed a change while device B was offline')
+    // @supabase/realtime-js reconnects after ~1s; the second SUBSCRIBED is what
+    // triggers the catch-up read.
+    await wait(1800)
+    console.log(`=== Realtime (Reconnect) ===\n  B offline gemerkt=${missedIt} :: ${txt(deviceB).slice(0, 90)}`)
+    if (!txt(deviceB).includes('Waehrend der Funkstille'))
+      errors.push('[Realtime] device B did not catch up after reconnecting')
+    if (hub.joinedTopics().filter((t) => t === tasksTopic).length !== 3)
+      errors.push('[Realtime] device B did not rejoin its channel after reconnecting')
+    if (!socketA.channels.size)
+      errors.push('[Realtime] device A lost its channels while device B reconnected')
+
+    deviceA.__restoreConsole?.()
+    deviceB.__restoreConsole?.()
+    deviceC.__restoreConsole?.()
+  }
+
+  // 13j) Signing out unmounts the providers — and must take the subscriptions
+  //      with them. A channel that outlives its provider is a leak that also
+  //      keeps writing into dead state.
+  {
+    const hub = makeRealtimeHub()
+    const window = makeDom('#/aufgaben', {}, { hub })
+    mount(window, code, 'RealtimeUnmount')
+    await wait(300)
+    const before = hub.joinedTopics().length
+    click(window, (el) => el.getAttribute('aria-label') === 'Menü öffnen')
+    await wait(200)
+    if (!click(window, (el) => el.textContent.trim() === 'Abmelden'))
+      errors.push('[RealtimeUnmount] no "Abmelden" in the sidebar')
+    await wait(400)
+    window.__restoreConsole?.()
+    const after = hub.joinedTopics().length
+    console.log(`\n=== Realtime (Abmelden) ===\n  Kanäle vorher=${before} nachher=${after}`)
+    if (before !== 2)
+      errors.push(`[RealtimeUnmount] expected two channels while signed in, got ${before}`)
+    if (after !== 0)
+      errors.push(`[RealtimeUnmount] ${after} channel(s) survived the sign-out`)
   }
 
   console.log('\n--- result ---')

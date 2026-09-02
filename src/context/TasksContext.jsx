@@ -7,6 +7,8 @@ import {
   useState,
 } from 'react'
 import { taskRepository } from '../data/taskRepository'
+import { applyRealtimeChange, mergeRows } from '../lib/realtimeSync'
+import { useRealtimeSync } from '../lib/useRealtimeSync'
 import { useAuth } from './AuthContext'
 
 const TasksContext = createContext(null)
@@ -23,24 +25,48 @@ export function TasksProvider({ children }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
-  const load = useCallback(async () => {
-    if (!user) return
-    setLoading(true)
-    try {
-      const rows = await repo.listTasks(user.id)
-      setTasks(rows)
-      setError(null)
-    } catch (err) {
-      console.error(err)
-      setError(err)
-    } finally {
-      setLoading(false)
-    }
-  }, [user, repo])
+  // `silent` is what a resync after a dropped connection uses: it fetches the
+  // same rows but leaves `loading` alone, so the screen is not replaced by its
+  // skeleton for data the user is already looking at. `mergeRows` then keeps
+  // the previous array when nothing actually changed — a reconnect that found
+  // no news causes no render at all.
+  const load = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!user) return
+      if (!silent) setLoading(true)
+      try {
+        const rows = await repo.listTasks(user.id)
+        setTasks((prev) => (silent ? mergeRows(prev, rows) : rows))
+        setError(null)
+      } catch (err) {
+        console.error(err)
+        setError(err)
+      } finally {
+        if (!silent) setLoading(false)
+      }
+    },
+    [user, repo]
+  )
 
   useEffect(() => {
     load()
   }, [load])
+
+  // Another device changed something: fold that one row into the list. No
+  // reload, and no visible second application of a change this device made
+  // itself — see lib/realtimeSync.js.
+  const applyChange = useCallback(
+    (payload) => setTasks((prev) => applyRealtimeChange(prev, payload, user?.id)),
+    [user]
+  )
+  const resync = useCallback(() => load({ silent: true }), [load])
+
+  useRealtimeSync({
+    table: 'tasks',
+    userId: user?.id ?? null,
+    onChange: applyChange,
+    onResync: resync,
+  })
 
   const upsertLocal = (row) =>
     setTasks((prev) => {

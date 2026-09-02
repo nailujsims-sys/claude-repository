@@ -19,6 +19,7 @@ Durchlauf ändert nichts und zerstört nichts.
 | `0001_foundation.sql` | `set_updated_at()`, Tabelle `profiles`, Trigger `handle_new_user`, RLS + Policies |
 | `0002_tasks.sql` | Tabelle `tasks`, Indizes, Constraints, RLS + Policies |
 | `0003_events.sql` | Tabelle `events`, Indizes, Constraints, RLS + Policies |
+| `0004_realtime.sql` | `tasks` und `events` in die Publikation `supabase_realtime` aufnehmen |
 
 **Weg A — Dashboard (kein Werkzeug nötig).** SQL Editor öffnen, die drei
 Dateien nacheinander einfügen und ausführen.
@@ -87,7 +88,41 @@ also nichts.
 
 Nach jeder Migration ausführen.
 
-## 5. Eine neue persönliche Tabelle anlegen
+## 5. Echtzeit-Synchronisation
+
+Damit ein zweites geöffnetes Gerät eine Änderung mitbekommt, muss die Tabelle in
+der Publikation `supabase_realtime` stehen — Tabelle anlegen und Realtime dafür
+freischalten sind zwei getrennte Schritte. `0004_realtime.sql` erledigt das für
+`tasks` und `events`. Prüfen:
+
+```sql
+select schemaname, tablename from pg_publication_tables
+where pubname = 'supabase_realtime';
+```
+
+Am Datenmodell ändert sich dadurch nichts, und RLS bleibt in voller Stärke:
+Realtime prüft jedes INSERT und UPDATE noch einmal gegen dieselben Policies, als
+Rolle des abonnierenden Clients — wer eine Zeile nicht lesen darf, bekommt sie
+auch hier nicht.
+
+Eine dokumentierte Ausnahme gibt es: **DELETE-Events werden von Supabase weder
+per RLS noch per Filter eingeschränkt.** Postgres kann nachträglich nicht mehr
+belegen, wer eine gelöschte Zeile sehen durfte, deshalb geht an alle Abonnenten
+der Tabelle der Primärschlüssel — und sonst nichts. Der Client verwirft jede ID,
+die er nicht ohnehin schon hält (`src/lib/realtimeSync.js`); fremde Daten können
+darüber also nicht sichtbar werden. Aus demselben Grund bleibt `replica
+identity` auf `default`: bei aktivem RLS enthält der alte Datensatz ohnehin nur
+den Primärschlüssel, `full` würde nichts hinzufügen und nur jeden WAL-Eintrag
+verbreitern.
+
+Eine neue persönliche Tabelle, die geräteübergreifend live sein soll, gehört in
+eine eigene Migration mit demselben Muster:
+
+```sql
+alter publication supabase_realtime add table public.<tabelle>;
+```
+
+## 6. Eine neue persönliche Tabelle anlegen
 
 `0001_foundation.sql` beschreibt das Muster im Kopfkommentar: `id`, `user_id`
 mit Foreign Key auf `auth.users`, `created_at`/`updated_at`, Index auf
