@@ -50,6 +50,12 @@ nothing (see *Supabase* below).
   detail sheet with the same Bearbeiten / Löschen actions as tasks. Birthdays are
   all-day + yearly and render as **🎂 Name**. The event model maps 1:1 to Google
   Calendar (RRULE recurrence, minute-based reminders) for a future sync.
+- **Echtzeit-Synchronisation** — the app is open on the phone and on the Mac at
+  the same time, and both stay current on their own. A task or an event created,
+  edited, completed or deleted on one device appears on the other within a
+  moment, over Supabase Realtime — no manual refresh, no polling, and no full
+  reload: exactly the one row that changed is folded into the list. A dropped
+  connection is caught up as soon as it comes back.
 - **Mehr** placeholder route, with a preview of upcoming modules.
 
 Everything else (Morning Briefing, schedule, greeting quote) is intentionally
@@ -85,10 +91,11 @@ the redirect URLs for password resets and how to add a new personal table:
 [`supabase/README.md`](supabase/README.md).
 
 **1. Create the schema.** Run
-[`supabase/migrations/`](supabase/migrations/) `0001` → `0002` → `0003` in the
-SQL Editor (or `supabase db push`). They create `profiles`, `tasks` and
+[`supabase/migrations/`](supabase/migrations/) `0001` → `0002` → `0003` → `0004`
+in the SQL Editor (or `supabase db push`). They create `profiles`, `tasks` and
 `events`, each with indexes, constraints, an `updated_at` trigger, and Row Level
-Security policies that scope every statement to `auth.uid()`.
+Security policies that scope every statement to `auth.uid()`; `0004` publishes
+`tasks` and `events` to Supabase Realtime so open devices hear about changes.
 
 **2. Create the user.** Dashboard → Authentication → Users → *Add user*. There
 is no registration screen; the profile row is created by a trigger.
@@ -150,7 +157,8 @@ tailwind.config.js          design tokens (colors, radii, animations)
 supabase/migrations/        SQL: profiles + tasks + events, indexes, RLS policies
 supabase/tests/rls.sql      proves the policies against the real schema
 tools/supabaseStub.mjs      PostgREST-shaped backend the smoke test runs against
-tools/smoke.mjs             jsdom runtime smoke test (incl. calendar views)
+tools/realtimeStub.mjs      Phoenix-speaking Realtime server for the smoke test
+tools/smoke.mjs             jsdom runtime smoke test (incl. calendar views + two-device sync)
 src/
   main.jsx                  bootstrap (HashRouter)
   App.jsx                   providers, auth gate, routes, app shell
@@ -159,6 +167,8 @@ src/
   lib/
     config.js               the two public Supabase values, read at build time
     supabase.js             the shared Supabase client (null without config)
+    realtimeSync.js         pure rules for folding a Realtime change into a row list
+    useRealtimeSync.js      the subscription's life cycle (one channel per table)
     auth.js                 pure auth logic: the gate's phases, error messages
     date.js                 dates, ISO weeks, section grouping, formatting
     calendar.js             event geometry: parsing, overlap layout, bar packing, drag/resize math,

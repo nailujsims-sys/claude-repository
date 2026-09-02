@@ -7,6 +7,8 @@ import {
   useState,
 } from 'react'
 import { eventRepository } from '../data/eventRepository'
+import { applyRealtimeChange, mergeRows } from '../lib/realtimeSync'
+import { useRealtimeSync } from '../lib/useRealtimeSync'
 import { useAuth } from './AuthContext'
 
 const EventsContext = createContext(null)
@@ -22,24 +24,42 @@ export function EventsProvider({ children }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
-  const load = useCallback(async () => {
-    if (!user) return
-    setLoading(true)
-    try {
-      const rows = await repo.listEvents(user.id)
-      setEvents(rows)
-      setError(null)
-    } catch (err) {
-      console.error(err)
-      setError(err)
-    } finally {
-      setLoading(false)
-    }
-  }, [user, repo])
+  // Mirrors TasksProvider: `silent` is the reconnect resync, which must not put
+  // the calendar back into its loading state for data that is already on screen.
+  const load = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!user) return
+      if (!silent) setLoading(true)
+      try {
+        const rows = await repo.listEvents(user.id)
+        setEvents((prev) => (silent ? mergeRows(prev, rows) : rows))
+        setError(null)
+      } catch (err) {
+        console.error(err)
+        setError(err)
+      } finally {
+        if (!silent) setLoading(false)
+      }
+    },
+    [user, repo]
+  )
 
   useEffect(() => {
     load()
   }, [load])
+
+  const applyChange = useCallback(
+    (payload) => setEvents((prev) => applyRealtimeChange(prev, payload, user?.id)),
+    [user]
+  )
+  const resync = useCallback(() => load({ silent: true }), [load])
+
+  useRealtimeSync({
+    table: 'events',
+    userId: user?.id ?? null,
+    onChange: applyChange,
+    onResync: resync,
+  })
 
   const upsertLocal = (row) =>
     setEvents((prev) => {

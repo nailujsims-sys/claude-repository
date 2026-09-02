@@ -127,6 +127,10 @@ export function makeBackend({
   profiles = null,
   password = 'richtiges-passwort',
   failTable = null,
+  // Called for every committed row change, the way Postgres reports one to the
+  // Realtime server. Wiring tools/realtimeStub.mjs in here is what lets a write
+  // in one window arrive in another.
+  onChange = null,
 } = {}) {
   const tables = {
     tasks: tasks.map(taskRow),
@@ -230,6 +234,7 @@ export function makeBackend({
         return build(data)
       })
       rows.push(...created)
+      for (const row of created) onChange?.({ table, type: 'INSERT', record: { ...row } })
       return respond(created)
     }
 
@@ -237,12 +242,14 @@ export function makeBackend({
       const patch = JSON.parse(init.body)
       const hit = rows.filter((r) => matches(r, params))
       for (const row of hit) Object.assign(row, patch, { updated_at: nowIso() })
+      for (const row of hit) onChange?.({ table, type: 'UPDATE', record: { ...row } })
       return respond(hit)
     }
 
     if (method === 'DELETE') {
       const hit = rows.filter((r) => matches(r, params))
       tables[table] = rows.filter((r) => !hit.includes(r))
+      for (const row of hit) onChange?.({ table, type: 'DELETE', old_record: { id: row.id } })
       return respond(hit)
     }
 
