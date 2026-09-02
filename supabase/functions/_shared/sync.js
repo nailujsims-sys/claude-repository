@@ -346,8 +346,14 @@ export async function pushBirthday(deps, { row, calendar }) {
   if (!row.google_contact_id) {
     throw new Error('Zu diesem Geburtstag gibt es keinen Google-Kontakt.')
   }
+  // Lesen ging über calendar.events, Schreiben geht nur über die Kontakte —
+  // und die fragt die normale Kalenderverbindung bewusst nicht mehr ab. Bis
+  // es dafür einen eigenen Schalter gibt, ist das kein Fehler, sondern eine
+  // Auskunft: der Geburtstag bleibt sichtbar, nur eben in Google unverändert.
   if (!google.hasScope(CONTACTS_SCOPE)) {
-    throw new Error('Für Geburtstage fehlt die Kontakte-Berechtigung. Verbindung erneuern.')
+    throw new Error(
+      'Geburtstage in Google ändern ist noch nicht freigegeben — die Kontakte-Berechtigung fehlt.'
+    )
   }
 
   const date = dateOf(row.start_at)

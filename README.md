@@ -61,8 +61,9 @@ nothing (see *Supabase* below).
   appointments appear in Google, and a change on either side reaches the other
   without anybody pressing refresh. Google's own calendars keep their names,
   their colours and their rights — a holiday calendar is read-only because
-  Google says so, and a birthday is written back to Google *Contacts*, where
-  Google actually keeps it, rather than to the calendar that only displays it.
+  Google says so. Birthdays are read like any other calendar; *editing* one
+  writes to Google Contacts, where Google actually keeps it, and that gets its
+  own opt-in — connecting a calendar never asks for the address book.
   Recurring appointments stay one rule, not three hundred rows. The newest
   change wins, whichever side made it. Every appointment carries a switch: off
   means it lives only here, and Google never sees it. **Nothing about a Google

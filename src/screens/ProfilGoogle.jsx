@@ -47,6 +47,11 @@ export default function ProfilGoogle() {
   } = useGoogle()
   const { showToast } = useToast()
   const [confirmOpen, setConfirmOpen] = useState(false)
+  // Was der letzte Verbindungsversuch ergeben hat. Ein Toast allein reicht
+  // hier nicht: wenn das Verbinden scheitert, ist danach *nichts* verbunden,
+  // und der Bildschirm sähe ohne diesen Hinweis aus wie beim allerersten
+  // Öffnen — als hätte der Nutzer es nie versucht.
+  const [attempt, setAttempt] = useState(null)
 
   // The Edge Function sends the browser back here with a plain marker — never
   // with a code or a token. The marker is read once and then removed, so a
@@ -55,9 +60,16 @@ export default function ProfilGoogle() {
     const params = new URLSearchParams(window.location.search)
     const result = params.get('google')
     if (!result) return
-    if (result === 'verbunden') showToast('Google Kalender verbunden ✓')
-    else if (result === 'abgebrochen') showToast('Google-Verbindung abgebrochen')
-    else showToast('Google-Verbindung fehlgeschlagen')
+    if (result === 'verbunden') {
+      showToast('Google Kalender verbunden ✓')
+      setAttempt(null)
+    } else if (result === 'abgebrochen') {
+      showToast('Google-Verbindung abgebrochen')
+      setAttempt(null)
+    } else {
+      showToast('Google-Verbindung fehlgeschlagen')
+      setAttempt(result)
+    }
     params.delete('google')
     const search = params.toString()
     window.history.replaceState(
@@ -68,6 +80,7 @@ export default function ProfilGoogle() {
   }, [showToast])
 
   const handleConnect = async () => {
+    setAttempt(null)
     try {
       // Where Google should send the browser back to. The Edge Function checks
       // it against its own allowlist before following it.
@@ -113,7 +126,11 @@ export default function ProfilGoogle() {
         {loading ? (
           <p className="mt-6 text-body text-text-secondary">Lädt…</p>
         ) : !connected ? (
-          <NotConnected onConnect={handleConnect} busy={busy === 'connect'} />
+          <NotConnected
+            onConnect={handleConnect}
+            busy={busy === 'connect'}
+            problem={attempt}
+          />
         ) : (
           <>
             {/* Konto + Zustand */}
@@ -278,7 +295,22 @@ export default function ProfilGoogle() {
   )
 }
 
-function NotConnected({ onConnect, busy }) {
+// Was schiefgehen kann, in Sätzen, die sagen, was als Nächstes zu tun ist.
+// Der Ton ist Absicht: nichts davon ist ein Fehler des Nutzers.
+const CONNECT_PROBLEMS = {
+  'rechte-fehlen': {
+    title: 'Es fehlen Berechtigungen',
+    body: 'Der Zugriff auf Kalender und Termine wurde bei Google nicht vollständig erlaubt. Beim nächsten Versuch bitte alle angezeigten Häkchen gesetzt lassen.',
+  },
+  'kalender-fehler': {
+    title: 'Die Kalender konnten nicht geladen werden',
+    body: 'Google hat die Verbindung bestätigt, aber keine Kalender geliefert. Der unvollständige Zugang wurde wieder entfernt — versuche es in einem Moment noch einmal.',
+  },
+}
+
+function NotConnected({ onConnect, busy, problem = null }) {
+  const trouble = CONNECT_PROBLEMS[problem] ?? (problem ? CONNECT_PROBLEMS['kalender-fehler'] : null)
+
   return (
     <section className="mt-4 rounded-card border border-subtle bg-bg-card px-4 py-6 text-center">
       <span className="mx-auto grid h-14 w-14 place-items-center rounded-card bg-bg-elevated text-text-secondary">
@@ -292,12 +324,31 @@ function NotConnected({ onConnect, busy }) {
         erscheinen in Google. Du wählst danach aus, welche Kalender
         synchronisiert werden.
       </p>
+
+      {/* Bleibt stehen, bis es einen neuen Versuch gibt — anders als der
+          Toast, der genau dann weg ist, wenn man ihn nachlesen möchte. */}
+      {trouble && (
+        <div
+          role="status"
+          className="mt-4 rounded-card border border-subtle px-4 py-3 text-left"
+          style={{ background: 'rgba(239, 68, 68, 0.10)' }}
+        >
+          <p className="flex items-center gap-2 text-ui font-semibold text-danger">
+            <AlertTriangle size={16} className="shrink-0" />
+            {trouble.title}
+          </p>
+          <p className="mt-1 text-caption leading-relaxed text-text-secondary">
+            {trouble.body}
+          </p>
+        </div>
+      )}
+
       <button
         onClick={onConnect}
         disabled={busy}
         className="press-tint mt-5 w-full rounded-btn bg-accent py-3.5 text-body font-semibold text-white disabled:opacity-60"
       >
-        {busy ? 'Wird geöffnet…' : 'Mit Google verbinden'}
+        {busy ? 'Wird geöffnet…' : trouble ? 'Erneut versuchen' : 'Mit Google verbinden'}
       </button>
     </section>
   )

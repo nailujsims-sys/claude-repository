@@ -23,7 +23,12 @@ import {
   GoogleError,
 } from '../_shared/google.js'
 import { verifyState, isAllowedRedirect } from '../_shared/state.js'
-import { runSync, refreshCalendars } from '../_shared/sync.js'
+import { runSync } from '../_shared/sync.js'
+import {
+  completeConnection,
+  CONNECT_OK,
+  CONNECT_MISSING_SCOPES,
+} from '../_shared/connect.js'
 import { json, fail, preflight, googleConfig } from '../_shared/http.js'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
@@ -130,41 +135,41 @@ Deno.serve(async (req: Request) => {
         return backToApp(target, { google: 'fehler' })
       }
 
-      const { email, sub } = emailFromIdToken(tokens.id_token)
+      // Speichern, prüfen, und bei einem Fehlschlag den halben Zugang wieder
+      // entfernen — die Regeln stehen in _shared/connect.js, damit sie
+      // getestet werden können und nicht nur hier gelten.
+      const outcome = await completeConnection(
+        { store, now: Date.now, makeClient: clientFor },
+        {
+          userId: state.user_id,
+          tokens,
+          identity: emailFromIdToken(tokens.id_token),
+        }
+      )
 
-      await store.saveCredentials(state.user_id, {
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        expires_at: tokens.expires_at,
-        token_type: tokens.token_type,
-        scopes: tokens.scopes,
-      })
-      await store.upsertConnection(state.user_id, {
-        google_account_email: email,
-        google_account_sub: sub,
-        status: 'connected',
-        scopes: tokens.scopes,
-        last_error: null,
-      })
-
-      const google = await clientFor(state.user_id)
-      if (google) {
-        const known = await store.listCalendars(state.user_id)
-        await refreshCalendars(
-          { google, store, now: Date.now },
-          { userId: state.user_id, firstConnection: known.length === 0 }
-        )
-        // The first import runs here, so the calendar has something in it by
-        // the time the browser lands back on the app.
-        await runSync(
-          { google, store, now: Date.now, randomId },
-          {
-            userId: state.user_id,
-            userTimeZone: await store.getTimeZone(state.user_id),
-            pushAddress: config.pushAddress,
-          }
-        ).catch((error) => console.error('initial sync', error))
+      if (outcome.status !== CONNECT_OK) {
+        console.error('google connect', outcome.status, outcome.missing ?? outcome.error)
+        // Zwei unterscheidbare Fälle, damit die App sagen kann, was zu tun
+        // ist: fehlende Häkchen auf dem Zustimmungsbildschirm sind etwas
+        // anderes als ein Google, das gerade nicht antwortet.
+        return backToApp(target, {
+          google:
+            outcome.status === CONNECT_MISSING_SCOPES ? 'rechte-fehlen' : 'kalender-fehler',
+        })
       }
+
+      // Der erste Import läuft hier, damit im Kalender etwas steht, sobald der
+      // Browser wieder in der App landet. Er darf scheitern, ohne die
+      // Verbindung mitzunehmen: die Kalender sind da, der Rest holt sich der
+      // nächste Lauf.
+      await runSync(
+        { google: outcome.google, store, now: Date.now, randomId },
+        {
+          userId: state.user_id,
+          userTimeZone: await store.getTimeZone(state.user_id),
+          pushAddress: config.pushAddress,
+        }
+      ).catch((error) => console.error('initial sync', error))
 
       return backToApp(target, { google: 'verbunden' })
     } catch (error) {
