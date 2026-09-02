@@ -1,7 +1,7 @@
 # Known gaps — current app vs. design system
 
 Status: **the mandatory G phase is finished** (2026-08/09). G1–G5, G7, G8,
-G10–G21 are done or deliberately closed; nothing on this list blocks new
+G10–G22 are done or deliberately closed; nothing on this list blocks new
 product work. What remains are two polish-phase candidates, G6 and G9, which
 §26 wants judged after real use rather than built now.
 
@@ -65,6 +65,54 @@ never as a task of its own.
   ever wanted as a system, that is a §26 decision, not a precedent set here.
 
 ## Closed
+
+### G22 · Every screen built its own header — closed 2026-09 (`src/components/TopBar.jsx`, `src/screens/Home.jsx`, `src/screens/Kalender.jsx`, `src/screens/TasksList.jsx`, `src/screens/Mehr.jsx`, `src/screens/Version.jsx`, `tools/smoke.mjs`)
+§2 asks the modules to feel like one app, and the one element on literally every
+screen was the one that was different everywhere. Measured before the fix, at
+390px:
+
+| Screen | inset | top | row | title | hamburger |
+|---|---|---|---|---|---|
+| Heute | `px-5` | `pt-3` + `py-2` | 36px | *none* (the greeting was the only title) | x 16 / y 20 |
+| Kalender | `px-4` | `pt-4` | 42px | 19px + 12px subtitle | x 12 / y 16 |
+| Aufgaben | `px-5` | `pt-5` | 36px | 28px inline | x 16 / y 20 |
+| Mehr · Version | `px-5` | `pt-5` | 36px | 28px inline | x 16 / y 20 |
+
+So the menu button moved on both axes while navigating, the title was in a
+different place and a different size on every screen (and missing on Heute), and
+the right-hand actions started at three different x positions. Every one of the
+five headers also carried the same `-ml-1` on its menu button — a per-screen
+correction for a horizontal inset that was itself per-screen.
+
+`TopBar` replaces all five. The geometry is fixed inside the component and is
+not exposed as props, so a screen cannot shift it: `px-4` (which is chosen so
+the 26px menu glyph lands at 21px, optically flush with the `px-5` content
+column below — no nudge needed), `calc(12px + env(safe-area-inset-top))` above,
+a 40px row, a title block that always reserves its subtitle line, and a
+right-anchored 36×36 action rail with an 8px gap. Measured after the fix, every
+route at 320/360/390/430/768/1280px reports the identical bar: height 60,
+menu at 16/14, glyph at 21/19, title at x 60 / y 13 — and the calendar's title
+switching between `2. September 2026`, `31. August – 6. September 2026` and
+`September 2026` moves nothing.
+
+Two consequences worth knowing:
+- **The screen title is now `text-heading` everywhere** (17px bold, the app's
+  "title of a surface" token). 28px could not be the shared size — the
+  calendar's week range does not fit at 28px even at 430px — and per-screen
+  sizes are what this gap was about. Heute gained the title it never had
+  ("Heute"); its greeting stays where it was, as page content, and is now an
+  `<h2>` since the bar owns the `<h1>`.
+- **The bar is `sticky`.** Aufgaben's header already was; Kalender's shell does
+  not scroll, so it resolves to a normal position there; Heute and Mehr keep
+  their bar in view like Aufgaben does.
+
+Deliberately *not* changed: the task detail screen (its leading control is a
+back button, not the menu) and the calendar's full-screen search (it covers the
+calendar and carries its own chrome). Both are contexts, not main areas — if a
+third one appears, give `TopBar` a `leading` slot rather than a second header.
+
+`tools/smoke.mjs` compares the rendered bar across all five routes and fails if
+one of them diverges or re-introduces a per-screen offset on the menu button.
 
 ### G10 · Typography values were literals, not tokens — closed 2026-09 (`tailwind.config.js`)
 Sizes were written inline as `text-[15px]`, `text-[17px]`, `text-[12px]` and so

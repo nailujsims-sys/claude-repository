@@ -147,7 +147,8 @@ src/
     eventRepository.js      factory for calendar events (Supabase or local)
     supabaseEventRepository.js · localEventRepository.js · eventDefaults.js
   context/                  Auth · Tasks · Events · UI (overlays) · Toast
-  components/               BottomNav, Sidebar, ActionSheet, BottomSheet, TaskForm,
+  components/               TopBar (the global header of every main area),
+                            BottomNav, Sidebar, ActionSheet, BottomSheet, TaskForm,
                             EventForm, InlineCalendar, MiniCalendar, FilterSheet,
                             TaskRow, EventDetailSheet, ConfirmDialog, …
   screens/                  Home, TasksList, TaskDetail, Kalender, Mehr, Login
@@ -161,6 +162,13 @@ Adding a nav item, sidebar link, action-sheet entry, or "coming soon" module is 
 one-line edit to the arrays in **`src/config/navigation.js`** — no component
 changes required. Build a new module by adding its `<Route>` in `App.jsx` and
 flipping it from `futureModules` into the active nav lists.
+
+A new main area gets the app's header for free: render
+**`<TopBar title="…" />`** (optionally `subtitle` and up to two `IconButton`
+`actions`) as the first element of the screen and put the screen's own content
+below it. Height, insets, the hamburger and the title's position live in
+`src/components/TopBar.jsx` and are deliberately not props — no screen can shift
+them.
 
 ---
 

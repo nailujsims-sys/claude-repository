@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Menu, Search, SlidersHorizontal, X } from 'lucide-react'
+import { Search, SlidersHorizontal, X } from 'lucide-react'
 import {
   DndContext,
   DragOverlay,
@@ -19,12 +19,12 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 
-import { useUI } from '../context/UIContext'
 import { useTasks } from '../context/TasksContext'
 import { useToast } from '../context/ToastContext'
 import { buildSections, CATEGORIES } from '../lib/taskSelectors'
 import { addDays, endOfMonth, isOverdue, startOfDay, startOfISOWeek, toISODate } from '../lib/date'
 import IconButton from '../components/IconButton'
+import TopBar from '../components/TopBar'
 import TaskRow from '../components/TaskRow'
 import FilterSheet, { FILTER_DEFAULTS } from '../components/FilterSheet'
 import { SkeletonTaskList } from '../components/Skeleton'
@@ -56,7 +56,6 @@ function dueForSection(key) {
 }
 
 export default function TasksList() {
-  const { openSidebar } = useUI()
   const {
     tasks,
     loading,
@@ -245,26 +244,26 @@ export default function TasksList() {
       {/* Sticky top — header + search + category tabs stay visible while the
           task list scrolls underneath. */}
       <div className="sticky top-0 z-30 border-b border-subtle bg-bg-base">
-        {/* Header */}
-        <header className="flex items-center gap-2 px-5 pt-5">
-          <IconButton onClick={openSidebar} aria-label="Menü öffnen" className="-ml-1 text-text-primary">
-            <Menu size={26} />
-          </IconButton>
-          <h1 className="flex-1 text-[28px] font-bold text-text-primary">Aufgaben</h1>
-          <IconButton
-            onClick={() => {
-              setSearchOpen((v) => !v)
-              if (searchOpen) setSearch('')
-            }}
-            aria-label="Suche"
-            className="text-text-primary"
-          >
-            <Search size={22} />
-          </IconButton>
-          <IconButton onClick={() => setFilterOpen(true)} aria-label="Filter" className="text-text-primary">
-            <SlidersHorizontal size={22} />
-          </IconButton>
-        </header>
+        <TopBar
+          title="Aufgaben"
+          actions={
+            <>
+              <IconButton
+                onClick={() => {
+                  setSearchOpen((v) => !v)
+                  if (searchOpen) setSearch('')
+                }}
+                aria-label="Suche"
+                className="text-text-primary"
+              >
+                <Search size={22} />
+              </IconButton>
+              <IconButton onClick={() => setFilterOpen(true)} aria-label="Filter" className="text-text-primary">
+                <SlidersHorizontal size={22} />
+              </IconButton>
+            </>
+          }
+        />
 
         {/* Search bar */}
         {searchOpen && (
