@@ -21,6 +21,7 @@ Durchlauf ändert nichts und zerstört nichts.
 | `0003_events.sql` | Tabelle `events`, Indizes, Constraints, RLS + Policies |
 | `0004_realtime.sql` | `tasks` und `events` in die Publikation `supabase_realtime` aufnehmen |
 | `0005_google_calendar.sql` | Google-Kalender: `google_connections`, `google_credentials` (für Clients gesperrt), `google_calendars`, `google_channels`, `google_event_tombstones`, die Google-Spalten an `events`, die Sync-Trigger, RLS + Grants |
+| `0006_lists.sql` | Listen: Tabellen `lists` und `list_items` (Vorlage, Icon, Pin, Archiv, Menge/Einheit/Betrag/Kategorie), Indizes, Constraints, RLS + Policies, Realtime |
 
 **Weg A — Dashboard (kein Werkzeug nötig).** SQL Editor öffnen, die Dateien
 nacheinander einfügen und ausführen.
@@ -96,7 +97,9 @@ der Publikation `supabase_realtime` stehen — Tabelle anlegen und Realtime daf�
 freischalten sind zwei getrennte Schritte. `0004_realtime.sql` erledigt das für
 `tasks` und `events`, `0005_google_calendar.sql` zusätzlich für
 `google_connections` und `google_calendars` — damit ein Sync, der auf dem Handy
-fertig wird, auch auf dem Mac zu sehen ist. Die Zugangsdaten, die Push-Kanäle
+fertig wird, auch auf dem Mac zu sehen ist. `0006_lists.sql` nimmt `lists` und
+`list_items` auf, damit ein im Laden abgehakter Artikel sofort auf dem zweiten
+Gerät verschwindet. Die Zugangsdaten, die Push-Kanäle
 und die Grabsteine werden bewusst **nicht** veröffentlicht. Prüfen:
 
 ```sql

@@ -23,6 +23,7 @@ import {
 import { makeRealtimeHub } from './realtimeStub.mjs'
 import { seedTasks } from './fixtures/seedTasks.mjs'
 import { seedEvents } from './fixtures/seedEvents.mjs'
+import { LIST_IDS, seedListItems, seedLists } from './fixtures/seedLists.mjs'
 
 const TEST_PASSWORD = 'richtiges-passwort'
 
@@ -68,6 +69,8 @@ function makeDom(hash, seed = {}, options = {}) {
       // unchanged there.
       googleConnections: seed.googleConnections ?? [],
       googleCalendars: seed.googleCalendars ?? [],
+      lists: seed.lists ?? seedLists(),
+      listItems: seed.listItems ?? seedListItems(),
       functions: seed.functions ?? {},
       password: TEST_PASSWORD,
       failTable: seed.failTable ?? null,
@@ -200,6 +203,7 @@ async function run() {
   for (const [name, hash] of [
     ['Home (/)', '#/'],
     ['Aufgaben (/aufgaben)', '#/aufgaben'],
+    ['Listen (/listen)', '#/listen'],
     ['Mehr (/mehr)', '#/mehr'],
     ['Version (/version)', '#/version'],
     ['Kalender (/kalender)', '#/kalender'],
@@ -214,6 +218,17 @@ async function run() {
     // The seed has a 2-days-overdue task, so the list must render the overdue label.
     if (name.startsWith('Aufgaben') && !text.includes('Überfällig')) {
       errors.push(`[${name}] overdue task label "Überfällig" not rendered`)
+    }
+    // The overview shows both groups from the seed and — the brief's rule —
+    // not one number next to a list.
+    if (name.startsWith('Listen')) {
+      for (const needle of ['Angepinnt', 'Weitere Listen', 'Einkauf', 'Von zuhause mitbringen', 'Neue Liste']) {
+        if (!text.includes(needle)) errors.push(`[${name}] missing "${needle}"`)
+      }
+      if (text.includes('Urlaub 2026'))
+        errors.push(`[${name}] an archived list is shown in the overview`)
+      if (/\b\d+\s*\/\s*\d+\b/.test(text))
+        errors.push(`[${name}] a progress count is rendered next to a list`)
     }
     // The version screen must show a version, a build time and a commit. Under
     // esbuild the vite `define`s are absent, so it renders its dev fallback —
@@ -249,6 +264,7 @@ async function run() {
       const expected = {
         'Home (/)': 'Heute',
         'Aufgaben (/aufgaben)': 'Aufgaben',
+        'Listen (/listen)': 'Listen',
         'Mehr (/mehr)': 'Mehr',
         'Version (/version)': 'Version',
         'Kalender (/kalender)': 'Kalender',
@@ -2254,13 +2270,396 @@ async function run() {
     window.__restoreConsole?.()
     const after = hub.joinedTopics().length
     console.log(`\n=== Realtime (Abmelden) ===\n  Kanäle vorher=${before} nachher=${after}`)
-    // tasks, events, google_connections, google_calendars — one channel per
-    // live table. The number is asserted rather than "> 0" because a table
-    // that quietly stops being live is exactly the bug this section exists for.
-    if (before !== 4)
-      errors.push(`[RealtimeUnmount] expected four channels while signed in, got ${before}`)
+    // tasks, events, lists, list_items, google_connections, google_calendars —
+    // one channel per live table. The number is asserted rather than "> 0"
+    // because a table that quietly stops being live is exactly the bug this
+    // section exists for.
+    if (before !== 6)
+      errors.push(`[RealtimeUnmount] expected six channels while signed in, got ${before}`)
     if (after !== 0)
       errors.push(`[RealtimeUnmount] ${after} channel(s) survived the sign-out`)
+  }
+
+  // ── 14) Listen ─────────────────────────────────────────────────────────
+  //
+  // The behavioural half of the module. The rules themselves — what sorts
+  // where, what "Äpfel 6 Stück" reads as, that archiving is an exact inverse —
+  // are pinned without a browser in tools/listLogic.mjs; what needs a real
+  // mount is that the screens actually obey them, and that every flow the
+  // module promises can be walked end to end.
+
+  // 14a) A Standard list: the three flows a checklist is made of — add, tick
+  //      off (which moves the row into "Erledigt"), and put back.
+  {
+    const window = makeDom(`#/listen/${LIST_IDS.standard}`)
+    mount(window, code, 'Listen/Standard')
+    await wait(300)
+    let text = txt(window)
+    console.log(`\n=== Listen — Standardliste ===\n  ${text.slice(0, 200)}`)
+    for (const needle of ['Von zuhause mitbringen', 'Ladekabel', 'Reisepass', 'Erledigt', 'Sonnenbrille']) {
+      if (!text.includes(needle)) errors.push(`[Listen/Standard] missing "${needle}"`)
+    }
+    // No quantitative progress anywhere inside a list either.
+    if (/\b\d+\s*\/\s*\d+\b/.test(text))
+      errors.push('[Listen/Standard] a progress count is rendered inside the list')
+
+    // The open entries come before the done ones in the DOM, which is what the
+    // two sections mean. Asserted on positions rather than on the text, so a
+    // reordering that still renders both words would not pass.
+    const posOf = (needle) => text.indexOf(needle)
+    if (!(posOf('Ladekabel') < posOf('Erledigt') && posOf('Erledigt') < posOf('Sonnenbrille')))
+      errors.push('[Listen/Standard] open entries are not above the "Erledigt" section')
+
+    // Add.
+    if (!typeInto(window, 'input[aria-label="Eintrag hinzufügen…"]', 'Kopfhörer'))
+      errors.push('[Listen/Standard] the add field was not found')
+    await wait(60)
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Hinzufügen'))
+      errors.push('[Listen/Standard] the add button was not found')
+    await wait(250)
+    text = txt(window)
+    if (!text.includes('Kopfhörer'))
+      errors.push('[Listen/Standard] the new entry was not added')
+    if (!window.__backend.tables.list_items.some((r) => r.title === 'Kopfhörer'))
+      errors.push('[Listen/Standard] the new entry never reached the database')
+
+    // Tick off: the row must leave the open group and appear after "Erledigt".
+    const circles = [...window.document.querySelectorAll('[aria-label="Als erledigt markieren"]')]
+    if (!circles.length) errors.push('[Listen/Standard] no completion circle found')
+    circles[0]?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(250)
+    text = txt(window)
+    console.log(`=== Listen — nach dem Abhaken ===\n  ${text.slice(0, 200)}`)
+    if (text.indexOf('Ladekabel') < text.indexOf('Erledigt'))
+      errors.push('[Listen/Standard] the ticked entry did not move down into "Erledigt"')
+    const ticked = window.__backend.tables.list_items.find((r) => r.title === 'Ladekabel')
+    if (!ticked?.is_done) errors.push('[Listen/Standard] the tick never reached the database')
+    if (!ticked?.done_at) errors.push('[Listen/Standard] done_at was not stamped')
+
+    // …and back up again. Targeted by the row it belongs to rather than by
+    // position: "Erledigt" is newest-first, so an index would silently be a
+    // different entry the moment that rule changed.
+    const backBtn = [...window.document.querySelectorAll('[aria-label="Als offen markieren"]')].find(
+      (el) => el.parentElement?.textContent.includes('Ladekabel')
+    )
+    if (!backBtn) errors.push('[Listen/Standard] the ticked row does not offer "Als offen markieren"')
+    backBtn?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(250)
+    window.__restoreConsole?.()
+    text = txt(window)
+    if (!text.includes('Ladekabel'))
+      errors.push('[Listen/Standard] the restored entry disappeared')
+    const restored = window.__backend.tables.list_items.find((r) => r.title === 'Ladekabel')
+    if (restored?.is_done || restored?.done_at)
+      errors.push('[Listen/Standard] restoring did not clear is_done / done_at')
+  }
+
+  // 14b) The Einkauf template: the quick-add reading and the category grouping
+  //      on a real screen.
+  {
+    const window = makeDom(`#/listen/${LIST_IDS.shopping}`)
+    mount(window, code, 'Listen/Einkauf')
+    await wait(300)
+    let text = txt(window)
+    console.log(`\n=== Listen — Einkaufsliste ===\n  ${text.slice(0, 220)}`)
+    for (const needle of ['Einkauf', 'Äpfel', '6 Stück', 'Obst & Gemüse', 'Milchprodukte', 'Erledigt']) {
+      if (!text.includes(needle)) errors.push(`[Listen/Einkauf] missing "${needle}"`)
+    }
+
+    if (!typeInto(window, 'input[aria-label="Artikel hinzufügen…"]', 'Butter 250 g'))
+      errors.push('[Listen/Einkauf] the add field was not found')
+    await wait(60)
+    click(window, (el) => el.getAttribute('aria-label') === 'Hinzufügen')
+    await wait(250)
+    window.__restoreConsole?.()
+    text = txt(window)
+    const butter = window.__backend.tables.list_items.find((r) => r.title === 'Butter')
+    if (!butter) errors.push('[Listen/Einkauf] "Butter 250 g" did not become an entry called "Butter"')
+    if (butter && (Number(butter.quantity) !== 250 || butter.unit !== 'g'))
+      errors.push(`[Listen/Einkauf] quantity/unit were not read: ${butter.quantity}/${butter.unit}`)
+    if (!text.includes('250 g'))
+      errors.push('[Listen/Einkauf] the quantity is not shown on the row')
+  }
+
+  // 14c) The Geld template: the amount reading, the German currency format and
+  //      the quiet open total.
+  {
+    const window = makeDom(`#/listen/${LIST_IDS.money}`)
+    mount(window, code, 'Listen/Geld')
+    await wait(300)
+    let text = txt(window).replace(/ /g, ' ')
+    console.log(`\n=== Listen — Geldliste ===\n  ${text.slice(0, 220)}`)
+    for (const needle of ['Max Mustermann', '25,00 €', 'Offen gesamt', '37,50 €', 'Erledigt', 'Jonas Weber']) {
+      if (!text.includes(needle)) errors.push(`[Listen/Geld] missing "${needle}"`)
+    }
+
+    if (!typeInto(window, 'input[aria-label="Person hinzufügen…"]', 'Lisa Becker 18,00 €'))
+      errors.push('[Listen/Geld] the add field was not found')
+    await wait(60)
+    click(window, (el) => el.getAttribute('aria-label') === 'Hinzufügen')
+    await wait(250)
+    window.__restoreConsole?.()
+    text = txt(window).replace(/ /g, ' ')
+    const lisa = window.__backend.tables.list_items.find((r) => r.title === 'Lisa Becker')
+    if (!lisa) errors.push('[Listen/Geld] "Lisa Becker 18,00 €" did not become an entry called "Lisa Becker"')
+    if (lisa && Number(lisa.amount) !== 18)
+      errors.push(`[Listen/Geld] the amount was not read: ${lisa.amount}`)
+    if (!text.includes('55,50 €'))
+      errors.push('[Listen/Geld] the open total did not follow the new entry')
+  }
+
+  // 14d) Creating a list: the Plus sheet reaches the form from anywhere, all
+  //      three templates are offered, an icon can be picked, and what is saved
+  //      is what was chosen.
+  {
+    const window = makeDom('#/listen', { lists: [], listItems: [] })
+    mount(window, code, 'Listen/Neu')
+    await wait(300)
+    let text = txt(window)
+    if (!text.includes('Noch keine Listen'))
+      errors.push('[Listen/Neu] the empty state is not shown')
+
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Neu erstellen'))
+      errors.push('[Listen/Neu] the Plus button was not found')
+    await wait(250)
+    if (!click(window, (el) => el.textContent.trim() === 'Neue Liste'))
+      errors.push('[Listen/Neu] "Neue Liste" is not in the Plus sheet')
+    await wait(300)
+    text = txt(window)
+    console.log(`\n=== Listen — Neue Liste ===\n  ${text.slice(0, 220)}`)
+    for (const needle of ['Neue Liste', 'Vorlage wählen', 'Standard', 'Einkauf', 'Geld', 'Icon wählen']) {
+      if (!text.includes(needle)) errors.push(`[Listen/Neu] the form is missing "${needle}"`)
+    }
+    // No colour picker: blue is the only accent, so there is nothing to choose.
+    if (text.includes('Farbe'))
+      errors.push('[Listen/Neu] the form offers a colour choice')
+
+    if (!typeInto(window, 'input[placeholder="Name der Liste"]', 'Geschenkideen'))
+      errors.push('[Listen/Neu] the name field was not found')
+    await wait(60)
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Geschenk'))
+      errors.push('[Listen/Neu] the gift icon was not found in the curated set')
+    await wait(60)
+    if (!click(window, (el) => el.textContent.trim() === 'Erstellen'))
+      errors.push('[Listen/Neu] "Erstellen" was not found')
+    await wait(350)
+    window.__restoreConsole?.()
+    text = txt(window)
+    const created = window.__backend.tables.lists.find((r) => r.name === 'Geschenkideen')
+    if (!created) errors.push('[Listen/Neu] the list never reached the database')
+    if (created && created.icon !== 'gift')
+      errors.push(`[Listen/Neu] the chosen icon was not stored: ${created.icon}`)
+    if (created && created.template !== 'standard')
+      errors.push(`[Listen/Neu] the chosen template was not stored: ${created.template}`)
+    if (!text.includes('Geschenkideen'))
+      errors.push('[Listen/Neu] the new list is not in the overview')
+  }
+
+  // 14e) Pin, archive with undo, and the archive itself — the whole life cycle
+  //      of a list, from the overview's own actions sheet.
+  {
+    const window = makeDom('#/listen')
+    mount(window, code, 'Listen/Lebenszyklus')
+    await wait(300)
+
+    // Pin: "Von zuhause mitbringen" starts unpinned.
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Aktionen für Von zuhause mitbringen'))
+      errors.push('[Listen/Lebenszyklus] the row action button was not found')
+    await wait(300)
+    let text = txt(window)
+    for (const needle of ['Liste bearbeiten', 'Anheften', 'Liste abschließen', 'Liste löschen']) {
+      if (!text.includes(needle)) errors.push(`[Listen/Lebenszyklus] the actions sheet is missing "${needle}"`)
+    }
+    if (!click(window, (el) => el.textContent.trim() === 'Anheften'))
+      errors.push('[Listen/Lebenszyklus] "Anheften" was not clickable')
+    await wait(350)
+    if (!window.__backend.tables.lists.find((r) => r.name === 'Von zuhause mitbringen')?.is_pinned)
+      errors.push('[Listen/Lebenszyklus] the pin never reached the database')
+
+    // Archive, with the undo the design system asks for instead of a dialog.
+    click(window, (el) => el.getAttribute('aria-label') === 'Aktionen für Von zuhause mitbringen')
+    await wait(300)
+    if (!click(window, (el) => el.textContent.trim() === 'Liste abschließen'))
+      errors.push('[Listen/Lebenszyklus] "Liste abschließen" was not clickable')
+    await wait(300)
+    text = txt(window)
+    console.log(`\n=== Listen — nach dem Abschließen ===\n  ${text.slice(0, 220)}`)
+    if (text.includes('Liste abschließen?'))
+      errors.push('[Listen/Lebenszyklus] a confirm dialog appears for a reversible archive')
+    if (!text.includes('Liste abgeschlossen') || !text.includes('Rückgängig'))
+      errors.push('[Listen/Lebenszyklus] no undo toast after archiving')
+    const archivedRow = window.__backend.tables.lists.find((r) => r.name === 'Von zuhause mitbringen')
+    if (!archivedRow?.is_archived) errors.push('[Listen/Lebenszyklus] the archive never reached the database')
+    if (!archivedRow?.archived_at) errors.push('[Listen/Lebenszyklus] archived_at was not stamped')
+    // The entries are deliberately untouched — that is what makes the undo
+    // and the later reactivation exact.
+    if (window.__backend.tables.list_items.some((r) => r.list_id === LIST_IDS.standard && r.title === 'Reisepass' && r.is_done))
+      errors.push('[Listen/Lebenszyklus] archiving silently ticked the open entries off')
+
+    if (!click(window, (el) => el.textContent.trim() === 'Rückgängig'))
+      errors.push('[Listen/Lebenszyklus] the undo was not clickable')
+    await wait(350)
+    if (window.__backend.tables.lists.find((r) => r.name === 'Von zuhause mitbringen')?.is_archived)
+      errors.push('[Listen/Lebenszyklus] the undo did not reactivate the list')
+
+    window.__restoreConsole?.()
+  }
+
+  // 14f) The archive: reachable, plain, and the way back out of it.
+  {
+    const window = makeDom('#/listen')
+    mount(window, code, 'Listen/Archiv')
+    await wait(300)
+    if (!click(window, (el) => el.textContent.includes('Archivierte Listen')))
+      errors.push('[Listen/Archiv] the archive entry point was not found on the overview')
+    await wait(300)
+    let text = txt(window)
+    console.log(`\n=== Listen — Archiv ===\n  ${text.slice(0, 220)}`)
+    for (const needle of ['Archivierte Listen', 'Urlaub 2026', 'Einträge']) {
+      if (!text.includes(needle)) errors.push(`[Listen/Archiv] missing "${needle}"`)
+    }
+    if (text.includes('Einkauf'))
+      errors.push('[Listen/Archiv] an active list is shown in the archive')
+
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Urlaub 2026 wieder aktivieren'))
+      errors.push('[Listen/Archiv] the restore button was not found')
+    await wait(350)
+    window.__restoreConsole?.()
+    text = txt(window)
+    if (window.__backend.tables.lists.find((r) => r.name === 'Urlaub 2026')?.is_archived)
+      errors.push('[Listen/Archiv] reactivating never reached the database')
+    if (!text.includes('Liste wieder aktiv'))
+      errors.push('[Listen/Archiv] no confirmation after reactivating')
+    if (!text.includes('Archiv ist leer'))
+      errors.push('[Listen/Archiv] the emptied archive does not say so')
+  }
+
+  // 14g) Deleting a list is the one irreversible step here, so it is the one
+  //      that asks first — and it takes the entries with it.
+  {
+    const window = makeDom(`#/listen/${LIST_IDS.money}`)
+    mount(window, code, 'Listen/Löschen')
+    await wait(300)
+    if (!click(window, (el) => el.getAttribute('aria-label') === 'Aktionen'))
+      errors.push('[Listen/Löschen] the detail actions button was not found')
+    await wait(300)
+    if (!click(window, (el) => el.textContent.trim() === 'Liste löschen'))
+      errors.push('[Listen/Löschen] "Liste löschen" was not clickable')
+    await wait(300)
+    let text = txt(window)
+    console.log(`\n=== Listen — Löschen ===\n  ${text.slice(0, 220)}`)
+    if (!text.includes('Liste löschen?'))
+      errors.push('[Listen/Löschen] no confirmation for an irreversible delete')
+    if (!click(window, (el) => el.textContent.trim() === 'Abbrechen'))
+      errors.push('[Listen/Löschen] the dialog cannot be cancelled')
+    await wait(250)
+    if (!window.__backend.tables.lists.some((r) => r.id === LIST_IDS.money))
+      errors.push('[Listen/Löschen] cancelling still deleted the list')
+
+    click(window, (el) => el.getAttribute('aria-label') === 'Aktionen')
+    await wait(300)
+    click(window, (el) => el.textContent.trim() === 'Liste löschen')
+    await wait(300)
+    if (!click(window, (el) => el.textContent.trim() === 'Löschen'))
+      errors.push('[Listen/Löschen] the dialog cannot be confirmed')
+    await wait(350)
+    window.__restoreConsole?.()
+    text = txt(window)
+    if (window.__backend.tables.lists.some((r) => r.id === LIST_IDS.money))
+      errors.push('[Listen/Löschen] the list survived its own deletion')
+    if (window.__backend.tables.list_items.some((r) => r.list_id === LIST_IDS.money))
+      errors.push('[Listen/Löschen] the entries of a deleted list were left behind')
+    if (!text.includes('Liste gelöscht'))
+      errors.push('[Listen/Löschen] no confirmation after deleting')
+  }
+
+  // 14h) Editing an entry, and deleting one — the sheet behind a row, and the
+  //      undo that makes a single-entry delete reversible.
+  {
+    const window = makeDom(`#/listen/${LIST_IDS.shopping}`)
+    mount(window, code, 'Listen/Eintrag')
+    await wait(300)
+    // The row itself opens the sheet; the circle is the other target.
+    const rows = [...window.document.querySelectorAll('div')].filter(
+      (el) => el.className.includes('press-tint') && el.textContent.includes('Milch')
+    )
+    rows[rows.length - 1]?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(300)
+    let text = txt(window)
+    console.log(`\n=== Listen — Eintrag bearbeiten ===\n  ${text.slice(0, 220)}`)
+    for (const needle of ['Eintrag bearbeiten', 'Menge (optional)', 'Einheit (optional)', 'Kategorie (optional)', 'Eintrag löschen']) {
+      if (!text.includes(needle)) errors.push(`[Listen/Eintrag] the sheet is missing "${needle}"`)
+    }
+
+    if (!click(window, (el) => el.textContent.trim() === 'Backwaren'))
+      errors.push('[Listen/Eintrag] the category chips were not found')
+    await wait(60)
+    if (!click(window, (el) => el.textContent.trim() === 'Speichern'))
+      errors.push('[Listen/Eintrag] "Speichern" was not found')
+    await wait(350)
+    if (window.__backend.tables.list_items.find((r) => r.title === 'Milch')?.category !== 'Backwaren')
+      errors.push('[Listen/Eintrag] the category never reached the database')
+
+    // Delete one entry: commits on the press, undo re-creates it.
+    const again = [...window.document.querySelectorAll('div')].filter(
+      (el) => el.className.includes('press-tint') && el.textContent.includes('Milch')
+    )
+    again[again.length - 1]?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(300)
+    if (!click(window, (el) => el.textContent.trim() === 'Eintrag löschen'))
+      errors.push('[Listen/Eintrag] "Eintrag löschen" was not clickable')
+    await wait(300)
+    text = txt(window)
+    if (window.__backend.tables.list_items.some((r) => r.title === 'Milch'))
+      errors.push('[Listen/Eintrag] the entry was not deleted')
+    if (!text.includes('Eintrag gelöscht') || !text.includes('Rückgängig'))
+      errors.push('[Listen/Eintrag] no undo toast after deleting an entry')
+
+    if (!click(window, (el) => el.textContent.trim() === 'Rückgängig'))
+      errors.push('[Listen/Eintrag] the undo was not clickable')
+    await wait(350)
+    window.__restoreConsole?.()
+    const back = window.__backend.tables.list_items.find((r) => r.title === 'Milch')
+    if (!back) errors.push('[Listen/Eintrag] the undo did not bring the entry back')
+    if (back && (Number(back.quantity) !== 2 || back.category !== 'Backwaren'))
+      errors.push('[Listen/Eintrag] the restored entry lost its fields')
+  }
+
+  // 14i) Persistence and cross-device sync, the two properties every module in
+  //      this app has to have: a reload shows what was written, and a second
+  //      device sees it without a refresh.
+  {
+    const hub = makeRealtimeHub()
+    const first = makeDom(`#/listen/${LIST_IDS.standard}`, {}, { hub })
+    mount(first, code, 'Listen/Sync-1')
+    await wait(300)
+    typeInto(first, 'input[aria-label="Eintrag hinzufügen…"]', 'Powerbank')
+    await wait(60)
+    click(first, (el) => el.getAttribute('aria-label') === 'Hinzufügen')
+    await wait(300)
+
+    // Same backend, new window — that is a reload.
+    const reloaded = makeDom(`#/listen/${LIST_IDS.standard}`, {}, { backend: first.__backend, hub })
+    mount(reloaded, code, 'Listen/Reload')
+    await wait(350)
+    reloaded.__restoreConsole?.()
+    if (!txt(reloaded).includes('Powerbank'))
+      errors.push('[Listen/Sync] the entry did not survive a reload')
+
+    // A second device on the same account, already open.
+    const second = makeDom(`#/listen/${LIST_IDS.standard}`, {}, { backend: first.__backend, hub })
+    mount(second, code, 'Listen/Sync-2')
+    await wait(350)
+    typeInto(first, 'input[aria-label="Eintrag hinzufügen…"]', 'Adapter')
+    await wait(60)
+    click(first, (el) => el.getAttribute('aria-label') === 'Hinzufügen')
+    await wait(400)
+    first.__restoreConsole?.()
+    second.__restoreConsole?.()
+    const text = txt(second)
+    console.log(`\n=== Listen — zweites Gerät ===\n  ${text.slice(0, 200)}`)
+    if (!text.includes('Adapter'))
+      errors.push('[Listen/Sync] the second device never saw the new entry')
   }
 
   console.log('\n--- result ---')

@@ -20,6 +20,9 @@ declare
   user_b   uuid := gen_random_uuid();
   task_a   uuid;
   event_a  uuid;
+  list_a   uuid;
+  list_b   uuid;
+  item_a   uuid;
   n        integer;
   ok       boolean;
   ok_text  text;
@@ -45,12 +48,22 @@ begin
   insert into public.events (user_id, title, start_at, end_at)
     values (user_a, 'Termin von A', '2026-09-02T09:00', '2026-09-02T10:00')
     returning id into event_a;
+  insert into public.lists (user_id, name, template, icon)
+    values (user_a, 'Liste von A', 'shopping', 'shopping-cart')
+    returning id into list_a;
+  insert into public.list_items (user_id, list_id, title, quantity, unit)
+    values (user_a, list_a, 'Äpfel', 6, 'Stück')
+    returning id into item_a;
 
   -- ── 2. …and read them back ───────────────────────────────────────────────
   select count(*) into n from public.tasks;
   if n <> 1 then raise exception 'FAIL: A sees % of their own tasks, expected 1', n; end if;
   select count(*) into n from public.events;
   if n <> 1 then raise exception 'FAIL: A sees % of their own events, expected 1', n; end if;
+  select count(*) into n from public.lists;
+  if n <> 1 then raise exception 'FAIL: A sees % of their own lists, expected 1', n; end if;
+  select count(*) into n from public.list_items;
+  if n <> 1 then raise exception 'FAIL: A sees % of their own list entries, expected 1', n; end if;
 
   -- ── 3. …and update and soft-delete them ──────────────────────────────────
   update public.tasks set title = 'Aufgabe von A, bearbeitet' where id = task_a;
@@ -80,6 +93,34 @@ begin
   end;
   if not ok then raise exception 'FAIL: A could insert a task owned by B'; end if;
 
+  -- ── 4b. An entry may not be parked inside somebody else's list ────────────
+  -- The second half of `list_items_insert_own`: an entry that is correctly
+  -- owned but points at a foreign list has to be refused too, or A could fill
+  -- B's shopping list with rows B can neither see nor remove.
+  execute 'reset role';
+  insert into public.lists (user_id, name) values (user_b, 'Liste von B') returning id into list_b;
+  execute 'set local role authenticated';
+  perform set_config('request.jwt.claims', json_build_object('sub', user_a, 'role', 'authenticated')::text, true);
+
+  ok := false;
+  begin
+    insert into public.list_items (user_id, list_id, title) values (user_a, list_b, 'Untergeschoben');
+  exception when others then
+    ok := true;
+  end;
+  if not ok then raise exception 'FAIL: A put an entry into B''s list'; end if;
+
+  ok := false;
+  begin
+    update public.list_items set list_id = list_b where id = item_a;
+  exception when others then
+    ok := true;
+  end;
+  if not ok then
+    select count(*) into n from public.list_items where id = item_a and list_id = list_b;
+    if n > 0 then raise exception 'FAIL: A moved an entry into B''s list'; end if;
+  end if;
+
   -- ── 5. The other user sees none of it ────────────────────────────────────
   perform set_config('request.jwt.claims', json_build_object('sub', user_b, 'role', 'authenticated')::text, true);
 
@@ -87,6 +128,10 @@ begin
   if n <> 0 then raise exception 'FAIL: B can read % of A''s tasks', n; end if;
   select count(*) into n from public.events;
   if n <> 0 then raise exception 'FAIL: B can read % of A''s events', n; end if;
+  select count(*) into n from public.lists where id = list_a;
+  if n <> 0 then raise exception 'FAIL: B can read % of A''s lists', n; end if;
+  select count(*) into n from public.list_items;
+  if n <> 0 then raise exception 'FAIL: B can read % of A''s list entries', n; end if;
   select count(*) into n from public.profiles;
   if n <> 1 then raise exception 'FAIL: B sees % profiles, expected only their own', n; end if;
 
@@ -102,6 +147,14 @@ begin
   delete from public.events where id = event_a;
   get diagnostics n = row_count;
   if n <> 0 then raise exception 'FAIL: B deleted % of A''s events', n; end if;
+
+  delete from public.lists where id = list_a;
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'FAIL: B deleted % of A''s lists', n; end if;
+
+  delete from public.list_items where id = item_a;
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'FAIL: B deleted % of A''s list entries', n; end if;
 
   -- ── 7. Without a session there is nothing at all ─────────────────────────
   -- Two layers have to hold here: the grants (anon has none) and, if a grant
@@ -119,6 +172,18 @@ begin
   begin
     execute 'select count(*) from public.events' into n;
     if n <> 0 then raise exception 'FAIL: an unauthenticated client read % events', n; end if;
+  exception when insufficient_privilege then null;
+  end;
+
+  begin
+    execute 'select count(*) from public.lists' into n;
+    if n <> 0 then raise exception 'FAIL: an unauthenticated client read % lists', n; end if;
+  exception when insufficient_privilege then null;
+  end;
+
+  begin
+    execute 'select count(*) from public.list_items' into n;
+    if n <> 0 then raise exception 'FAIL: an unauthenticated client read % list entries', n; end if;
   exception when insufficient_privilege then null;
   end;
 
@@ -270,6 +335,22 @@ begin
   end if;
   select count(*) into n from public.events where id = event_a and google_event_id is null;
   if n <> 1 then raise exception 'FAIL: an event taken out of Google kept its Google id'; end if;
+
+  -- ── 9b. Deleting a list takes its entries with it ────────────────────────
+  -- `on delete cascade` is what stops a delete from leaving rows behind that
+  -- belong to a list nobody can reach any more.
+  execute 'set local role authenticated';
+  perform set_config('request.jwt.claims', json_build_object('sub', user_a, 'role', 'authenticated')::text, true);
+
+  select count(*) into n from public.list_items where list_id = list_a;
+  if n <> 1 then raise exception 'FAIL: A''s entry vanished before the cascade test (found %)', n; end if;
+
+  delete from public.lists where id = list_a;
+  get diagnostics n = row_count;
+  if n <> 1 then raise exception 'FAIL: A could not delete their own list'; end if;
+
+  select count(*) into n from public.list_items where list_id = list_a;
+  if n <> 0 then raise exception 'FAIL: % entries survived the deletion of their list', n; end if;
 
   -- ── 10. Every personal table actually has RLS switched on ────────────────
   execute 'reset role';

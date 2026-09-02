@@ -55,6 +55,13 @@ This is not the Heute screen's doing: it is the same row the Aufgaben list and
 the calendar's day list render, so the number is app-wide, and it was measured
 here only because the screen was being measured anyway.
 
+*Also true of `ListItemRow`* (Listen, 2026-09): its completion circle is the same
+22×22 for the same reason — it is TaskRow's circle, kept identical so the two
+mean the same thing. That is one gap applied consistently, not a second gap; it
+closes when this one does. `ListRow` in the same module is not affected: its two
+controls are a full-width button and a 30×30 icon button, neither of them
+nested inside the other.
+
 *Why not now:* the row is 60px tall and the whole row is already a target — it
 opens the task — so a near-miss on the circle is never destructive and never
 silent; it opens the thing the user was aiming at. Growing the two controls to
