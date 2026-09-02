@@ -9,6 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "smoke": "node tools/smoke.mjs",
+    "verify": "npm run test:logic && npm run smoke && npm run build",
     "test:logic": "node tools/calendarLogic.mjs && node tools/pressLogic.mjs && node tools/overlayLogic.mjs && node tools/focusLogic.mjs && node tools/sheetLogic.mjs && node tools/restoreLogic.mjs"
   },
   "dependencies": {
