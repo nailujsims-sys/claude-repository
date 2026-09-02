@@ -15,6 +15,7 @@ import {
   ClipboardList,
   CalendarPlus,
   Info,
+  UserCircle,
 } from 'lucide-react'
 
 // ── Bottom navigation ──────────────────────────────────────────────────────
@@ -35,6 +36,7 @@ export const sidebarNav = [
   { id: 'tasks', label: 'Aufgaben', icon: CheckSquare, to: '/aufgaben', enabled: true },
   { id: 'calendar', label: 'Kalender', icon: Calendar, to: '/kalender', enabled: true },
   { id: 'more', label: 'Mehr', icon: MoreHorizontal, to: '/mehr', enabled: true },
+  { id: 'profil', label: 'Profil', icon: UserCircle, to: '/profil', enabled: true },
   { id: 'version', label: 'Version', icon: Info, to: '/version', enabled: true },
 ]
 

@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { Menu, Bell, User } from 'lucide-react'
 import IconButton from './IconButton'
 import { useUI } from '../context/UIContext'
@@ -69,11 +70,15 @@ export default function TopBar({ title }) {
             <Bell size={22} />
             <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-accent" />
           </IconButton>
-          {/* Not a control (there is no profile screen yet), but it occupies the
-              same 36×36 slot as an action so the pair stays on its pixel. */}
-          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-bg-elevated text-text-secondary">
+          {/* Now that there is a profile screen, the avatar is the way to it.
+              Same 36×36 slot as before, so the pair stays on its pixel. */}
+          <Link
+            to="/profil"
+            aria-label="Profil"
+            className="press-tint grid h-9 w-9 shrink-0 place-items-center rounded-full bg-bg-elevated text-text-secondary"
+          >
             <User size={20} />
-          </div>
+          </Link>
         </div>
       </div>
     </header>

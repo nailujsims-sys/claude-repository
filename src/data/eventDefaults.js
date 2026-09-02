@@ -28,6 +28,12 @@ export const EVENT_WRITABLE_FIELDS = [
   'is_birthday',
   'timezone',
   'updated_at',
+  // The Google side, and only the two columns the client owns: which calendar
+  // this event belongs to, and whether it is synced at all. The event id, the
+  // etag and the sync state are written by the sync service — a browser that
+  // could set them could claim somebody else's Google event as its own.
+  'sync_enabled',
+  'google_calendar_id',
 ]
 
 export function pickWritableEvent(patch) {

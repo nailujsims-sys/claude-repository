@@ -20,9 +20,10 @@ Durchlauf ändert nichts und zerstört nichts.
 | `0002_tasks.sql` | Tabelle `tasks`, Indizes, Constraints, RLS + Policies |
 | `0003_events.sql` | Tabelle `events`, Indizes, Constraints, RLS + Policies |
 | `0004_realtime.sql` | `tasks` und `events` in die Publikation `supabase_realtime` aufnehmen |
+| `0005_google_calendar.sql` | Google-Kalender: `google_connections`, `google_credentials` (für Clients gesperrt), `google_calendars`, `google_channels`, `google_event_tombstones`, die Google-Spalten an `events`, die Sync-Trigger, RLS + Grants |
 
-**Weg A — Dashboard (kein Werkzeug nötig).** SQL Editor öffnen, die drei
-Dateien nacheinander einfügen und ausführen.
+**Weg A — Dashboard (kein Werkzeug nötig).** SQL Editor öffnen, die Dateien
+nacheinander einfügen und ausführen.
 
 **Weg B — Supabase CLI (bevorzugt, sobald verfügbar).**
 
@@ -93,7 +94,10 @@ Nach jeder Migration ausführen.
 Damit ein zweites geöffnetes Gerät eine Änderung mitbekommt, muss die Tabelle in
 der Publikation `supabase_realtime` stehen — Tabelle anlegen und Realtime dafür
 freischalten sind zwei getrennte Schritte. `0004_realtime.sql` erledigt das für
-`tasks` und `events`. Prüfen:
+`tasks` und `events`, `0005_google_calendar.sql` zusätzlich für
+`google_connections` und `google_calendars` — damit ein Sync, der auf dem Handy
+fertig wird, auch auf dem Mac zu sehen ist. Die Zugangsdaten, die Push-Kanäle
+und die Grabsteine werden bewusst **nicht** veröffentlicht. Prüfen:
 
 ```sql
 select schemaname, tablename from pg_publication_tables
@@ -122,7 +126,20 @@ eine eigene Migration mit demselben Muster:
 alter publication supabase_realtime add table public.<tabelle>;
 ```
 
-## 6. Eine neue persönliche Tabelle anlegen
+## 6. Google Kalender
+
+Die Verbindung zu Google braucht außerhalb dieses Repositorys ein
+Google-Cloud-Projekt und drei Secrets. Alles dazu — Scopes, Redirect-URI,
+Secrets, Ausrollen der Edge Functions, Push-Benachrichtigungen — steht in
+[`GOOGLE-KALENDER.md`](GOOGLE-KALENDER.md).
+
+Die eine Regel, die hier wiederholt gehört: die Google-Tokens liegen in
+`google_credentials`, und `anon` wie `authenticated` haben auf diese Tabelle
+**kein Recht** — kein SELECT, keine Policy, nichts. Nur die Edge Functions
+(`service_role`) kommen daran. `tests/rls.sql` beweist genau das, zusammen mit
+der Nutzerisolation der übrigen Google-Tabellen.
+
+## 7. Eine neue persönliche Tabelle anlegen
 
 `0001_foundation.sql` beschreibt das Muster im Kopfkommentar: `id`, `user_id`
 mit Foreign Key auf `auth.users`, `created_at`/`updated_at`, Index auf

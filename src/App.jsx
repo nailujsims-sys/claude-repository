@@ -5,6 +5,7 @@ import { ToastProvider } from './context/ToastContext'
 import { UIProvider } from './context/UIContext'
 import { TasksProvider } from './context/TasksContext'
 import { EventsProvider } from './context/EventsContext'
+import { GoogleProvider } from './context/GoogleContext'
 
 import BottomNav from './components/BottomNav'
 import Sidebar from './components/Sidebar'
@@ -19,6 +20,8 @@ import TasksList from './screens/TasksList'
 import TaskDetail from './screens/TaskDetail'
 import Kalender from './screens/Kalender'
 import Mehr from './screens/Mehr'
+import Profil from './screens/Profil'
+import ProfilGoogle from './screens/ProfilGoogle'
 import Version from './screens/Version'
 import Login from './screens/Login'
 import NewPassword from './screens/NewPassword'
@@ -78,7 +81,12 @@ function Gate() {
     <UIProvider>
       <TasksProvider>
         <EventsProvider>
-          <AppShell />
+          {/* Inside the signed-in branch like every other data provider, for
+              the same reason: it reads personal rows and must never run
+              without a user id. */}
+          <GoogleProvider>
+            <AppShell />
+          </GoogleProvider>
         </EventsProvider>
       </TasksProvider>
     </UIProvider>
@@ -100,6 +108,8 @@ function AppShell() {
           <Route path="/aufgaben/:id" element={<TaskDetail />} />
           <Route path="/kalender" element={<Kalender />} />
           <Route path="/mehr" element={<Mehr />} />
+          <Route path="/profil" element={<Profil />} />
+          <Route path="/profil/google-kalender" element={<ProfilGoogle />} />
           <Route path="/version" element={<Version />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

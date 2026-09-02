@@ -63,12 +63,19 @@ function makeDom(hash, seed = {}, options = {}) {
     makeBackend({
       tasks: seed.tasks ?? seedTasks(),
       events: seed.events ?? seedEvents(),
+      // Off by default: an account without a Google connection is the state
+      // every other section in this file runs in, and the app has to be
+      // unchanged there.
+      googleConnections: seed.googleConnections ?? [],
+      googleCalendars: seed.googleCalendars ?? [],
+      functions: seed.functions ?? {},
       password: TEST_PASSWORD,
       failTable: seed.failTable ?? null,
       // Every committed row change is announced to the Realtime hub, the way
       // Postgres announces one through the WAL.
       onChange: hub.emit,
     })
+
 
   // jsdom ships no fetch, so the app gets Node's classes plus the stub.
   window.fetch = (...args) => backend.fetch(...args)
@@ -642,6 +649,154 @@ async function run() {
     }
   }
 
+  // 5b) The Google integration in the running app. Three properties, in the
+  //     order they matter:
+  //
+  //       a) without a connection the Termin-Dialog is exactly the dialog it
+  //          has always been — no calendar row, no sync switch;
+  //       b) with one, both appear at the *foot* of the same sheet, with the
+  //          configured default calendar already chosen;
+  //       c) the settings screen shows the account, the calendars and their
+  //          rights, and never asks the database for a token.
+  {
+    const window = makeDom('#/kalender')
+    mount(window, code, 'EventFormNoGoogle')
+    await wait(300)
+    click(window, (el) => el.getAttribute('aria-label') === 'Neu erstellen')
+    await wait(120)
+    click(window, (el) => el.textContent.trim() === 'Neuer Termin')
+    await wait(200)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== EventForm ohne Google ===\n  ${text.slice(0, 120)}`)
+    if (text.includes('Mit Google Kalender synchronisieren'))
+      errors.push('[EventFormNoGoogle] the sync switch showed without a connection')
+    // The dialog itself is untouched.
+    for (const needle of ['Terminart', 'Ganztägig', 'Wiederholen', 'Erinnerung']) {
+      if (!text.includes(needle)) errors.push(`[EventFormNoGoogle] missing "${needle}"`)
+    }
+  }
+
+  const GOOGLE_SEED = {
+    googleConnections: [{ default_calendar_id: 'privat@gmail.com' }],
+    googleCalendars: [
+      { google_calendar_id: 'privat@gmail.com', summary: 'Privat', is_primary: true, access_role: 'owner', background_color: '#4a80ff', is_selected: true },
+      { google_calendar_id: 'familie@group.calendar.google.com', summary: 'Familie', access_role: 'writer', background_color: '#0b8043', is_selected: true },
+      { google_calendar_id: 'de.german#holiday@group.v.calendar.google.com', summary: 'Feiertage in Deutschland', access_role: 'reader', kind: 'holiday', background_color: '#616161', is_selected: true },
+      { google_calendar_id: 'addressbook#contacts@group.v.calendar.google.com', summary: 'Geburtstage', access_role: 'reader', kind: 'birthday', background_color: '#e67c73', is_selected: true },
+    ],
+  }
+
+  {
+    const window = makeDom('#/kalender', GOOGLE_SEED)
+    mount(window, code, 'EventFormGoogle')
+    await wait(350)
+    click(window, (el) => el.getAttribute('aria-label') === 'Neu erstellen')
+    await wait(120)
+    click(window, (el) => el.textContent.trim() === 'Neuer Termin')
+    await wait(250)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== EventForm mit Google ===\n  ${text.slice(-170)}`)
+    if (!text.includes('Mit Google Kalender synchronisieren'))
+      errors.push('[EventFormGoogle] the sync switch is missing')
+    if (!text.includes('Kalender'))
+      errors.push('[EventFormGoogle] the calendar row is missing')
+    // The default calendar is pre-selected, so creating a Termin needs no
+    // extra decision.
+    if (!text.includes('Privat'))
+      errors.push('[EventFormGoogle] the default calendar is not pre-selected')
+    // The switch defaults to on.
+    const sync = [...window.document.querySelectorAll('[role="switch"]')].pop()
+    if (sync?.getAttribute('aria-checked') !== 'true')
+      errors.push('[EventFormGoogle] the sync switch does not default to on')
+
+    // And the calendar picker offers only the calendars that can actually
+    // take a new event: not the holidays, not the birthdays.
+    if (!click(window, (el) => el.textContent.includes('Kalender') && el.textContent.includes('Privat')))
+      errors.push('[EventFormGoogle] the calendar row does not open')
+    await wait(150)
+    const opened = txt(window)
+    if (!opened.includes('Familie'))
+      errors.push('[EventFormGoogle] a writable calendar is missing from the picker')
+    if (opened.includes('Feiertage in Deutschland'))
+      errors.push('[EventFormGoogle] a read-only holiday calendar was offered as a target')
+    if (opened.includes('Geburtstage'))
+      errors.push('[EventFormGoogle] the birthday calendar was offered as a target')
+  }
+
+  {
+    const window = makeDom('#/profil/google-kalender', GOOGLE_SEED)
+    mount(window, code, 'ProfilGoogle')
+    await wait(400)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== Profil/Google Kalender ===\n  ${text.slice(0, 220)}`)
+    for (const needle of [
+      'julian@example.test',
+      'Verbunden',
+      'Jetzt synchronisieren',
+      'Kalenderliste neu laden',
+      'Standardkalender für neue Termine',
+      'Synchronisierte Kalender',
+      'Verbindung trennen',
+    ]) {
+      if (!text.includes(needle)) errors.push(`[ProfilGoogle] missing "${needle}"`)
+    }
+    // Google's own rights, shown as Google reports them.
+    if (!text.includes('Nur lesen'))
+      errors.push('[ProfilGoogle] a read-only calendar is not marked as read-only')
+    if (!text.includes('über Google Kontakte'))
+      errors.push('[ProfilGoogle] the birthday calendar does not say where it is edited')
+
+    // The security property this whole feature rests on: the browser never
+    // asks for the token table, because it has no right to it.
+    const paths = window.__backend.calls.map((c) => c.path)
+    if (paths.some((p) => p.includes('google_credentials')))
+      errors.push('[ProfilGoogle] the client requested the credentials table')
+    if (paths.some((p) => p.includes('google_channels')))
+      errors.push('[ProfilGoogle] the client requested the push-channel table')
+    // And every write goes through the Edge Function, never straight to a table.
+    const writes = window.__backend.calls.filter(
+      (c) => c.method !== 'GET' && /google_(connections|calendars)/.test(c.path)
+    )
+    if (writes.length) errors.push('[ProfilGoogle] the client wrote to a Google table directly')
+  }
+
+  {
+    // Disconnecting: one confirmation, and it goes through the function.
+    const window = makeDom('#/profil/google-kalender', GOOGLE_SEED)
+    mount(window, code, 'ProfilGoogleTrennen')
+    await wait(400)
+    if (!click(window, (el) => el.textContent.trim() === 'Verbindung trennen'))
+      errors.push('[ProfilGoogleTrennen] the disconnect button is missing')
+    await wait(200)
+    let text = txt(window)
+    // The dialog has to say that nothing is deleted — that is the promise.
+    if (!text.includes('bleiben in dieser App erhalten'))
+      errors.push('[ProfilGoogleTrennen] the confirmation does not say the events are kept')
+    if (!click(window, (el) => el.textContent.trim() === 'Trennen'))
+      errors.push('[ProfilGoogleTrennen] the confirm button is missing')
+    await wait(300)
+    window.__restoreConsole?.()
+    const called = window.__backend.functionCalls.find((c) => c.action === 'disconnect')
+    console.log(`\n=== Profil/Google trennen ===\n  Funktionsaufrufe=${window.__backend.functionCalls.map((c) => c.action).join(',')}`)
+    if (!called) errors.push('[ProfilGoogleTrennen] disconnect did not reach the Edge Function')
+  }
+
+  {
+    // Profil itself: the shape of the screen, and the way into the integration.
+    const window = makeDom('#/profil', GOOGLE_SEED)
+    mount(window, code, 'Profil')
+    await wait(350)
+    window.__restoreConsole?.()
+    const text = txt(window)
+    console.log(`\n=== Profil ===\n  ${text.slice(0, 200)}`)
+    for (const needle of ['Persönliche Daten', 'Integrationen', 'Google Kalender', 'Konto', 'Abmelden']) {
+      if (!text.includes(needle)) errors.push(`[Profil] missing "${needle}"`)
+    }
+  }
+
   // 6) Event detail: tap a seeded multi-day event in the day view and confirm
   //    the read-only sheet with the task-identical actions renders.
   {
@@ -754,7 +909,13 @@ async function run() {
 
     // Escape closes it, the page unlocks and the focus goes back to the Plus.
     press(window, 'Escape')
-    await wait(450)
+    // The exit has no `transitionend` to ride in jsdom, so it always falls back
+    // to its timer: 300ms of nominal duration plus FALLBACK_SLACK, then a React
+    // commit. 450ms used to clear that by 30ms, which is not a margin — it is a
+    // coin flip that came up heads while the app was smaller. Give the whole
+    // budget room to run rather than tuning it again next time a provider is
+    // added.
+    await wait(800)
     if (doc.querySelector('.ov-root'))
       errors.push('[Overlay] Escape did not close the sheet')
     if (locked(window)) errors.push('[Overlay] the page stayed locked after the sheet closed')
@@ -2040,8 +2201,11 @@ async function run() {
     window.__restoreConsole?.()
     const after = hub.joinedTopics().length
     console.log(`\n=== Realtime (Abmelden) ===\n  Kanäle vorher=${before} nachher=${after}`)
-    if (before !== 2)
-      errors.push(`[RealtimeUnmount] expected two channels while signed in, got ${before}`)
+    // tasks, events, google_connections, google_calendars — one channel per
+    // live table. The number is asserted rather than "> 0" because a table
+    // that quietly stops being live is exactly the bug this section exists for.
+    if (before !== 4)
+      errors.push(`[RealtimeUnmount] expected four channels while signed in, got ${before}`)
     if (after !== 0)
       errors.push(`[RealtimeUnmount] ${after} channel(s) survived the sign-out`)
   }
