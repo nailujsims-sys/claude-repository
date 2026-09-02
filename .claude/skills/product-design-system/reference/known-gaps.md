@@ -2,8 +2,8 @@
 
 Status: **the mandatory G phase is finished** (2026-08/09). G1–G5, G7, G8,
 G10–G22 are done or deliberately closed; nothing on this list blocks new
-product work. What remains are two polish-phase candidates, G6 and G9, which
-§26 wants judged after real use rather than built now.
+product work. What remains are three polish-phase candidates — G6, G9 and G23 —
+which §26 wants judged after real use rather than built now.
 
 This file records where the existing implementation deviates from
 `design-system-full.md`. It exists so future sessions do not "discover" the same
@@ -19,8 +19,8 @@ issues again and do not start an unrequested refactor.
 
 ## Polish-phase candidates (§26)
 
-Not open gaps and not work items: both are known, both were measured, and both
-are deliberately left until the app has been used in real life. Neither is
+Not open gaps and not work items: each is known, each was measured, and each is
+deliberately left until the app has been used in real life. None of them is
 allowed to justify a refactor on the way past.
 
 ### G6 · Swipe navigation is discrete, not continuous — §10, §12
@@ -44,6 +44,26 @@ and turns accent), `press-fade` covers the press, and reduced motion is handled.
 Nothing is missing, only a refinement. Fix it opportunistically when
 `StarButton` is being edited anyway — an `animationend` instead of the timer —
 never as a task of its own.
+
+### G23 · `TaskRow`'s two controls are 22px tap targets — §22
+Measured on the Heute screen at 320–768px (2026-09): the smallest interactive
+box inside the cards is 22×22 — `TaskRow`'s completion circle, and 30×30 for the
+star next to it (a 22px glyph in a `p-1` button). §22 asks for "sufficiently
+large interactive targets", and the platform guidance behind it is 44px.
+
+This is not the Heute screen's doing: it is the same row the Aufgaben list and
+the calendar's day list render, so the number is app-wide, and it was measured
+here only because the screen was being measured anyway.
+
+*Why not now:* the row is 60px tall and the whole row is already a target — it
+opens the task — so a near-miss on the circle is never destructive and never
+silent; it opens the thing the user was aiming at. Growing the two controls to
+44px means either a taller row everywhere (the Aufgaben list is a list of these,
+so it changes the density of the app's busiest screen) or invisible hit areas
+that overlap the row's own tap and would need the press controller taught which
+one wins. That is a change to the shared row, checked against three modules, for
+a fix nobody has reported needing — §26 material, and Rule 0 says it waits until
+`TaskRow` is being edited for its own reasons.
 
 ## Explicitly conformant (do not "fix")
 

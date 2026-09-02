@@ -7,7 +7,10 @@ const UIContext = createContext(null)
 export function UIProvider({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [actionSheetOpen, setActionSheetOpen] = useState(false)
-  // taskForm: null | { mode: 'create' | 'edit', taskId?: string }
+  // taskForm: null | { mode: 'create' | 'edit', taskId?: string, due?: Due }
+  // `due` pre-fills a create with { due_type, due_date } — used where the
+  // creation happens inside a dated list (the Heute screen), so the new task
+  // lands in the list it was created from instead of arriving without a date.
   const [taskForm, setTaskForm] = useState(null)
   // eventForm: null | { mode: 'create' | 'edit', eventId?: string }
   const [eventForm, setEventForm] = useState(null)

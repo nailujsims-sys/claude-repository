@@ -1403,6 +1403,149 @@ async function run() {
     console.log(`\n=== Menu (TaskDetail-Popover) ===\n  enter=${!!panel()} escape+focus back=${doc.activeElement === trigger() || !!panel()} reopen=${!!panel()}`)
   }
 
+  // 11) The Heute screen. Everything below is behaviour the pure tests in
+  //     tools/homeLogic.mjs cannot see: that the screen mounts its two live
+  //     cards, that each list scrolls in its own box rather than lengthening
+  //     the page, that the scope switch moves only the task list, that a task
+  //     can be completed from here with the way back the rest of the app
+  //     offers, and that an event opens the same detail sheet the calendar
+  //     opens. jsdom does no layout, so what is checked is the structure the
+  //     scrolling follows from — the measured behaviour is verified in a
+  //     browser, not here.
+  {
+    const window = makeDom('#/')
+    mount(window, code, 'Heute')
+    await wait(300)
+    const doc = window.document
+    const card = (id) => doc.querySelector(`[data-home-card="${id}"]`)
+    const scroller = (id) => card(id)?.querySelector('.overscroll-contain')
+    const rows = (sel) => [...doc.querySelectorAll(sel)]
+    const circles = () =>
+      rows('button').filter((el) => el.getAttribute('aria-label') === 'Als erledigt markieren')
+    const taskTitles = () =>
+      circles().map((el) => el.parentElement?.nextElementSibling?.textContent?.trim())
+
+    // ── the lead: greeting, date, quote ──────────────────────────────────
+    const text = txt(window)
+    const greeting = ['Guten Morgen', 'Guten Tag', 'Guten Abend'].find((g) => text.includes(g))
+    if (!greeting) errors.push('[Heute] no time-of-day greeting was rendered')
+    const quoteEl = doc.querySelector('.line-clamp-2')
+    if (!quoteEl) errors.push('[Heute] the motivation line is not clamped to two lines')
+    const quote = quoteEl?.textContent.trim() || ''
+    if (quote.length < 20) errors.push('[Heute] the motivation line is empty')
+
+    // ── two cards, two independent scroll boxes ──────────────────────────
+    if (!card('agenda')) errors.push('[Heute] the Termine card is missing')
+    if (!card('tasks')) errors.push('[Heute] the Aufgaben card is missing')
+    if (!text.includes('Termine heute')) errors.push('[Heute] the Termine heading is missing')
+    for (const id of ['agenda', 'tasks']) {
+      const box = scroller(id)
+      if (!box) {
+        errors.push(`[Heute] the ${id} list is not a scroll box of its own`)
+        continue
+      }
+      // A height budget, or the card grows with the data and the page with it.
+      if (!/max-height/.test(box.getAttribute('style') || ''))
+        errors.push(`[Heute] the ${id} list has no height budget`)
+      // Its own box: the scroll must not chain into the page behind it.
+      if (!box.className.includes('overflow-y-auto'))
+        errors.push(`[Heute] the ${id} list does not scroll`)
+    }
+    const a = scroller('agenda')
+    const t = scroller('tasks')
+    if (a && t && (a.contains(t) || t.contains(a)))
+      errors.push('[Heute] the two lists share one scroll container')
+
+    // ── the agenda is the whole day, not a preview ───────────────────────
+    // The local seed puts two all-day bars and six timed events on today.
+    const agendaRows = rows('[data-agenda-row]').length
+    if (agendaRows < 8)
+      errors.push(`[Heute] the agenda shows ${agendaRows} of the seeded day's 8 events`)
+    if (!text.includes(`${agendaRows} Termine`))
+      errors.push('[Heute] the Termine count does not match the rows in the list')
+    // The list opens on the part of the day that is still ahead — unless the
+    // whole day is over, in which case there is nothing to open on.
+    const nextRows = rows('[data-agenda-next]').length
+    if (nextRows > 1) errors.push('[Heute] more than one agenda row is marked as the next one')
+
+    // ── the scope switch moves the task list and nothing else ────────────
+    const scopeButton = (label) =>
+      [...(card('tasks')?.querySelectorAll('button') || [])].find(
+        (el) => el.textContent.trim() === label
+      )
+    if (scopeButton('Heute')?.getAttribute('aria-pressed') !== 'true')
+      errors.push('[Heute] the task scope does not start on Heute')
+    const today = taskTitles()
+    scopeButton('Diese Woche')?.dispatchEvent(
+      new window.MouseEvent('click', { bubbles: true, cancelable: true })
+    )
+    await wait(60)
+    const week = taskTitles()
+    if (scopeButton('Diese Woche')?.getAttribute('aria-pressed') !== 'true')
+      errors.push('[Heute] the switch does not report the selected scope')
+    if (week.length < today.length)
+      errors.push('[Heute] Diese Woche shows fewer tasks than Heute')
+    for (const title of today) {
+      if (!week.includes(title))
+        errors.push(`[Heute] "${title}" disappeared when the scope was widened`)
+    }
+    if (rows('[data-agenda-row]').length !== agendaRows)
+      errors.push('[Heute] switching the task scope changed the agenda')
+    scopeButton('Heute')?.dispatchEvent(
+      new window.MouseEvent('click', { bubbles: true, cancelable: true })
+    )
+    await wait(60)
+    if (taskTitles().join() !== today.join())
+      errors.push('[Heute] switching back did not restore the Heute list')
+
+    // ── completing a task from here, with the way back ───────────────────
+    const before = taskTitles()
+    circles()[0]?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(150)
+    const after = taskTitles()
+    if (after.length !== before.length - 1)
+      errors.push('[Heute] completing a task did not take its row off the screen')
+    if (!undoButton(window))
+      errors.push('[Heute] completing a task from Heute offers no undo')
+    undoButton(window)?.dispatchEvent(
+      new window.MouseEvent('click', { bubbles: true, cancelable: true })
+    )
+    await wait(150)
+    if (taskTitles().length !== before.length)
+      errors.push('[Heute] the undo did not bring the task back')
+
+    // ── an event opens the app's own detail sheet ────────────────────────
+    rows('[data-agenda-row]')[0]?.dispatchEvent(
+      new window.MouseEvent('click', { bubbles: true, cancelable: true })
+    )
+    await wait(300)
+    window.__restoreConsole?.()
+    if (!doc.querySelector('.ov-root'))
+      errors.push('[Heute] tapping an event did not open the detail sheet')
+    console.log(
+      `\n=== Heute (Startseite) ===\n  greeting=${greeting} agenda=${agendaRows} heute=${today.length} woche=${week.length} sheet=${!!doc.querySelector('.ov-root')}`
+    )
+  }
+
+  // 11b) The quote is a function of the calendar day: leaving the screen and
+  //      coming back — a remount, which is what a reload is here — must show
+  //      the same line, not a fresh draw.
+  {
+    const readQuote = async (hash) => {
+      const window = makeDom(hash)
+      mount(window, code, 'HeuteQuote')
+      await wait(250)
+      window.__restoreConsole?.()
+      return window.document.querySelector('.line-clamp-2')?.textContent.trim() || ''
+    }
+    const first = await readQuote('#/')
+    const second = await readQuote('#/')
+    if (!first) errors.push('[HeuteQuote] no quote was rendered')
+    if (first !== second)
+      errors.push(`[HeuteQuote] a reload changed the quote: "${first}" → "${second}"`)
+    console.log(`\n=== HeuteQuote (stabil über einen Reload) ===\n  stable=${first === second}`)
+  }
+
   console.log('\n--- result ---')
   if (errors.length) {
     console.log('FAILURES:')
