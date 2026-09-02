@@ -1,7 +1,7 @@
 {
   "name": "mind-whiteboard",
   "private": true,
-  "version": "1.9.2",
+  "version": "1.9.3",
   "type": "module",
   "description": "Mind Whiteboard — a personal productivity app (Startseite + Aufgaben module).",
   "scripts": {

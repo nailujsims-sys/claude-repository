@@ -271,18 +271,31 @@ export default function TasksList() {
             content row rather than in the global bar, so the bar stays the same
             on every page (see src/components/TopBar.jsx).
 
-            The chip row scrolls horizontally, which also clips it vertically —
-            so 4px of the top margin is carried as padding instead, leaving room
-            for a chip's focus ring inside the scroll box. Same 12px above the
-            chips as before. The two buttons stay outside the scroll box, so
-            they never scroll away. */}
+            The four categories have to be readable at a glance on a phone, so
+            the row is measured, not guessed: at `px-4`/`gap-2` the chips need
+            269px and a 390px screen offers 262 — "Arbeit" was cut off on first
+            paint, which reads as a rendering fault rather than as "there is
+            more to the right". `px-3` is the padding Home's chips already use
+            and the 6px/4px gaps are the smallest steps on the scale; together
+            they bring the row to 231px, so all four fit from 360px upwards with
+            room to spare. Type size and the 36×36 targets are untouched — this
+            is spacing, not shrinking.
+
+            Below 360px the row still scrolls, which is the honest answer: four
+            German category names plus two actions do not fit on a 320px screen
+            without making something too small to hit.
+
+            The scroll box also clips vertically, so 4px of the top margin is
+            carried as padding instead, leaving room for a chip's focus ring
+            inside it. The two buttons stay outside the box, so they never
+            scroll away. */}
         <div className="mt-2 flex items-center gap-2 px-5 pb-3">
-          <div className="no-scrollbar flex min-w-0 flex-1 gap-2 overflow-x-auto pt-1">
+          <div className="no-scrollbar flex min-w-0 flex-1 gap-1.5 overflow-x-auto pt-1">
             {TABS.map((tab) => (
               <button
                 key={tab}
                 onClick={() => setCategory(tab)}
-                className={`press-tint shrink-0 rounded-chip px-4 py-1.5 text-[14px] font-medium transition-colors ${
+                className={`press-tint shrink-0 rounded-chip px-3 py-1.5 text-[14px] font-medium transition-colors ${
                   category === tab ? 'bg-accent text-white' : 'text-text-secondary'
                 }`}
               >
@@ -290,19 +303,21 @@ export default function TasksList() {
               </button>
             ))}
           </div>
-          <IconButton
-            onClick={() => {
-              setSearchOpen((v) => !v)
-              if (searchOpen) setSearch('')
-            }}
-            aria-label="Suche"
-            className="text-text-primary"
-          >
-            <Search size={22} />
-          </IconButton>
-          <IconButton onClick={() => setFilterOpen(true)} aria-label="Filter" className="text-text-primary">
-            <SlidersHorizontal size={22} />
-          </IconButton>
+          <div className="flex shrink-0 items-center gap-1">
+            <IconButton
+              onClick={() => {
+                setSearchOpen((v) => !v)
+                if (searchOpen) setSearch('')
+              }}
+              aria-label="Suche"
+              className="text-text-primary"
+            >
+              <Search size={22} />
+            </IconButton>
+            <IconButton onClick={() => setFilterOpen(true)} aria-label="Filter" className="text-text-primary">
+              <SlidersHorizontal size={22} />
+            </IconButton>
+          </div>
         </div>
       </div>
 
