@@ -65,7 +65,11 @@ nothing (see *Supabase* below).
   writes to Google Contacts, where Google actually keeps it, and that gets its
   own opt-in — connecting a calendar never asks for the address book.
   Recurring appointments stay one rule, not three hundred rows. The newest
-  change wins, whichever side made it. Every appointment carries a switch: off
+  change wins, whichever side made it. The sync runs **by itself, about every
+  five minutes** — a schedule in the database calls the same Edge Function the
+  button calls, so it works whether or not the app is open, and a lock on the
+  connection makes sure two runs never overlap. *Jetzt synchronisieren* is
+  unchanged and still immediate. Every appointment carries a switch: off
   means it lives only here, and Google never sees it. **Nothing about a Google
   event is a second kind of event** — it is a row in the same `events` table
   with an external identity, so every screen, search and drag in the calendar
@@ -110,7 +114,8 @@ npm run smoke        # headless runtime smoke test (jsdom) across all routes
 npm run test:logic   # pure-logic tests: drag/resize math, search, timezone-safety,
                      # greeting boundaries, the quote-per-day rotation, and the
                      # Google sync (mapping, conflicts, two-way create/update/
-                     # delete, DST, duplicates) against a fake Google
+                     # delete, DST, duplicates, the 5-minute automatic run and
+                     # its lock) against a fake Google
 npm run test:rls     # the RLS policies against a throwaway Postgres
 ```
 

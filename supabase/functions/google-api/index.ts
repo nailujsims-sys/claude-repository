@@ -12,7 +12,13 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
 import { createStore } from '../_shared/store.js'
 import { createGoogleClient, consentUrl, SCOPES, GoogleError } from '../_shared/google.js'
 import { signState } from '../_shared/state.js'
-import { runSync, refreshCalendars } from '../_shared/sync.js'
+import { refreshCalendars } from '../_shared/sync.js'
+import {
+  runGuardedSync,
+  runAutoSyncForAll,
+  AUTO,
+  MANUAL,
+} from '../_shared/autoSync.js'
 import { json, fail, preflight, googleConfig } from '../_shared/http.js'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
@@ -36,6 +42,19 @@ async function currentUser(req: Request) {
   const { data, error } = await admin.auth.getUser(token)
   if (error) return null
   return data.user ?? null
+}
+
+// Der Cron-Lauf hat keinen Nutzer — er hat den Service-Role-Key. Der Vergleich
+// ist konstant in der Laufzeit, damit die Antwortzeit nichts über den Schlüssel
+// verrät, und er vergleicht gegen genau den einen Schlüssel, den diese
+// Deployment-Umgebung ohnehin schon besitzt. Ein Client-JWT kann das nicht
+// erfüllen, ein fremdes Service-JWT auch nicht.
+function isServiceRole(req: Request) {
+  const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '')
+  if (!token || !SERVICE_KEY || token.length !== SERVICE_KEY.length) return false
+  let diff = 0
+  for (let i = 0; i < token.length; i += 1) diff |= token.charCodeAt(i) ^ SERVICE_KEY.charCodeAt(i)
+  return diff === 0
 }
 
 // A Google client for this user, wired so a refreshed token is written back
@@ -62,6 +81,42 @@ async function clientFor(userId: string) {
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return preflight()
   if (req.method !== 'POST') return fail('Nur POST.', 405)
+
+  // Der Zeitplan meldet sich vor der Nutzerprüfung: er ist keiner.
+  if (isServiceRole(req)) {
+    if (!config.ready) return fail('Google-Integration nicht konfiguriert.', 503)
+    let body: Record<string, unknown> = {}
+    try {
+      body = await req.json()
+    } catch {
+      body = {}
+    }
+    if (String(body.action ?? '') !== 'sync-all') {
+      return fail('Der Zeitplan kennt nur die Aktion sync-all.', 400)
+    }
+    const summary = await runAutoSyncForAll({
+      store,
+      now: Date.now,
+      randomId,
+      clientFor,
+      contextFor: async (userId: string) => ({
+        userTimeZone: await store.getTimeZone(userId),
+        pushAddress: config.pushAddress,
+      }),
+      onError: async (userId: string, error: unknown) => {
+        console.error('google auto-sync', userId, error)
+        if (error instanceof GoogleError && error.needsReauth) {
+          await store
+            .updateConnection(userId, {
+              status: 'needs_reauth',
+              last_error: 'Google-Verbindung abgelaufen.',
+            })
+            .catch(() => {})
+        }
+      },
+    })
+    return json(summary)
+  }
 
   const user = await currentUser(req)
   if (!user) return fail('Nicht angemeldet.', 401)
@@ -142,10 +197,13 @@ Deno.serve(async (req: Request) => {
         if (selected) {
           const google = await clientFor(user.id)
           if (google) {
-            await runSync(
+            // Auch dieser Import geht durch das Schloss: er darf sich nicht
+            // mit einem gerade laufenden automatischen Lauf überschneiden.
+            await runGuardedSync(
               { google, store, now: Date.now, randomId },
               {
                 userId: user.id,
+                trigger: MANUAL,
                 userTimeZone: await store.getTimeZone(user.id),
                 pushAddress: config.pushAddress,
                 calendarIds: [calendarId],
@@ -171,18 +229,24 @@ Deno.serve(async (req: Request) => {
         return json({ connection })
       }
 
-      case 'sync': {
+      // 'sync' ist der Knopf, 'auto-sync' der Timer der App. Beide laufen durch
+      // dieselbe Maschine; der einzige Unterschied ist, wie geduldig sie ist:
+      // der automatische Lauf tritt beiseite, wenn gerade erst einer lief oder
+      // gerade einer läuft, der manuelle nur, wenn wirklich einer läuft.
+      case 'sync':
+      case 'auto-sync': {
         const google = await clientFor(user.id)
         if (!google) return fail('Keine Google-Verbindung.', 409)
-        const result = await runSync(
+        const { result, skipped } = await runGuardedSync(
           { google, store, now: Date.now, randomId },
           {
             userId: user.id,
+            trigger: action === 'auto-sync' ? AUTO : MANUAL,
             userTimeZone: await store.getTimeZone(user.id),
             pushAddress: config.pushAddress,
           }
         )
-        return json({ result, connection: await store.getConnection(user.id) })
+        return json({ result, skipped, connection: await store.getConnection(user.id) })
       }
 
       // Ends the connection and keeps the data. The events stay, as app-only

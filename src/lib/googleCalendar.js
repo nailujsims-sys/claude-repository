@@ -16,6 +16,14 @@ import {
 
 export { calendarWritability, canCreateEventsIn, isReadOnly, safeHexColor }
 
+// Und aus demselben Grund kommt der Takt des automatischen Syncs von dort, wo
+// der Server ihn anwendet — nicht als zweite Zahl in der App.
+export {
+  AUTO_SYNC_INTERVAL_MS,
+  AUTO_SYNC_MIN_GAP_MS,
+  shouldClientAutoSync,
+} from '../../supabase/functions/_shared/autoSyncPolicy.js'
+
 // The app's own accent, for an event that belongs to no Google calendar. It is
 // the colour the calendar has always drawn events in, so nothing about an
 // app-only event changes just because the integration exists.

@@ -19,6 +19,8 @@ nicht konfiguriert ist.
 Google  ──(Push-Benachrichtigung)──►  Edge Function google-hooks
                                             │
 Client ──(JWT)──► Edge Function google-api ─┤
+                                            │
+pg_cron (alle 5 Min) ──(pg_net)────────────►┤
                                             ▼
                                    Supabase (Postgres)
                                             │
@@ -26,6 +28,10 @@ Client ──(JWT)──► Edge Function google-api ─┤
                                             ▼
                                    alle offenen Geräte
 ```
+
+Alle drei Pfeile münden in denselben Lauf (`_shared/sync.js`). Es gibt genau
+eine Sync-Implementierung; der Zeitplan aus Abschnitt 6 ist nur ein weiterer
+Auslöser dafür.
 
 Der Browser spricht **nie** mit Google. Er liest zwei Tabellen
 (`google_connections`, `google_calendars` — beide ohne Zugangsdaten) und ruft
@@ -118,33 +124,85 @@ will, braucht also eine eigene Domain, die auf
 `GOOGLE_PUSH_ENDPOINT` ein. Ist das Secret leer, werden schlicht keine Kanäle
 geöffnet.
 
-## 6. Regelmäßiger Sync (empfohlen, wenn kein Push)
+## 6. Automatischer Sync alle 5 Minuten
 
-Ein Zeitplan als Sicherheitsnetz. Im SQL-Editor, mit einem eigenen Wert für
-`<SERVICE_ROLE_KEY>` — **nicht** ins Repository schreiben:
+Der Sync läuft von selbst, ungefähr alle fünf Minuten. Es ist derselbe Lauf,
+den auch *Jetzt synchronisieren* auslöst — dieselbe Edge Function, dieselbe
+Sync-Logik, dieselben Konfliktregeln. Automatisiert ist nur der Auslöser.
 
-```sql
-create extension if not exists pg_cron;
-create extension if not exists pg_net;
+### Wie es zusammenhängt
 
-select cron.schedule(
-  'google-kalender-sync', '*/15 * * * *',
-  $$
-  select net.http_post(
-    url     := 'https://itnhcnyawiktvajqciqw.supabase.co/functions/v1/google-api',
-    headers := jsonb_build_object(
-                 'Content-Type', 'application/json',
-                 'Authorization', 'Bearer <SERVICE_ROLE_KEY>'),
-    body    := jsonb_build_object('action', 'sync')
-  );
-  $$
-);
+```
+pg_cron (*/5 * * * *)
+   └─► public.google_auto_sync_tick()      (Migration 0007)
+          └─► pg_net → google-api  { "action": "sync-all" }
+                 └─► für jede Verbindung: runSync()   ← derselbe Lauf wie der Knopf
 ```
 
-> Achtung: `google-api` leitet den Nutzer aus dem JWT ab. Ein Service-Role-JWT
-> hat keinen Nutzer, deshalb ist dieser Aufruf für ein Konto gedacht, bei dem
-> das JWT eines Nutzers verwendet wird — für ein Ein-Personen-Setup ist der
-> einfachere Weg, den Bereich gelegentlich zu öffnen oder Push einzurichten.
+Der Zeitplan ist **serverseitig**: er braucht kein offenes Fenster, kein
+angemeldetes Gerät und keinen Browser. Zusätzlich stößt eine geöffnete App
+denselben Lauf im selben Takt an (Aktion `auto-sync`) — als Netz für den Fall,
+dass der Zeitplan unten noch nicht eingerichtet ist.
+
+Damit sich daraus keine doppelten Läufe ergeben, prüft der Server jeden
+*automatischen* Auslöser gegen zwei Bedingungen (`_shared/autoSyncPolicy.js`):
+
+* **Es läuft schon einer?** `google_connections.sync_lock_until` wird per
+  bedingtem UPDATE beansprucht — atomar, also gewinnt immer genau einer. Der
+  Anspruch verfällt nach zehn Minuten von selbst, damit ein abgebrochener Lauf
+  nichts dauerhaft blockiert.
+* **Lief gerade erst einer?** Weniger als vier Minuten seit `last_sync_at`
+  heißt: nicht noch einmal. Zehn offene Tabs lösen deshalb genauso viele Läufe
+  aus wie einer.
+
+Der **manuelle** Sync kennt keinen Mindestabstand und keine dieser Pausen. Er
+wartet nur, solange tatsächlich ein Lauf unterwegs ist — und der schreibt
+ohnehin gerade das, was der Knopf holen würde.
+
+Eine **abgelaufene Verbindung** (`needs_reauth`) wird nicht automatisch
+nachgefasst: das würde Google alle fünf Minuten mit einem toten Token
+behelligen. Der Bereich zeigt „Verbindung abgelaufen", *Verbindung erneuern*
+und *Jetzt synchronisieren* funktionieren weiter.
+
+### Einrichten (einmalig)
+
+Die Migration `0007_google_auto_sync.sql` legt Spalte, Funktion und Zeitplan
+an. Der Zeitplan tut allerdings **nichts**, solange die beiden Werte fehlen,
+die er dafür braucht — und die gehören nicht ins Repository, sondern in den
+Supabase-Vault. Einmal im SQL-Editor:
+
+```sql
+select vault.create_secret('<SERVICE_ROLE_KEY>', 'google_sync_service_key');
+select vault.create_secret(
+  'https://itnhcnyawiktvajqciqw.supabase.co/functions/v1',
+  'google_sync_functions_url');
+```
+
+Danach läuft der Zeitplan. Prüfen:
+
+```sql
+select jobname, schedule, active from cron.job;
+select status, return_message, start_time
+  from cron.job_run_details
+  where jobname = 'google-kalender-auto-sync'
+  order by start_time desc limit 5;
+
+select user_id, last_sync_at, last_sync_status, sync_lock_until
+  from public.google_connections;
+```
+
+`last_sync_at` sollte danach nie älter als ein paar Minuten sein.
+
+Anhalten oder wieder starten, ohne etwas zu löschen:
+
+```sql
+update cron.job set active = false where jobname = 'google-kalender-auto-sync';
+```
+
+> Warum der Service-Role-Key: der Zeitplan ist kein Nutzer. `google-api` leitet
+> den Nutzer sonst aus dem JWT ab; für `sync-all` erkennt die Function den
+> Service-Role-Key und arbeitet dann alle Verbindungen der Reihe nach ab. Der
+> Key verlässt dabei die Datenbank nur in Richtung der eigenen Function.
 
 ## 7. Verbinden
 
