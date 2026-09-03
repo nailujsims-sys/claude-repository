@@ -7,13 +7,13 @@ import {
   GraduationCap,
   Dumbbell,
   Sparkles,
-  ShoppingCart,
   Sunrise,
   Users,
   Brain,
   LineChart,
   ClipboardList,
   CalendarPlus,
+  ListChecks,
   Info,
   UserCircle,
 } from 'lucide-react'
@@ -35,10 +35,19 @@ export const sidebarNav = [
   { id: 'home', label: 'Heute', icon: Home, to: '/', enabled: true },
   { id: 'tasks', label: 'Aufgaben', icon: CheckSquare, to: '/aufgaben', enabled: true },
   { id: 'calendar', label: 'Kalender', icon: Calendar, to: '/kalender', enabled: true },
+  { id: 'lists', label: 'Listen', icon: ListChecks, to: '/listen', enabled: true },
   { id: 'more', label: 'Mehr', icon: MoreHorizontal, to: '/mehr', enabled: true },
   { id: 'profil', label: 'Profil', icon: UserCircle, to: '/profil', enabled: true },
   { id: 'version', label: 'Version', icon: Info, to: '/version', enabled: true },
 ]
+
+// ── Modules that are built but not in the bottom bar ────────────────────────
+// The bottom bar has five slots and one of them is the Plus button, so it holds
+// the three screens that are opened many times a day. Everything else a module
+// needs to be reachable is here: the sidebar above, the Plus sheet below, and a
+// card on /mehr. That is the route the module pattern already described — "add
+// its route, then flip it into the lists above" — and it is why Listen did not
+// have to change the shared bottom bar to arrive.
 
 // ── Future modules (preview of where the app is going) ──────────────────────
 // Shown greyed-out with a "Demnächst" badge on /mehr and at the foot of the
@@ -48,7 +57,6 @@ export const futureModules = [
   { id: 'studienplaner', label: 'Studienplaner', icon: GraduationCap },
   { id: 'fitness', label: 'Fitness', icon: Dumbbell },
   { id: 'prompts', label: 'Prompt-Datenbank', icon: Sparkles },
-  { id: 'einkaufsliste', label: 'Einkaufsliste', icon: ShoppingCart },
   { id: 'morning', label: 'Morning Dashboard', icon: Sunrise },
   { id: 'crm', label: 'Personal CRM', icon: Users },
   { id: 'secondbrain', label: 'Second Brain', icon: Brain },
@@ -61,4 +69,5 @@ export const futureModules = [
 export const actionSheetItems = [
   { id: 'new-task', label: 'Neue Aufgabe', icon: ClipboardList, action: 'task' },
   { id: 'new-event', label: 'Neuer Termin', icon: CalendarPlus, action: 'event' },
+  { id: 'new-list', label: 'Neue Liste', icon: ListChecks, action: 'list' },
 ]

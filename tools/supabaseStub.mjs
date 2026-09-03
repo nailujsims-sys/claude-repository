@@ -73,6 +73,40 @@ export function eventRow(data = {}) {
   }
 }
 
+export function listRow(data = {}) {
+  return {
+    id: data.id ?? randomUUID(),
+    user_id: data.user_id ?? TEST_USER_ID,
+    name: data.name ?? '',
+    template: data.template ?? 'standard',
+    icon: data.icon ?? 'clipboard-list',
+    is_pinned: data.is_pinned ?? false,
+    is_archived: data.is_archived ?? false,
+    archived_at: data.archived_at ?? null,
+    sort_order: data.sort_order ?? 0,
+    created_at: data.created_at ?? nowIso(),
+    updated_at: data.updated_at ?? nowIso(),
+  }
+}
+
+export function listItemRow(data = {}) {
+  return {
+    id: data.id ?? randomUUID(),
+    user_id: data.user_id ?? TEST_USER_ID,
+    list_id: data.list_id ?? null,
+    title: data.title ?? '',
+    is_done: data.is_done ?? false,
+    done_at: data.done_at ?? null,
+    sort_order: data.sort_order ?? 0,
+    quantity: data.quantity ?? null,
+    unit: data.unit ?? null,
+    amount: data.amount ?? null,
+    category: data.category ?? null,
+    created_at: data.created_at ?? nowIso(),
+    updated_at: data.updated_at ?? nowIso(),
+  }
+}
+
 // The two Google tables the client may read. The credentials table is
 // deliberately absent: the browser has no grant on it, so a request for it
 // would be a bug, and the stub answering 404 is how the smoke test notices.
@@ -180,6 +214,8 @@ export function makeBackend({
   events = [],
   googleConnections = [],
   googleCalendars = [],
+  lists = [],
+  listItems = [],
   profiles = null,
   password = 'richtiges-passwort',
   failTable = null,
@@ -196,6 +232,8 @@ export function makeBackend({
     events: events.map(eventRow),
     google_connections: googleConnections.map(googleConnectionRow),
     google_calendars: googleCalendars.map(googleCalendarRow),
+    lists: lists.map(listRow),
+    list_items: listItems.map(listItemRow),
     profiles: profiles ?? [
       { id: TEST_USER_ID, display_name: 'Julian', timezone: 'Europe/Berlin', created_at: nowIso(), updated_at: nowIso() },
     ],
@@ -308,13 +346,13 @@ export function makeBackend({
       const body = JSON.parse(init.body)
       const incoming = Array.isArray(body) ? body : [body]
       const build =
-        table === 'events'
-          ? eventRow
-          : table === 'google_calendars'
-            ? googleCalendarRow
-            : table === 'google_connections'
-              ? googleConnectionRow
-              : taskRow
+        {
+          events: eventRow,
+          google_calendars: googleCalendarRow,
+          google_connections: googleConnectionRow,
+          lists: listRow,
+          list_items: listItemRow,
+        }[table] ?? taskRow
       const created = incoming.map((data) => {
         // The database rejects a row without an owner, and so does this.
         if (!data.user_id) throw new Error('supabaseStub: insert without user_id')
@@ -337,6 +375,19 @@ export function makeBackend({
       const hit = rows.filter((r) => matches(r, params))
       tables[table] = rows.filter((r) => !hit.includes(r))
       for (const row of hit) onChange?.({ table, type: 'DELETE', old_record: { id: row.id } })
+      // `list_items.list_id` is `on delete cascade` in the migration, so a
+      // deleted list takes its entries with it. Emulated here rather than left
+      // out: without it the harness would show orphans the database can never
+      // produce, and a test asserting "the entries are gone too" would be
+      // asserting the stub instead of the schema.
+      if (table === 'lists' && hit.length) {
+        const goneIds = new Set(hit.map((r) => r.id))
+        const orphans = tables.list_items.filter((r) => goneIds.has(r.list_id))
+        tables.list_items = tables.list_items.filter((r) => !goneIds.has(r.list_id))
+        for (const row of orphans) {
+          onChange?.({ table: 'list_items', type: 'DELETE', old_record: { id: row.id } })
+        }
+      }
       return respond(hit)
     }
 

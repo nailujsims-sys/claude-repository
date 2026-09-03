@@ -3,7 +3,8 @@ import { createContext, useContext, useMemo, useState } from 'react'
 const UIContext = createContext(null)
 
 // Controls global overlays that can be triggered from many places: the sidebar,
-// the Plus action sheet, and the Neue Aufgabe / Bearbeiten task-form sheet.
+// the Plus action sheet, and the Neue Aufgabe / Neuer Termin / Neue Liste form
+// sheets.
 export function UIProvider({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [actionSheetOpen, setActionSheetOpen] = useState(false)
@@ -14,6 +15,10 @@ export function UIProvider({ children }) {
   const [taskForm, setTaskForm] = useState(null)
   // eventForm: null | { mode: 'create' | 'edit', eventId?: string }
   const [eventForm, setEventForm] = useState(null)
+  // listForm: null | { mode: 'create' | 'edit', listId?: string }
+  // Global for the same reason the task form is: "Neue Liste" is reachable from
+  // the Plus action sheet on every screen, not only from the Listen overview.
+  const [listForm, setListForm] = useState(null)
 
   const value = useMemo(
     () => ({
@@ -32,8 +37,12 @@ export function UIProvider({ children }) {
       eventForm,
       openEventForm: (opts = { mode: 'create' }) => setEventForm(opts),
       closeEventForm: () => setEventForm(null),
+
+      listForm,
+      openListForm: (opts = { mode: 'create' }) => setListForm(opts),
+      closeListForm: () => setListForm(null),
     }),
-    [sidebarOpen, actionSheetOpen, taskForm, eventForm]
+    [sidebarOpen, actionSheetOpen, taskForm, eventForm, listForm]
   )
 
   return <UIContext.Provider value={value}>{children}</UIContext.Provider>

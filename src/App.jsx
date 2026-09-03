@@ -5,6 +5,7 @@ import { ToastProvider } from './context/ToastContext'
 import { UIProvider } from './context/UIContext'
 import { TasksProvider } from './context/TasksContext'
 import { EventsProvider } from './context/EventsContext'
+import { ListsProvider } from './context/ListsContext'
 import { GoogleProvider } from './context/GoogleContext'
 
 import BottomNav from './components/BottomNav'
@@ -12,6 +13,7 @@ import Sidebar from './components/Sidebar'
 import ActionSheet from './components/ActionSheet'
 import TaskForm from './components/TaskForm'
 import EventForm from './components/EventForm'
+import ListForm from './components/ListForm'
 import ToastHost from './components/ToastHost'
 import ErrorBanner from './components/ErrorBanner'
 
@@ -19,6 +21,9 @@ import Home from './screens/Home'
 import TasksList from './screens/TasksList'
 import TaskDetail from './screens/TaskDetail'
 import Kalender from './screens/Kalender'
+import Listen from './screens/Listen'
+import ListeDetail from './screens/ListeDetail'
+import ListenArchiv from './screens/ListenArchiv'
 import Mehr from './screens/Mehr'
 import Profil from './screens/Profil'
 import ProfilGoogle from './screens/ProfilGoogle'
@@ -81,12 +86,14 @@ function Gate() {
     <UIProvider>
       <TasksProvider>
         <EventsProvider>
-          {/* Inside the signed-in branch like every other data provider, for
-              the same reason: it reads personal rows and must never run
-              without a user id. */}
-          <GoogleProvider>
-            <AppShell />
-          </GoogleProvider>
+          <ListsProvider>
+            {/* Inside the signed-in branch like every other data provider, for
+                the same reason: it reads personal rows and must never run
+                without a user id. */}
+            <GoogleProvider>
+              <AppShell />
+            </GoogleProvider>
+          </ListsProvider>
         </EventsProvider>
       </TasksProvider>
     </UIProvider>
@@ -107,6 +114,12 @@ function AppShell() {
           <Route path="/aufgaben" element={<TasksList />} />
           <Route path="/aufgaben/:id" element={<TaskDetail />} />
           <Route path="/kalender" element={<Kalender />} />
+          {/* The static segment is declared first for readability; react-router
+              ranks it above the dynamic one either way, so /listen/archiv is
+              never read as a list id. */}
+          <Route path="/listen" element={<Listen />} />
+          <Route path="/listen/archiv" element={<ListenArchiv />} />
+          <Route path="/listen/:id" element={<ListeDetail />} />
           <Route path="/mehr" element={<Mehr />} />
           <Route path="/profil" element={<Profil />} />
           <Route path="/profil/google-kalender" element={<ProfilGoogle />} />
@@ -121,6 +134,7 @@ function AppShell() {
       <ActionSheet />
       <TaskForm />
       <EventForm />
+      <ListForm />
       <ToastHost />
     </div>
   )

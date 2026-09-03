@@ -1,10 +1,10 @@
 # 🧠 Mind Whiteboard
 
 A premium, dark, mobile-first personal productivity app for **Julian**. Version 1
-ships three fully functional modules — the **Startseite** (home dashboard), the
-**Aufgaben** task manager and the **Kalender** — on top of a navigation
-architecture (bottom bar, sidebar, action sheet) built to be extended module by
-module.
+ships four fully functional modules — the **Startseite** (home dashboard), the
+**Aufgaben** task manager, the **Kalender** and **Listen** — on top of a
+navigation architecture (bottom bar, sidebar, action sheet) built to be extended
+module by module.
 
 Built with **React + Vite + Tailwind CSS** on a single central data source:
 **Supabase**, with email/password login and Row Level Security. Tasks and events
@@ -70,6 +70,17 @@ nothing (see *Supabase* below).
   event is a second kind of event** — it is a row in the same `events` table
   with an external identity, so every screen, search and drag in the calendar
   works on it unchanged. Setup: [`supabase/GOOGLE-KALENDER.md`](supabase/GOOGLE-KALENDER.md).
+- **Listen** — lightweight collections that are deliberately *not* tasks,
+  calendar entries or projects. Three templates: **Standard** (a plain
+  checklist), **Einkauf** (optional quantity and unit, plus optional manual
+  categories) and **Geld** (open amounts per person, with a quiet total of what
+  is still open). One line adds a whole entry — "Äpfel 6 Stück", "Max 25" — and
+  everything else is two taps away in the entry sheet. Ticking an entry off
+  moves it into **Erledigt** and putting it back returns it to the open group;
+  there are no counters and no progress bars anywhere. A list is pinned,
+  renamed, re-iconed from a curated set, reordered by press-and-hold, archived
+  (reversibly, with undo) or deleted (irreversibly, with a confirmation), and
+  the archive is one quiet row at the foot of the overview.
 - **Profil** — the account, and *Integrationen → Google Kalender*: connect,
   choose which calendars sync, set the default calendar for new appointments,
   see when the last sync ran, disconnect. Disconnecting keeps every
@@ -185,7 +196,7 @@ uses a hash router so deep links work on Pages without server rewrites.
 index.html                  Vite entry
 vite.config.js              base path + React plugin
 tailwind.config.js          design tokens (colors, radii, animations)
-supabase/migrations/        SQL: profiles + tasks + events + Google, indexes, RLS policies
+supabase/migrations/        SQL: profiles + tasks + events + Google + lists, indexes, RLS policies
 supabase/functions/         Edge Functions — the only place Google tokens exist
   _shared/                  the sync engine, in plain JS so the Node tests run it
   google-api/               everything the signed-in app asks for (verify_jwt)
@@ -193,7 +204,8 @@ supabase/functions/         Edge Functions — the only place Google tokens exis
 supabase/tests/rls.sql      proves the policies against the real schema
 tools/supabaseStub.mjs      PostgREST-shaped backend the smoke test runs against
 tools/realtimeStub.mjs      Phoenix-speaking Realtime server for the smoke test
-tools/smoke.mjs             jsdom runtime smoke test (incl. calendar views + two-device sync)
+tools/smoke.mjs             jsdom runtime smoke test (incl. calendar views, Listen flows
+                            and two-device sync)
 tools/googleSyncFake.mjs    a fake Google Calendar + in-memory database, so the
                             real sync engine can be run without a network
 src/
@@ -201,6 +213,8 @@ src/
   App.jsx                   providers, auth gate, routes, app shell
   index.css                 Tailwind + base styles + keyframes
   config/navigation.js      bottom nav / sidebar / action-sheet / modules (config arrays)
+  config/listTemplates.js   the three Listen templates + the Einkauf categories (data only)
+  config/listIcons.js       the curated 24-icon set a list picks from
   lib/
     config.js               the two public Supabase values, read at build time
     supabase.js             the shared Supabase client (null without config)
@@ -218,19 +232,26 @@ src/
     eventSearch.js          calendar search (title / location / notes, upcoming-first)
     useNow.js               ticking clock hook for the live time indicator
     taskSelectors.js        derive grouped/filtered views (incl. tasksForDay)
+    listSelectors.js        the Listen views: pinned/others, open above done,
+                            category groups, the open-amount total, formatting
+    listParsing.js          reads "Äpfel 6 Stück" / "Max 25,00 €" from one line
   data/
     taskRepository.js       tasks in Supabase (+ taskDefaults.js: writable columns)
     eventRepository.js      events in Supabase (+ eventDefaults.js)
     profileRepository.js    the signed-in user's profile row
     googleRepository.js     reads the two token-free Google tables; every write
                             goes through an Edge Function
-  context/                  Auth · Tasks · Events · Google · UI (overlays) · Toast
+    listRepository.js       lists and their entries (+ listDefaults.js)
+  context/                  Auth · Tasks · Events · Lists · Google · UI (overlays) · Toast
   components/               TopBar (the global header of every main area),
                             BottomNav, Sidebar, ActionSheet, BottomSheet, TaskForm,
                             EventForm, InlineCalendar, MiniCalendar, FilterSheet,
                             TaskRow, EventDetailSheet, ConfirmDialog, ScrollList
-                            (a list that scrolls inside its own height budget), …
-  screens/                  Home, TasksList, TaskDetail, Kalender, Mehr, Profil,
+                            (a list that scrolls inside its own height budget),
+                            ListForm, ListActionsSheet, ListItemSheet, ListRow,
+                            ListItemRow, …
+  screens/                  Home, TasksList, TaskDetail, Kalender, Listen,
+                            ListeDetail, ListenArchiv, Mehr, Profil,
                             ProfilGoogle, Login, NewPassword, BackendMissing
     home/                   HomeGreeting, AgendaCard, TasksCard and the HomeCard
                             shell every Heute block is built from

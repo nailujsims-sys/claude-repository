@@ -131,6 +131,50 @@ body {
   }
 }
 
+/* ── An entry changing section (Listen) ──────────────────────────────
+   Ticking an entry off moves it out of the open group and into "Erledigt",
+   and putting it back moves it the other way. Without a mark the row would
+   simply be somewhere else on the next frame, which reads as a glitch rather
+   than as a move.
+
+   So the row that changed arrives with one short 8px slide from the side it
+   came from (§11: what enters from above came from above) plus the fade the
+   app already uses everywhere. 180ms, in the range the whole product sits in,
+   and one-shot: it is an `animation` on arrival, never a transition on the
+   list, so scrolling, dragging and every other row are untouched. Deliberately
+   no travelling of the *departure* — the row is gone from its old section in
+   the same frame, and animating an exit there would mean holding a row in a
+   place it no longer belongs.
+
+   Under reduced motion the travel goes and the fade stays, the same trade the
+   toast and the sheets make (see the REDUCED MOTION block below). */
+.list-settle-down {
+  animation: list-settle-down 180ms ease-out;
+}
+.list-settle-up {
+  animation: list-settle-up 180ms ease-out;
+}
+@keyframes list-settle-down {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes list-settle-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 /* ── Overlay presence (G4) ───────────────────────────────────────────
    Overlays used to animate in with a keyframe and then vanish: closing
    unmounted them on the spot, so there was nothing left on screen to animate
@@ -496,6 +540,13 @@ html[data-ov-scroll-locked] body {
   .animate-toast-out,
   .animate-menu-out {
     animation-name: reduced-fade-out;
+  }
+
+  /* A list entry arriving in its new section keeps its timing and loses its
+     8px of travel — the fade still marks which row moved. */
+  .list-settle-down,
+  .list-settle-up {
+    animation-name: reduced-fade-in;
   }
 
   /* Sheets and the sidebar (G4). Same lifecycle, same duration, same exit —
