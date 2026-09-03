@@ -23,7 +23,7 @@ import {
   GoogleError,
 } from '../_shared/google.js'
 import { verifyState, isAllowedRedirect } from '../_shared/state.js'
-import { runSync } from '../_shared/sync.js'
+import { runGuardedSync, MANUAL, PUSH } from '../_shared/autoSync.js'
 import {
   completeConnection,
   CONNECT_OK,
@@ -162,10 +162,11 @@ Deno.serve(async (req: Request) => {
       // Browser wieder in der App landet. Er darf scheitern, ohne die
       // Verbindung mitzunehmen: die Kalender sind da, der Rest holt sich der
       // nächste Lauf.
-      await runSync(
+      await runGuardedSync(
         { google: outcome.google, store, now: Date.now, randomId },
         {
           userId: state.user_id,
+          trigger: MANUAL,
           userTimeZone: await store.getTimeZone(state.user_id),
           pushAddress: config.pushAddress,
         }
@@ -202,10 +203,15 @@ Deno.serve(async (req: Request) => {
     try {
       const google = await clientFor(channel.user_id)
       if (google) {
-        await runSync(
+        // Durch dasselbe Schloss wie jeder andere Lauf: eine Benachrichtigung,
+        // die mitten in den 5-Minuten-Lauf platzt, wartet auf den nächsten
+        // Auslöser statt parallel dieselben Termine zu schreiben. Einen
+        // Mindestabstand kennt sie nicht — sie meldet eine echte Änderung.
+        await runGuardedSync(
           { google, store, now: Date.now, randomId },
           {
             userId: channel.user_id,
+            trigger: PUSH,
             userTimeZone: await store.getTimeZone(channel.user_id),
             pushAddress: config.pushAddress,
             calendarIds: [channel.google_calendar_id],

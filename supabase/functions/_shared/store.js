@@ -54,6 +54,45 @@ export function createStore(supabase) {
       if (result.error) throw new Error(result.error.message)
     },
 
+    // Jede Verbindung, für die ein automatischer Lauf überhaupt in Frage
+    // kommt. Nur der Service-Role-Aufruf (der Cron-Lauf) sieht das hier —
+    // aus dem Browser ist die Tabelle per RLS auf die eigene Zeile begrenzt.
+    async listSyncableConnections(limit = 200) {
+      return rows(
+        await supabase
+          .from('google_connections')
+          .select('user_id, status, last_sync_at, sync_lock_until')
+          .neq('status', 'needs_reauth')
+          .order('last_sync_at', { ascending: true, nullsFirst: true })
+          .limit(limit)
+      )
+    },
+
+    // Der Anspruch auf einen Lauf, als bedingtes UPDATE. Zwei gleichzeitige
+    // Aufrufe können nicht beide gewinnen: Postgres serialisiert die beiden
+    // UPDATEs auf derselben Zeile und prüft die Bedingung des zweiten gegen
+    // das Ergebnis des ersten — der zweite trifft dann null Zeilen. Genau
+    // deshalb steht hier kein „lesen, prüfen, schreiben".
+    async claimSyncLock(userId, { now, until }) {
+      return one(
+        await supabase
+          .from('google_connections')
+          .update({ sync_lock_until: until })
+          .eq('user_id', userId)
+          .or(`sync_lock_until.is.null,sync_lock_until.lt.${now}`)
+          .select()
+          .maybeSingle()
+      )
+    },
+
+    async releaseSyncLock(userId) {
+      const result = await supabase
+        .from('google_connections')
+        .update({ sync_lock_until: null })
+        .eq('user_id', userId)
+      if (result.error) throw new Error(result.error.message)
+    },
+
     // ── credentials ─────────────────────────────────────────────────────
     async getCredentials(userId) {
       return one(

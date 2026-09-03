@@ -78,6 +78,9 @@ export const googleRepository = {
 
   disconnect: () => callFunction('disconnect'),
   sync: () => callFunction('sync'),
+  // Derselbe Lauf, nur höflicher: der Server lässt ihn aus, wenn gerade erst
+  // einer lief oder gerade einer läuft. Siehe _shared/autoSyncPolicy.js.
+  autoSync: () => callFunction('auto-sync'),
   refreshCalendars: () => callFunction('refresh-calendars'),
   setCalendarSelected: (calendarId, selected) =>
     callFunction('select-calendar', { calendar_id: calendarId, selected }),

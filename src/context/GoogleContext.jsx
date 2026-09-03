@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import { googleRepository } from '../data/googleRepository'
@@ -11,9 +12,11 @@ import { applyRealtimeChange, mergeRows } from '../lib/realtimeSync'
 import { useRealtimeSync } from '../lib/useRealtimeSync'
 import { useAuth } from './AuthContext'
 import {
+  AUTO_SYNC_INTERVAL_MS,
   applyConnectionChange,
   defaultCalendarFor,
   selectableCalendars,
+  shouldClientAutoSync,
 } from '../lib/googleCalendar'
 
 const GoogleContext = createContext(null)
@@ -91,6 +94,69 @@ export function GoogleProvider({ children }) {
     onChange: applyCalendarChange,
     onResync: resync,
   })
+
+  // ── Der automatische Lauf, solange die App offen ist ──────────────────────
+  //
+  // Der eigentliche 5-Minuten-Takt läuft auf dem Server (pg_cron →
+  // `google-api` → `sync-all`, siehe Migration 0007) und braucht kein offenes
+  // Fenster. Dieser Timer ist das Netz darunter: er ruft dieselbe Function mit
+  // derselben Sync-Logik auf und sorgt dafür, dass ein geöffnetes Gerät auch
+  // dann im Takt bleibt, wenn der Zeitplan in der Datenbank (noch) nicht
+  // eingerichtet ist.
+  //
+  // Bewusst still: kein `busy`, kein `error`, kein Toast. Ein automatischer
+  // Lauf, der scheitert, darf weder die Ansicht blockieren noch den Nutzer
+  // unterbrechen — was schiefging, steht danach ohnehin an der Verbindung, wo
+  // der Bildschirm es bereits anzeigt. Und weil der Server jeden zu frühen und
+  // jeden gleichzeitigen Lauf ablehnt, kann auch ein Dutzend offener Tabs
+  // nicht mehr als einen Lauf je Takt auslösen.
+  const connectionRef = useRef(null)
+  const busyRef = useRef(null)
+  const lastAttemptRef = useRef(0)
+  connectionRef.current = connection
+  busyRef.current = busy
+
+  useEffect(() => {
+    if (!user) return undefined
+
+    const tick = async () => {
+      const now = Date.now()
+      if (
+        !shouldClientAutoSync(
+          {
+            connection: connectionRef.current,
+            visible:
+              typeof document === 'undefined' || document.visibilityState === 'visible',
+            busy: !!busyRef.current,
+            lastAttemptAt: lastAttemptRef.current,
+          },
+          now
+        )
+      ) {
+        return
+      }
+      lastAttemptRef.current = now
+      try {
+        await googleRepository.autoSync()
+      } catch (err) {
+        // Nur fürs Log. Der Bildschirm bleibt, wie er ist.
+        console.warn('Automatischer Google-Sync fehlgeschlagen', err)
+      }
+      await load({ silent: true })
+    }
+
+    const timer = setInterval(tick, AUTO_SYNC_INTERVAL_MS)
+    // Ein Gerät, das eine Stunde in der Tasche war, soll beim Aufwachen nicht
+    // erst die nächsten fünf Minuten abwarten.
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') tick()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [user, load])
 
   // Every action goes through here: one busy flag, one error surface, one
   // reload afterwards, so no screen has to remember to do any of it.

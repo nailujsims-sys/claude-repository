@@ -308,6 +308,28 @@ export function makeStore(seed = {}) {
       db.connections.delete(userId)
     },
 
+    // Dieselbe Semantik wie in store.js: „alle, die für einen automatischen
+    // Lauf in Frage kommen", und ein Anspruch, den nur einer bekommt.
+    async listSyncableConnections(limit = 200) {
+      return [...db.connections.values()]
+        .filter((c) => c.status !== 'needs_reauth')
+        .slice(0, limit)
+        .map((c) => ({ ...c }))
+    },
+    async claimSyncLock(userId, { now, until }) {
+      const current = db.connections.get(userId)
+      if (!current) return null
+      const held = Date.parse(current.sync_lock_until ?? '')
+      if (Number.isFinite(held) && held >= Date.parse(now)) return null
+      const next = { ...current, sync_lock_until: until }
+      db.connections.set(userId, next)
+      return next
+    },
+    async releaseSyncLock(userId) {
+      const current = db.connections.get(userId)
+      if (current) db.connections.set(userId, { ...current, sync_lock_until: null })
+    },
+
     async getCredentials(userId) {
       return db.credentials.get(userId) ?? null
     },
