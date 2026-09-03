@@ -190,6 +190,22 @@ const item = (over) => ({
   ok('a Geld entry shows a formatted amount',
      itemTrailingLabel(item({ amount: 25 }), 'money').replace(/\\u00a0/g, ' ') === '25,00 €')
   ok('formatQuantity writes German decimals', formatQuantity(0.5, 'kg') === '0,5 kg')
+
+  // What Postgres actually stores is numeric(12,3) / numeric(12,2), so the
+  // production API answers "6.000" and "25.00" where the test stub answers 6
+  // and 25 — and PostgREST is free to send a numeric as a JSON string to keep
+  // its precision. Verified against the live project (2026-09). Every consumer
+  // goes through Number(), so both forms render identically; this pins that,
+  // because a formatter that started trusting the JS type would only fail in
+  // production.
+  ok('a numeric from the database renders like a plain number',
+     formatQuantity('6.000', 'Stück') === '6 Stück' && formatQuantity(6, 'Stück') === '6 Stück')
+  ok('and so does a scaled amount',
+     formatAmount('25.00').replace(/\u00a0/g, ' ') === '25,00 €')
+  ok('the open total adds up strings and numbers alike',
+     openAmountTotal([item({ amount: '25.00' }), item({ amount: 12.5 })]) === 37.5)
+  ok('an editable field shows a scaled numeric without its trailing zeros',
+     numberToInput('6.000') === '6' && numberToInput('0.500') === '0,5')
   ok('formatAmount writes German currency',
      formatAmount(1234.5).replace(/\\u00a0/g, ' ') === '1.234,50 €')
 }
