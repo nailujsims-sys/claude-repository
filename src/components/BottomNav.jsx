@@ -1,19 +1,20 @@
+import { useLayoutEffect } from 'react'
 import { NavLink } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import { bottomNav } from '../config/navigation'
 import { useUI } from '../context/UIContext'
+import { installBrowserBottomInset } from '../lib/browserBottomInset'
 
 // Persistent bottom navigation. Driven entirely by the `bottomNav` config —
 // the center `plus` slot opens the action sheet, every other slot is a route.
 //
-// It sits on `--browser-bottom-inset` rather than flat on `bottom: 0`: a
-// browser that lays its own bar over the bottom of the page (Chrome on iPad,
-// the URL bar on iPhone) leaves the *layout* viewport — what `fixed` is
-// measured against — reaching underneath it, so `bottom: 0` puts the bar out
-// of sight until the user scrolls. The variable is 0 wherever nothing
-// overlaps, so iPad Safari and desktop are unchanged. See src/index.css.
+// It sits on the measured `--browser-bottom-inset` rather than assuming that
+// every lvh/dvh difference is below the page. That distinction keeps a real
+// bottom browser bar clear without treating Android's top toolbar as one.
 export default function BottomNav() {
   const { openActionSheet } = useUI()
+
+  useLayoutEffect(() => installBrowserBottomInset(), [])
 
   return (
     <nav className="pointer-events-none fixed inset-x-0 bottom-[var(--browser-bottom-inset)] z-40 flex justify-center">

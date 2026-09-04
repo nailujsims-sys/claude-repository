@@ -695,22 +695,20 @@ chrome. Verified structurally first — `position: fixed` really is against the
 viewport, no ancestor creates a containing block, and the `backdrop-filter` of
 G11 is a child rather than an ancestor, so it is not the cause.
 
-**The fix is one number, expressed in the two units that name it.** `100lvh` is
-what `fixed` measures against, `100dvh` is what is actually visible, so their
-difference *is* the overlay:
+**Android correction (v1.14.1).** The original `100lvh - 100dvh` fix made one
+assumption that the real Android device disproved: the difference says how much
+smaller the visible viewport is, but not which edge the browser UI occupies. In
+Android Chrome the toolbar is above the page, so treating the whole difference
+as a bottom inset lifted the navigation and exposed a scrollable strip below it.
 
-```css
---browser-bottom-inset: 0px;
-@supports (height: 100dvh) and (height: 100lvh) {
-  --browser-bottom-inset: calc(100lvh - 100dvh);
-}
-```
-
-No JavaScript, no resize listener, no user-agent sniffing, no new component. The
-`@supports` guard is not decoration: custom properties are not validated while
-parsing, so without it a browser lacking the units would drop the value only at
-computed-value time and `bottom` would fall back to `auto`, not to `0` — broken
-instead of unchanged.
+The app now measures the geometry instead. A hidden `position: fixed; bottom: 0`
+probe gives the edge fixed chrome actually resolves to; only the part of that
+edge below `visualViewport.offsetTop + visualViewport.height` becomes
+`--browser-bottom-inset`. This yields 0px for Android's top toolbar, the real
+overlap for an iPhone/iPad bottom bar, and 0px on desktop. Visual-viewport resize
+and scroll events keep the number current while browser chrome retracts. There
+is no user-agent sniffing, and browsers without Visual Viewport support keep the
+safe 0px default.
 
 Two call sites carry it: the navigation itself, and the fixed action bar in
 `TaskDetail` stacked directly on top of it, so the pair keeps its spacing either
