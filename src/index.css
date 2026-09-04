@@ -5,25 +5,11 @@
 :root {
   color-scheme: dark;
 
-  /* How much of the page a browser's own bottom UI covers.
-     `position: fixed` and percentage heights both resolve against the *layout*
-     viewport, which on iOS is always the large one (`lvh`) — the height with
-     browser bars retracted. It does not shrink when a browser lays a bar over
-     the bottom of the page, so anything pinned to `bottom: 0` ends up
-     underneath it until scrolling retracts the bar. `dvh` is the height that
-     is actually visible, so the difference is exactly that overlay — and 0
-     wherever nothing overlays (iPad Safari, desktop). `env(safe-area-inset-*)`
-     cannot express this: it describes device hardware, never browser chrome.
-
-     The 0px default is what every consumer gets unless both units are
-     supported, so an older browser keeps today's behaviour instead of
-     inheriting an invalid value. */
+  /* How much of the page a browser's own UI actually covers at the bottom.
+     This is measured by browserBottomInset.js. It cannot be inferred from
+     `100lvh - 100dvh`: that difference also includes a toolbar at the top
+     (Android Chrome), which would incorrectly lift all bottom chrome. */
   --browser-bottom-inset: 0px;
-}
-@supports (height: 100dvh) and (height: 100lvh) {
-  :root {
-    --browser-bottom-inset: calc(100lvh - 100dvh);
-  }
 }
 
 html,
