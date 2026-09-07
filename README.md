@@ -1,10 +1,10 @@
 # 🧠 Mind Whiteboard
 
 A premium, dark, mobile-first personal productivity app for **Julian**. Version 1
-ships four fully functional modules — the **Startseite** (home dashboard), the
-**Aufgaben** task manager, the **Kalender** and **Listen** — on top of a
-navigation architecture (bottom bar, sidebar, action sheet) built to be extended
-module by module.
+ships five fully functional modules — the **Startseite** (home dashboard), the
+**Aufgaben** task manager, the **Kalender**, **Listen** and **Ausgaben** — on top
+of a navigation architecture (bottom bar, sidebar, action sheet) built to be
+extended module by module.
 
 Built with **React + Vite + Tailwind CSS** on a single central data source:
 **Supabase**, with email/password login and Row Level Security. Tasks and events
@@ -81,6 +81,20 @@ nothing (see *Supabase* below).
   renamed, re-iconed from a curated set, reordered by press-and-hold, archived
   (reversibly, with undo) or deleted (irreversibly, with a confirmation), and
   the archive is one quiet row at the foot of the overview.
+- **Ausgaben** — a deliberately small expense tracker for the semester abroad in
+  Australia. An expense is a description, an amount, the currency it was paid in
+  (**AUD or EUR**) and a date that starts on today and can be moved afterwards —
+  four fields and "Erstellen", because it is filled in while standing at a till.
+  The overview leads with the **total** and a **AUD / EUR switch**: flipping it
+  converts every number on the screen, and every expense is converted with the
+  **rate that was stored on it when it was booked**, so switching the display
+  currency never rewrites what a March coffee cost. The AUD/EUR rate comes from
+  the European Central Bank via the free, keyless **Frankfurter** API, is asked
+  for when the tracker opens and again when an expense is saved, and is shown as
+  one quiet line under the total. If that request fails, the last rate the
+  account actually used stands in (it is on the newest expense) and the line
+  says so — nothing about capturing an expense stops working. No categories, no
+  budgets, no charts: that is the point.
 - **Profil** — the account, and *Integrationen → Google Kalender*: connect,
   choose which calendars sync, set the default calendar for new appointments,
   see when the last sync ran, disconnect. Disconnecting keeps every
@@ -108,9 +122,11 @@ npm run build        # production build → dist/
 npm run preview      # preview the production build
 npm run smoke        # headless runtime smoke test (jsdom) across all routes
 npm run test:logic   # pure-logic tests: drag/resize math, search, timezone-safety,
-                     # greeting boundaries, the quote-per-day rotation, and the
-                     # Google sync (mapping, conflicts, two-way create/update/
-                     # delete, DST, duplicates) against a fake Google
+                     # greeting boundaries, the quote-per-day rotation, the
+                     # currency conversion and rate fallback of the Ausgaben
+                     # module, and the Google sync (mapping, conflicts, two-way
+                     # create/update/delete, DST, duplicates) against a fake
+                     # Google
 npm run test:rls     # the RLS policies against a throwaway Postgres
 ```
 
@@ -123,12 +139,13 @@ the redirect URLs for password resets and how to add a new personal table:
 [`supabase/README.md`](supabase/README.md).
 
 **1. Create the schema.** Run
-[`supabase/migrations/`](supabase/migrations/) `0001` → … → `0005` in the SQL
+[`supabase/migrations/`](supabase/migrations/) `0001` → … → `0007` in the SQL
 Editor (or `supabase db push`). They create `profiles`, `tasks` and `events`,
 each with indexes, constraints, an `updated_at` trigger, and Row Level Security
 policies that scope every statement to `auth.uid()`; `0004` publishes `tasks`
 and `events` to Supabase Realtime so open devices hear about changes; `0005`
-adds the Google-Kalender tables and the Google columns on `events`.
+adds the Google-Kalender tables and the Google columns on `events`; `0006` adds
+the Listen tables; `0007` adds `expenses` for the Ausgaben module.
 
 **2. Create the user.** Dashboard → Authentication → Users → *Add user*. There
 is no registration screen; the profile row is created by a trigger.
@@ -196,7 +213,7 @@ uses a hash router so deep links work on Pages without server rewrites.
 index.html                  Vite entry
 vite.config.js              base path + React plugin
 tailwind.config.js          design tokens (colors, radii, animations)
-supabase/migrations/        SQL: profiles + tasks + events + Google + lists, indexes, RLS policies
+supabase/migrations/        SQL: profiles + tasks + events + Google + lists + expenses, indexes, RLS policies
 supabase/functions/         Edge Functions — the only place Google tokens exist
   _shared/                  the sync engine, in plain JS so the Node tests run it
   google-api/               everything the signed-in app asks for (verify_jwt)
@@ -235,6 +252,10 @@ src/
     listSelectors.js        the Listen views: pinned/others, open above done,
                             category groups, the open-amount total, formatting
     listParsing.js          reads "Äpfel 6 Stück" / "Max 25,00 €" from one line
+    exchangeRate.js         the AUD/EUR rate: the source, reading its answer,
+                            and the fallback chain when the request fails
+    expenses.js             the Ausgaben views: converting with the rate stored
+                            per row, the totals in either currency, formatting
   data/
     taskRepository.js       tasks in Supabase (+ taskDefaults.js: writable columns)
     eventRepository.js      events in Supabase (+ eventDefaults.js)
@@ -242,16 +263,19 @@ src/
     googleRepository.js     reads the two token-free Google tables; every write
                             goes through an Edge Function
     listRepository.js       lists and their entries (+ listDefaults.js)
-  context/                  Auth · Tasks · Events · Lists · Google · UI (overlays) · Toast
+    expenseRepository.js    expenses in Supabase (+ expenseDefaults.js)
+  context/                  Auth · Tasks · Events · Lists · Expenses · Google ·
+                            UI (overlays) · Toast
   components/               TopBar (the global header of every main area),
                             BottomNav, Sidebar, ActionSheet, BottomSheet, TaskForm,
                             EventForm, InlineCalendar, MiniCalendar, FilterSheet,
                             TaskRow, EventDetailSheet, ConfirmDialog, ScrollList
                             (a list that scrolls inside its own height budget),
                             ListForm, ListActionsSheet, ListItemSheet, ListRow,
-                            ListItemRow, …
+                            ListItemRow, ExpenseForm, ExpenseRow,
+                            CurrencySwitch, …
   screens/                  Home, TasksList, TaskDetail, Kalender, Listen,
-                            ListeDetail, ListenArchiv, Mehr, Profil,
+                            ListeDetail, ListenArchiv, Ausgaben, Mehr, Profil,
                             ProfilGoogle, Login, NewPassword, BackendMissing
     home/                   HomeGreeting, AgendaCard, TasksCard and the HomeCard
                             shell every Heute block is built from

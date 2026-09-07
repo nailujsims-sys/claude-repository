@@ -22,6 +22,7 @@ Durchlauf ändert nichts und zerstört nichts.
 | `0004_realtime.sql` | `tasks` und `events` in die Publikation `supabase_realtime` aufnehmen |
 | `0005_google_calendar.sql` | Google-Kalender: `google_connections`, `google_credentials` (für Clients gesperrt), `google_calendars`, `google_channels`, `google_event_tombstones`, die Google-Spalten an `events`, die Sync-Trigger, RLS + Grants |
 | `0006_lists.sql` | Listen: Tabellen `lists` und `list_items` (Vorlage, Icon, Pin, Archiv, Menge/Einheit/Betrag/Kategorie), Indizes, Constraints, RLS + Policies, Realtime |
+| `0007_expenses.sql` | Ausgaben: Tabelle `expenses` (Titel, Originalbetrag, Eingabewährung AUD/EUR, Transaktionsdatum, verwendeter AUD/EUR-Kurs), Indizes, Constraints, RLS + Policies, Realtime |
 
 **Weg A — Dashboard (kein Werkzeug nötig).** SQL Editor öffnen, die Dateien
 nacheinander einfügen und ausführen.
@@ -99,7 +100,9 @@ freischalten sind zwei getrennte Schritte. `0004_realtime.sql` erledigt das für
 `google_connections` und `google_calendars` — damit ein Sync, der auf dem Handy
 fertig wird, auch auf dem Mac zu sehen ist. `0006_lists.sql` nimmt `lists` und
 `list_items` auf, damit ein im Laden abgehakter Artikel sofort auf dem zweiten
-Gerät verschwindet. Die Zugangsdaten, die Push-Kanäle
+Gerät verschwindet. `0007_expenses.sql` nimmt `expenses` auf, damit eine am
+Automaten erfasste Ausgabe sofort in der Gesamtsumme auf dem anderen Gerät
+steht. Die Zugangsdaten, die Push-Kanäle
 und die Grabsteine werden bewusst **nicht** veröffentlicht. Prüfen:
 
 ```sql

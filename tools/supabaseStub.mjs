@@ -107,6 +107,20 @@ export function listItemRow(data = {}) {
   }
 }
 
+export function expenseRow(data = {}) {
+  return {
+    id: data.id ?? randomUUID(),
+    user_id: data.user_id ?? TEST_USER_ID,
+    title: data.title ?? '',
+    original_amount: data.original_amount ?? 0,
+    original_currency: data.original_currency ?? 'AUD',
+    transaction_date: data.transaction_date ?? nowIso().slice(0, 10),
+    exchange_rate_aud_eur: data.exchange_rate_aud_eur ?? 0.6,
+    created_at: data.created_at ?? nowIso(),
+    updated_at: data.updated_at ?? nowIso(),
+  }
+}
+
 // The two Google tables the client may read. The credentials table is
 // deliberately absent: the browser has no grant on it, so a request for it
 // would be a bug, and the stub answering 404 is how the smoke test notices.
@@ -216,6 +230,7 @@ export function makeBackend({
   googleCalendars = [],
   lists = [],
   listItems = [],
+  expenses = [],
   profiles = null,
   password = 'richtiges-passwort',
   failTable = null,
@@ -226,6 +241,11 @@ export function makeBackend({
   // Per-action answers for the Edge Function, keyed by action name. A test
   // that wants "connect returns this URL" or "sync fails" supplies it here.
   functions = {},
+  // The public exchange-rate source (src/lib/exchangeRate.js). It is the one
+  // request the app makes to something that is not Supabase, so the stub has to
+  // answer it too — otherwise every Ausgaben test would silently be testing the
+  // failure path. `exchangeRate: null` IS that failure path, on request.
+  exchangeRate = 0.6,
 } = {}) {
   const tables = {
     tasks: tasks.map(taskRow),
@@ -234,12 +254,14 @@ export function makeBackend({
     google_calendars: googleCalendars.map(googleCalendarRow),
     lists: lists.map(listRow),
     list_items: listItems.map(listItemRow),
+    expenses: expenses.map(expenseRow),
     profiles: profiles ?? [
       { id: TEST_USER_ID, display_name: 'Julian', timezone: 'Europe/Berlin', created_at: nowIso(), updated_at: nowIso() },
     ],
   }
   const calls = []
   const functionCalls = []
+  const rateCalls = []
   const auth = { session: makeSession(), signedOut: false, recoverEmails: [], newPasswords: [] }
 
   async function fetchStub(input, init = {}) {
@@ -247,6 +269,24 @@ export function makeBackend({
     const method = (init.method || (typeof input !== 'string' && input.method) || 'GET').toUpperCase()
     const headers = new Headers(init.headers || (typeof input !== 'string' ? input.headers : undefined))
     calls.push({ method, path: url.pathname, search: url.search })
+
+    // ── The exchange-rate source ──────────────────────────────────────────
+    // Everything that is not this project's Supabase host is the rate API: the
+    // app makes exactly one other request (see src/lib/exchangeRate.js), and
+    // answering it here keeps the smoke test off the network while still
+    // running the real client code end to end.
+    if (url.origin !== new URL(SUPABASE_URL).origin) {
+      rateCalls.push(url.href)
+      if (exchangeRate === null) {
+        return json({ message: 'rate source down (Test)' }, 503)
+      }
+      return json({
+        amount: 1,
+        base: 'AUD',
+        date: nowIso().slice(0, 10),
+        rates: { EUR: exchangeRate },
+      })
+    }
 
     // ── GoTrue ────────────────────────────────────────────────────────────
     // Enough of it to drive the real flows: sign in, sign out, ask for a reset
@@ -352,6 +392,7 @@ export function makeBackend({
           google_connections: googleConnectionRow,
           lists: listRow,
           list_items: listItemRow,
+          expenses: expenseRow,
         }[table] ?? taskRow
       const created = incoming.map((data) => {
         // The database rejects a row without an owner, and so does this.
@@ -394,5 +435,5 @@ export function makeBackend({
     return json({ message: `method ${method} not stubbed` }, 405)
   }
 
-  return { fetch: fetchStub, tables, calls, functionCalls, auth, session: auth.session }
+  return { fetch: fetchStub, tables, calls, functionCalls, rateCalls, auth, session: auth.session }
 }

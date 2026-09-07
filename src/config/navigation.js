@@ -14,6 +14,8 @@ import {
   ClipboardList,
   CalendarPlus,
   ListChecks,
+  Wallet,
+  Receipt,
   Info,
   UserCircle,
 } from 'lucide-react'
@@ -36,6 +38,7 @@ export const sidebarNav = [
   { id: 'tasks', label: 'Aufgaben', icon: CheckSquare, to: '/aufgaben', enabled: true },
   { id: 'calendar', label: 'Kalender', icon: Calendar, to: '/kalender', enabled: true },
   { id: 'lists', label: 'Listen', icon: ListChecks, to: '/listen', enabled: true },
+  { id: 'expenses', label: 'Ausgaben', icon: Wallet, to: '/ausgaben', enabled: true },
   { id: 'more', label: 'Mehr', icon: MoreHorizontal, to: '/mehr', enabled: true },
   { id: 'profil', label: 'Profil', icon: UserCircle, to: '/profil', enabled: true },
   { id: 'version', label: 'Version', icon: Info, to: '/version', enabled: true },
@@ -70,4 +73,5 @@ export const actionSheetItems = [
   { id: 'new-task', label: 'Neue Aufgabe', icon: ClipboardList, action: 'task' },
   { id: 'new-event', label: 'Neuer Termin', icon: CalendarPlus, action: 'event' },
   { id: 'new-list', label: 'Neue Liste', icon: ListChecks, action: 'list' },
+  { id: 'new-expense', label: 'Neue Ausgabe', icon: Receipt, action: 'expense' },
 ]

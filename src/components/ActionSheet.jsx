@@ -14,6 +14,7 @@ export default function ActionSheet() {
     openTaskForm,
     openEventForm,
     openListForm,
+    openExpenseForm,
   } = useUI()
 
   const handle = (action) => {
@@ -21,6 +22,7 @@ export default function ActionSheet() {
     if (action === 'task') openTaskForm({ mode: 'create' })
     else if (action === 'event') openEventForm({ mode: 'create' })
     else if (action === 'list') openListForm({ mode: 'create' })
+    else if (action === 'expense') openExpenseForm({ mode: 'create' })
   }
 
   return (
