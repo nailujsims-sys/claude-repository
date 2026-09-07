@@ -6,6 +6,7 @@ import { UIProvider } from './context/UIContext'
 import { TasksProvider } from './context/TasksContext'
 import { EventsProvider } from './context/EventsContext'
 import { ListsProvider } from './context/ListsContext'
+import { ExpensesProvider } from './context/ExpensesContext'
 import { GoogleProvider } from './context/GoogleContext'
 
 import BottomNav from './components/BottomNav'
@@ -14,6 +15,7 @@ import ActionSheet from './components/ActionSheet'
 import TaskForm from './components/TaskForm'
 import EventForm from './components/EventForm'
 import ListForm from './components/ListForm'
+import ExpenseForm from './components/ExpenseForm'
 import ToastHost from './components/ToastHost'
 import ErrorBanner from './components/ErrorBanner'
 
@@ -24,6 +26,7 @@ import Kalender from './screens/Kalender'
 import Listen from './screens/Listen'
 import ListeDetail from './screens/ListeDetail'
 import ListenArchiv from './screens/ListenArchiv'
+import Ausgaben from './screens/Ausgaben'
 import Mehr from './screens/Mehr'
 import Profil from './screens/Profil'
 import ProfilGoogle from './screens/ProfilGoogle'
@@ -87,12 +90,14 @@ function Gate() {
       <TasksProvider>
         <EventsProvider>
           <ListsProvider>
-            {/* Inside the signed-in branch like every other data provider, for
-                the same reason: it reads personal rows and must never run
-                without a user id. */}
-            <GoogleProvider>
-              <AppShell />
-            </GoogleProvider>
+            <ExpensesProvider>
+              {/* Inside the signed-in branch like every other data provider, for
+                  the same reason: it reads personal rows and must never run
+                  without a user id. */}
+              <GoogleProvider>
+                <AppShell />
+              </GoogleProvider>
+            </ExpensesProvider>
           </ListsProvider>
         </EventsProvider>
       </TasksProvider>
@@ -120,6 +125,7 @@ function AppShell() {
           <Route path="/listen" element={<Listen />} />
           <Route path="/listen/archiv" element={<ListenArchiv />} />
           <Route path="/listen/:id" element={<ListeDetail />} />
+          <Route path="/ausgaben" element={<Ausgaben />} />
           <Route path="/mehr" element={<Mehr />} />
           <Route path="/profil" element={<Profil />} />
           <Route path="/profil/google-kalender" element={<ProfilGoogle />} />
@@ -135,6 +141,7 @@ function AppShell() {
       <TaskForm />
       <EventForm />
       <ListForm />
+      <ExpenseForm />
       <ToastHost />
     </div>
   )

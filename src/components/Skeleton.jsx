@@ -28,6 +28,25 @@ export function SkeletonTaskList() {
   )
 }
 
+// The Ausgaben overview: one card of rows in the shape ExpenseRow renders —
+// two lines of text on the left, an amount on the right — so the skeleton has
+// the shape of what replaces it instead of a generic block.
+export function SkeletonExpenseList() {
+  return (
+    <div className="rounded-card bg-bg-card p-4 space-y-4" aria-hidden>
+      {[0, 1, 2, 3].map((row) => (
+        <div key={row} className="flex items-center gap-3">
+          <div className="flex-1 space-y-2">
+            <SkeletonLine className="h-3.5 w-1/2" />
+            <SkeletonLine className="h-2.5 w-1/3" />
+          </div>
+          <SkeletonLine className="h-3.5 w-16 shrink-0" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // The Listen overview: two section cards of rows, in the same 60px-per-row
 // rhythm ListRow renders — a boxed icon and one line of text, so the skeleton
 // has the shape of what replaces it instead of a generic block.

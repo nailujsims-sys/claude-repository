@@ -24,6 +24,7 @@ import { makeRealtimeHub } from './realtimeStub.mjs'
 import { seedTasks } from './fixtures/seedTasks.mjs'
 import { seedEvents } from './fixtures/seedEvents.mjs'
 import { LIST_IDS, seedListItems, seedLists } from './fixtures/seedLists.mjs'
+import { seedExpenses } from './fixtures/seedExpenses.mjs'
 
 const TEST_PASSWORD = 'richtiges-passwort'
 
@@ -71,6 +72,10 @@ function makeDom(hash, seed = {}, options = {}) {
       googleCalendars: seed.googleCalendars ?? [],
       lists: seed.lists ?? seedLists(),
       listItems: seed.listItems ?? seedListItems(),
+      expenses: seed.expenses ?? seedExpenses(),
+      // The rate source answers 1 AUD = 0,60 € unless a test asks it not to;
+      // `exchangeRate: null` is the "Kursabfrage fehlgeschlagen" case.
+      exchangeRate: seed.exchangeRate === undefined ? 0.6 : seed.exchangeRate,
       functions: seed.functions ?? {},
       password: TEST_PASSWORD,
       failTable: seed.failTable ?? null,
@@ -136,6 +141,17 @@ function mount(window, code, name, { expectErrors = false } = {}) {
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 const txt = (window) =>
   (window.document.getElementById('root').textContent || '').replace(/\s+/g, ' ').trim()
+// Intl puts a non-breaking space between a number and its currency symbol, so
+// an assertion written with an ordinary space would never match. Normalised
+// here rather than in every needle.
+const nb = (text) => text.replace(/\u00a0/g, ' ')
+// Local 'YYYY-MM-DD', the same day the app's todayISO() produces. Not
+// toISOString(), which is UTC and is a different day for half the planet.
+const localToday = () => {
+  const d = new Date()
+  const p2 = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
+}
 
 function click(window, predicate) {
   const els = [...window.document.querySelectorAll('button, [role="button"]')]
@@ -204,6 +220,7 @@ async function run() {
     ['Home (/)', '#/'],
     ['Aufgaben (/aufgaben)', '#/aufgaben'],
     ['Listen (/listen)', '#/listen'],
+    ['Ausgaben (/ausgaben)', '#/ausgaben'],
     ['Mehr (/mehr)', '#/mehr'],
     ['Version (/version)', '#/version'],
     ['Kalender (/kalender)', '#/kalender'],
@@ -265,6 +282,7 @@ async function run() {
         'Home (/)': 'Heute',
         'Aufgaben (/aufgaben)': 'Aufgaben',
         'Listen (/listen)': 'Listen',
+        'Ausgaben (/ausgaben)': 'Ausgaben',
         'Mehr (/mehr)': 'Mehr',
         'Version (/version)': 'Version',
         'Kalender (/kalender)': 'Kalender',
@@ -2270,12 +2288,12 @@ async function run() {
     window.__restoreConsole?.()
     const after = hub.joinedTopics().length
     console.log(`\n=== Realtime (Abmelden) ===\n  Kanäle vorher=${before} nachher=${after}`)
-    // tasks, events, lists, list_items, google_connections, google_calendars —
-    // one channel per live table. The number is asserted rather than "> 0"
-    // because a table that quietly stops being live is exactly the bug this
-    // section exists for.
-    if (before !== 6)
-      errors.push(`[RealtimeUnmount] expected six channels while signed in, got ${before}`)
+    // tasks, events, lists, list_items, expenses, google_connections,
+    // google_calendars — one channel per live table. The number is asserted
+    // rather than "> 0" because a table that quietly stops being live is
+    // exactly the bug this section exists for.
+    if (before !== 7)
+      errors.push(`[RealtimeUnmount] expected seven channels while signed in, got ${before}`)
     if (after !== 0)
       errors.push(`[RealtimeUnmount] ${after} channel(s) survived the sign-out`)
   }
@@ -2660,6 +2678,335 @@ async function run() {
     console.log(`\n=== Listen — zweites Gerät ===\n  ${text.slice(0, 200)}`)
     if (!text.includes('Adapter'))
       errors.push('[Listen/Sync] the second device never saw the new entry')
+  }
+
+  // ── 15) Ausgaben ───────────────────────────────────────────────────────
+  //
+  // The behavioural half of the module. The rules themselves — what converts to
+  // what, what a broken rate response reads as, which rate the fallback picks —
+  // are pinned without a browser in tools/expenseLogic.mjs; what needs a real
+  // mount is that the screens obey them, that both input currencies and both
+  // display modes work end to end, and that a failing rate source costs the
+  // user nothing.
+
+  // 15a) The overview: the total in both display currencies, every row
+  //      converted with its own stored rate, and the order.
+  {
+    const window = makeDom('#/ausgaben')
+    mount(window, code, 'Ausgaben/Übersicht')
+    await wait(350)
+    let text = nb(txt(window))
+    console.log(`\n=== Ausgaben — Übersicht (AUD) ===\n  ${text.slice(0, 260)}`)
+
+    // AUD is the default: the currency most of the semester is paid in.
+    if (!text.includes('770,50 AU$'))
+      errors.push('[Ausgaben] the AUD total is not 770,50 AU$')
+    if (!text.includes('5,50 AU$') || !text.includes('480,00 AU$'))
+      errors.push('[Ausgaben] an AUD row is not shown in AUD')
+    // The EUR expense: converted at ITS rate (0,50) into 240,00 AU$, with the
+    // original still readable on the row.
+    if (!text.includes('240,00 AU$') || !text.includes('120,00 €'))
+      errors.push('[Ausgaben] the EUR expense is not shown converted next to its original')
+
+    // Newest first, by transaction date.
+    const order = ['Kaffee', 'Miete September', 'Flug nach Melbourne', 'Surfbrett-Miete']
+      .map((t) => text.indexOf(t))
+    if (!order.every((pos, i) => pos >= 0 && (i === 0 || pos > order[i - 1])))
+      errors.push('[Ausgaben] the expenses are not in newest-first order')
+
+    // The rate is shown, quietly, and it is the live one — the stub answered.
+    if (!text.includes('1 AUD = 0,60 €'))
+      errors.push(`[Ausgaben] the rate line is missing: ${text.slice(0, 200)}`)
+    if (!text.includes('aktueller Kurs'))
+      errors.push('[Ausgaben] the rate is not labelled as the current one')
+    if (!window.__backend.rateCalls.length)
+      errors.push('[Ausgaben] opening the tracker never asked for a rate')
+
+    // Switch to EUR: every number on the screen has to follow.
+    if (!click(window, (el) => el.textContent.trim() === 'EUR'))
+      errors.push('[Ausgaben] the EUR switch was not found')
+    await wait(200)
+    window.__restoreConsole?.()
+    text = nb(txt(window))
+    console.log(`=== Ausgaben — Übersicht (EUR) ===\n  ${text.slice(0, 260)}`)
+    if (!text.includes('433,80 €'))
+      errors.push('[Ausgaben] the EUR total is not 433,80 €')
+    if (!text.includes('3,30 €') || !text.includes('288,00 €') || !text.includes('22,50 €'))
+      errors.push('[Ausgaben] the rows were not converted into EUR')
+    if (text.includes('770,50 AU$'))
+      errors.push('[Ausgaben] the AUD total survived the switch to EUR')
+    // The EUR expense now reads in its own currency, so its original is not
+    // repeated — one number, not the same number twice.
+    if (!text.includes('120,00 €'))
+      errors.push('[Ausgaben] the EUR expense lost its amount in EUR mode')
+  }
+
+  // 15b) Capturing an expense in AUD — the fast path the whole module exists
+  //      for, from the button on the screen to the stored row.
+  {
+    const window = makeDom('#/ausgaben', { expenses: [] })
+    mount(window, code, 'Ausgaben/Neu-AUD')
+    await wait(300)
+    let text = nb(txt(window))
+    if (!text.includes('Noch keine Ausgaben'))
+      errors.push('[Ausgaben/Neu] the empty state is not shown')
+    if (!text.includes('0,00 AU$'))
+      errors.push('[Ausgaben/Neu] an empty tracker does not total zero')
+
+    if (!click(window, (el) => el.textContent.trim() === 'Neue Ausgabe'))
+      errors.push('[Ausgaben/Neu] "Neue Ausgabe" was not clickable')
+    await wait(320)
+
+    if (!typeInto(window, 'input[aria-label="Beschreibung"]', 'Flat White'))
+      errors.push('[Ausgaben/Neu] the description field was not found')
+    await wait(60)
+    if (!typeInto(window, 'input[aria-label="Betrag"]', '5,50'))
+      errors.push('[Ausgaben/Neu] the amount field was not found')
+    await wait(120)
+    text = nb(txt(window))
+    // The conversion answers while the amount is typed: 5,50 AUD at 0,60.
+    if (!text.includes('entspricht') || !text.includes('3,30 €'))
+      errors.push(`[Ausgaben/Neu] no live conversion under the amount: ${text.slice(0, 220)}`)
+
+    if (!click(window, (el) => el.textContent.trim() === 'Erstellen'))
+      errors.push('[Ausgaben/Neu] "Erstellen" was not clickable')
+    await wait(400)
+    window.__restoreConsole?.()
+    text = nb(txt(window))
+    const row = window.__backend.tables.expenses.find((r) => r.title === 'Flat White')
+    if (!row) errors.push('[Ausgaben/Neu] the expense never reached the database')
+    if (row && Number(row.original_amount) !== 5.5)
+      errors.push(`[Ausgaben/Neu] the German decimal was not read: ${row.original_amount}`)
+    if (row && row.original_currency !== 'AUD')
+      errors.push(`[Ausgaben/Neu] the input currency was not stored: ${row.original_currency}`)
+    // The date is today's, without the user having touched it.
+    if (row && row.transaction_date !== localToday())
+      errors.push(`[Ausgaben/Neu] the transaction date is not today: ${row.transaction_date}`)
+    // …and the rate that was actually used is on the row.
+    if (row && Number(row.exchange_rate_aud_eur) !== 0.6)
+      errors.push(`[Ausgaben/Neu] the used rate was not stored: ${row.exchange_rate_aud_eur}`)
+    if (!text.includes('Ausgabe gespeichert'))
+      errors.push('[Ausgaben/Neu] no confirmation after saving')
+    if (!text.includes('Flat White') || !text.includes('5,50 AU$'))
+      errors.push('[Ausgaben/Neu] the new expense is not in the list')
+  }
+
+  // 15c) The same in EUR: the input currency is a switch inside the form, and
+  //      the row is stored in the currency it was entered in.
+  {
+    const window = makeDom('#/ausgaben', { expenses: [] })
+    mount(window, code, 'Ausgaben/Neu-EUR')
+    await wait(300)
+    click(window, (el) => el.textContent.trim() === 'Neue Ausgabe')
+    await wait(320)
+    typeInto(window, 'input[aria-label="Beschreibung"]', 'Bahnticket Deutschland')
+    await wait(60)
+    typeInto(window, 'input[aria-label="Betrag"]', '120')
+    await wait(60)
+
+    // The form's own switch — the overview's is behind the sheet and inert.
+    const eurChip = [...window.document.querySelectorAll('[aria-label="Eingabewährung"] button')]
+      .find((el) => el.textContent.trim() === 'EUR')
+    if (!eurChip) errors.push('[Ausgaben/EUR] the input-currency switch was not found')
+    eurChip?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(150)
+    let text = nb(txt(window))
+    // 120 € at 0,60 are 200 AU$ — the preview flips direction with the switch.
+    if (!text.includes('200,00 AU$'))
+      errors.push(`[Ausgaben/EUR] the conversion did not flip direction: ${text.slice(0, 220)}`)
+
+    click(window, (el) => el.textContent.trim() === 'Erstellen')
+    await wait(400)
+    window.__restoreConsole?.()
+    const row = window.__backend.tables.expenses.find((r) => r.title === 'Bahnticket Deutschland')
+    if (!row) errors.push('[Ausgaben/EUR] the expense never reached the database')
+    if (row && (row.original_currency !== 'EUR' || Number(row.original_amount) !== 120))
+      errors.push(`[Ausgaben/EUR] stored as ${row?.original_amount} ${row?.original_currency}`)
+    // In the AUD overview it shows converted, with its original beside it.
+    text = nb(txt(window))
+    if (!text.includes('200,00 AU$') || !text.includes('120,00 €'))
+      errors.push('[Ausgaben/EUR] the new EUR row is not shown converted next to its original')
+  }
+
+  // 15d) The rate source is down — the case the brief asks about by name.
+  //      Nothing about the module may stop working: the last rate this account
+  //      used stands in, the line says which rate that is, and an expense can
+  //      still be captured and is stamped with it.
+  {
+    const window = makeDom('#/ausgaben', { exchangeRate: null })
+    mount(window, code, 'Ausgaben/Kurs-Fallback')
+    await wait(400)
+    let text = nb(txt(window))
+    console.log(`\n=== Ausgaben — Kursquelle nicht erreichbar ===\n  ${text.slice(0, 220)}`)
+    if (!text.includes('letzter bekannter Kurs'))
+      errors.push('[Ausgaben/Kurs] a failed rate request is not labelled as a fallback')
+    // The newest expense carries 0,60 — that is the account's memory of it.
+    if (!text.includes('1 AUD = 0,60 €'))
+      errors.push('[Ausgaben/Kurs] the fallback is not the last rate this account used')
+    // The totals are unaffected: every row converts with its own stored rate.
+    if (!text.includes('770,50 AU$'))
+      errors.push('[Ausgaben/Kurs] a failed rate request changed the total')
+    // …and it is not an error state: the global banner stays away.
+    if (text.includes('Verbindung') || text.includes('Fehler'))
+      errors.push('[Ausgaben/Kurs] a failed rate request surfaced as an error banner')
+
+    // Capturing still works, at the fallback rate.
+    click(window, (el) => el.textContent.trim() === 'Neue Ausgabe')
+    await wait(320)
+    typeInto(window, 'input[aria-label="Beschreibung"]', 'Bus Bondi')
+    await wait(60)
+    typeInto(window, 'input[aria-label="Betrag"]', '4,80')
+    await wait(60)
+    click(window, (el) => el.textContent.trim() === 'Erstellen')
+    await wait(400)
+    window.__restoreConsole?.()
+    const row = window.__backend.tables.expenses.find((r) => r.title === 'Bus Bondi')
+    if (!row) errors.push('[Ausgaben/Kurs] no expense could be captured while the rate source was down')
+    if (row && Number(row.exchange_rate_aud_eur) !== 0.6)
+      errors.push(`[Ausgaben/Kurs] the fallback rate was not stamped: ${row.exchange_rate_aud_eur}`)
+  }
+
+  // 15e) Nothing loaded and nothing stored: the built-in estimate, and it says
+  //      so rather than passing itself off as today's rate.
+  {
+    const window = makeDom('#/ausgaben', { expenses: [], exchangeRate: null })
+    mount(window, code, 'Ausgaben/Kurs-Richtwert')
+    await wait(400)
+    window.__restoreConsole?.()
+    const text = nb(txt(window))
+    if (!text.includes('Richtwert'))
+      errors.push('[Ausgaben/Kurs] the built-in estimate is not labelled as one')
+    if (!text.includes('1 AUD = 0,58 €'))
+      errors.push(`[Ausgaben/Kurs] the built-in estimate is not shown: ${text.slice(0, 200)}`)
+  }
+
+  // 15f) Correcting an expense: the date is changeable afterwards (the brief
+  //      asks for it by name), and correcting does NOT re-price the expense.
+  {
+    const window = makeDom('#/ausgaben')
+    mount(window, code, 'Ausgaben/Bearbeiten')
+    await wait(350)
+
+    if (!click(window, (el) => el.textContent.includes('Surfbrett-Miete')))
+      errors.push('[Ausgaben/Edit] the row does not open')
+    await wait(320)
+    let text = nb(txt(window))
+    if (!text.includes('Ausgabe bearbeiten'))
+      errors.push('[Ausgaben/Edit] the edit sheet did not open')
+    // The sheet speaks the rate the expense is booked at (0,50), not today's
+    // (0,60) — otherwise 45 AUD would be 22,50 € on the row behind it and
+    // 27,00 € in the sheet in front of it.
+    if (!text.includes('1 AUD = 0,50 €') || !text.includes('Kurs dieser Ausgabe'))
+      errors.push(`[Ausgaben/Edit] the sheet shows a different rate than the row: ${text.slice(0, 240)}`)
+    if (!text.includes('22,50 €'))
+      errors.push('[Ausgaben/Edit] the conversion in the sheet disagrees with the overview')
+
+    // Open the date picker and pick the 15th of the shown month.
+    const dateBtn = [...window.document.querySelectorAll('button')].find(
+      (el) => /^\d{1,2}\. [A-ZÄÖÜ][a-zäöü]+ \d{4}$/.test(el.textContent.trim())
+    )
+    if (!dateBtn) errors.push('[Ausgaben/Edit] the date row was not found')
+    dateBtn?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(150)
+    const day15 = [...window.document.querySelectorAll('button')].find(
+      (el) => el.textContent.trim() === '15'
+    )
+    if (!day15) errors.push('[Ausgaben/Edit] the calendar did not open')
+    day15?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(150)
+
+    click(window, (el) => el.textContent.trim() === 'Speichern')
+    await wait(400)
+    window.__restoreConsole?.()
+    const row = window.__backend.tables.expenses.find((r) => r.title === 'Surfbrett-Miete')
+    if (row && !row.transaction_date.endsWith('-15'))
+      errors.push(`[Ausgaben/Edit] the date was not changed: ${row.transaction_date}`)
+    // The rate belongs to the expense, not to the moment it was corrected.
+    if (row && Number(row.exchange_rate_aud_eur) !== 0.5)
+      errors.push(`[Ausgaben/Edit] correcting an expense re-priced it: ${row.exchange_rate_aud_eur}`)
+    if (row && Number(row.original_amount) !== 45)
+      errors.push('[Ausgaben/Edit] correcting the date changed the amount')
+  }
+
+  // 15g) Deleting commits on the press and the undo brings the expense back
+  //      exactly as it was — the same pattern a task and a list entry use.
+  {
+    const window = makeDom('#/ausgaben')
+    mount(window, code, 'Ausgaben/Löschen')
+    await wait(350)
+    click(window, (el) => el.textContent.includes('Flug nach Melbourne'))
+    await wait(320)
+    if (!click(window, (el) => el.textContent.trim() === 'Ausgabe löschen'))
+      errors.push('[Ausgaben/Löschen] "Ausgabe löschen" was not clickable')
+    await wait(350)
+    let text = nb(txt(window))
+    if (window.__backend.tables.expenses.some((r) => r.title === 'Flug nach Melbourne'))
+      errors.push('[Ausgaben/Löschen] the expense was not deleted')
+    if (!text.includes('Ausgabe gelöscht') || !text.includes('Rückgängig'))
+      errors.push('[Ausgaben/Löschen] no undo toast after deleting')
+    // The total follows immediately: 770,50 − 240,00 = 530,50.
+    if (!text.includes('530,50 AU$'))
+      errors.push(`[Ausgaben/Löschen] the total did not follow the deletion: ${text.slice(0, 200)}`)
+
+    if (!click(window, (el) => el.textContent.trim() === 'Rückgängig'))
+      errors.push('[Ausgaben/Löschen] the undo was not clickable')
+    await wait(450)
+    window.__restoreConsole?.()
+    text = nb(txt(window))
+    const back = window.__backend.tables.expenses.find((r) => r.title === 'Flug nach Melbourne')
+    if (!back) errors.push('[Ausgaben/Löschen] the undo did not bring the expense back')
+    if (back && (Number(back.original_amount) !== 120 || back.original_currency !== 'EUR'))
+      errors.push('[Ausgaben/Löschen] the restored expense lost its amount or currency')
+    // Restored at the rate it was booked at, not at today's.
+    if (back && Number(back.exchange_rate_aud_eur) !== 0.5)
+      errors.push(`[Ausgaben/Löschen] the restored expense was re-priced: ${back.exchange_rate_aud_eur}`)
+    if (!text.includes('770,50 AU$'))
+      errors.push('[Ausgaben/Löschen] the total did not come back with it')
+  }
+
+  // 15h) Persistence and cross-device sync, the two properties every module in
+  //      this app has to have: a reload shows what was written, and a second
+  //      device sees it without a refresh.
+  {
+    const hub = makeRealtimeHub()
+    const first = makeDom('#/ausgaben', { expenses: [] }, { hub })
+    mount(first, code, 'Ausgaben/Sync-1')
+    await wait(300)
+    click(first, (el) => el.textContent.trim() === 'Neue Ausgabe')
+    await wait(320)
+    typeInto(first, 'input[aria-label="Beschreibung"]', 'Woolworths')
+    await wait(60)
+    typeInto(first, 'input[aria-label="Betrag"]', '62,40')
+    await wait(60)
+    click(first, (el) => el.textContent.trim() === 'Erstellen')
+    await wait(400)
+
+    // Same backend, new window — that is a reload.
+    const reloaded = makeDom('#/ausgaben', {}, { backend: first.__backend, hub })
+    mount(reloaded, code, 'Ausgaben/Reload')
+    await wait(400)
+    reloaded.__restoreConsole?.()
+    if (!nb(txt(reloaded)).includes('Woolworths'))
+      errors.push('[Ausgaben/Sync] the expense did not survive a reload')
+
+    // A second device on the same account, already open.
+    const second = makeDom('#/ausgaben', {}, { backend: first.__backend, hub })
+    mount(second, code, 'Ausgaben/Sync-2')
+    await wait(400)
+    click(first, (el) => el.textContent.trim() === 'Neue Ausgabe')
+    await wait(320)
+    typeInto(first, 'input[aria-label="Beschreibung"]', 'Bondi Beach Parkgebühr')
+    await wait(60)
+    typeInto(first, 'input[aria-label="Betrag"]', '8')
+    await wait(60)
+    click(first, (el) => el.textContent.trim() === 'Erstellen')
+    await wait(500)
+    first.__restoreConsole?.()
+    second.__restoreConsole?.()
+    const text = nb(txt(second))
+    console.log(`\n=== Ausgaben — zweites Gerät ===\n  ${text.slice(0, 200)}`)
+    if (!text.includes('Bondi Beach Parkgebühr'))
+      errors.push('[Ausgaben/Sync] the second device never saw the new expense')
   }
 
   console.log('\n--- result ---')

@@ -3,8 +3,8 @@ import { createContext, useContext, useMemo, useState } from 'react'
 const UIContext = createContext(null)
 
 // Controls global overlays that can be triggered from many places: the sidebar,
-// the Plus action sheet, and the Neue Aufgabe / Neuer Termin / Neue Liste form
-// sheets.
+// the Plus action sheet, and the Neue Aufgabe / Neuer Termin / Neue Liste /
+// Neue Ausgabe form sheets.
 export function UIProvider({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [actionSheetOpen, setActionSheetOpen] = useState(false)
@@ -19,6 +19,11 @@ export function UIProvider({ children }) {
   // Global for the same reason the task form is: "Neue Liste" is reachable from
   // the Plus action sheet on every screen, not only from the Listen overview.
   const [listForm, setListForm] = useState(null)
+  // expenseForm: null | { mode: 'create' | 'edit', expenseId?: string }
+  // Same reason again, and the strongest case of the four: an expense is
+  // entered at the till, so "Neue Ausgabe" has to be two taps from wherever
+  // the app happens to be standing.
+  const [expenseForm, setExpenseForm] = useState(null)
 
   const value = useMemo(
     () => ({
@@ -41,8 +46,12 @@ export function UIProvider({ children }) {
       listForm,
       openListForm: (opts = { mode: 'create' }) => setListForm(opts),
       closeListForm: () => setListForm(null),
+
+      expenseForm,
+      openExpenseForm: (opts = { mode: 'create' }) => setExpenseForm(opts),
+      closeExpenseForm: () => setExpenseForm(null),
     }),
-    [sidebarOpen, actionSheetOpen, taskForm, eventForm, listForm]
+    [sidebarOpen, actionSheetOpen, taskForm, eventForm, listForm, expenseForm]
   )
 
   return <UIContext.Provider value={value}>{children}</UIContext.Provider>

@@ -23,6 +23,7 @@ declare
   list_a   uuid;
   list_b   uuid;
   item_a   uuid;
+  expense_a uuid;
   n        integer;
   ok       boolean;
   ok_text  text;
@@ -54,6 +55,9 @@ begin
   insert into public.list_items (user_id, list_id, title, quantity, unit)
     values (user_a, list_a, 'Äpfel', 6, 'Stück')
     returning id into item_a;
+  insert into public.expenses (user_id, title, original_amount, original_currency, transaction_date, exchange_rate_aud_eur)
+    values (user_a, 'Kaffee in Sydney', 5.50, 'AUD', current_date, 0.58)
+    returning id into expense_a;
 
   -- ── 2. …and read them back ───────────────────────────────────────────────
   select count(*) into n from public.tasks;
@@ -64,6 +68,8 @@ begin
   if n <> 1 then raise exception 'FAIL: A sees % of their own lists, expected 1', n; end if;
   select count(*) into n from public.list_items;
   if n <> 1 then raise exception 'FAIL: A sees % of their own list entries, expected 1', n; end if;
+  select count(*) into n from public.expenses;
+  if n <> 1 then raise exception 'FAIL: A sees % of their own expenses, expected 1', n; end if;
 
   -- ── 3. …and update and soft-delete them ──────────────────────────────────
   update public.tasks set title = 'Aufgabe von A, bearbeitet' where id = task_a;
@@ -132,6 +138,8 @@ begin
   if n <> 0 then raise exception 'FAIL: B can read % of A''s lists', n; end if;
   select count(*) into n from public.list_items;
   if n <> 0 then raise exception 'FAIL: B can read % of A''s list entries', n; end if;
+  select count(*) into n from public.expenses;
+  if n <> 0 then raise exception 'FAIL: B can read % of A''s expenses', n; end if;
   select count(*) into n from public.profiles;
   if n <> 1 then raise exception 'FAIL: B sees % profiles, expected only their own', n; end if;
 
@@ -155,6 +163,16 @@ begin
   delete from public.list_items where id = item_a;
   get diagnostics n = row_count;
   if n <> 0 then raise exception 'FAIL: B deleted % of A''s list entries', n; end if;
+
+  -- An expense is money: reading somebody else's is a privacy breach, changing
+  -- one is a lie about what they spent.
+  update public.expenses set original_amount = 999 where id = expense_a;
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'FAIL: B updated % of A''s expenses', n; end if;
+
+  delete from public.expenses where id = expense_a;
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'FAIL: B deleted % of A''s expenses', n; end if;
 
   -- ── 7. Without a session there is nothing at all ─────────────────────────
   -- Two layers have to hold here: the grants (anon has none) and, if a grant
@@ -184,6 +202,12 @@ begin
   begin
     execute 'select count(*) from public.list_items' into n;
     if n <> 0 then raise exception 'FAIL: an unauthenticated client read % list entries', n; end if;
+  exception when insufficient_privilege then null;
+  end;
+
+  begin
+    execute 'select count(*) from public.expenses' into n;
+    if n <> 0 then raise exception 'FAIL: an unauthenticated client read % expenses', n; end if;
   exception when insufficient_privilege then null;
   end;
 
@@ -351,6 +375,54 @@ begin
 
   select count(*) into n from public.list_items where list_id = list_a;
   if n <> 0 then raise exception 'FAIL: % entries survived the deletion of their list', n; end if;
+
+  -- ── 9c. An expense the overview could not read ───────────────────────────
+  -- The three columns every total depends on: an amount it can add up, a
+  -- currency it can convert, and a rate it can divide by. All three are
+  -- refused by the database, not only by the form — a row that slipped past
+  -- the client would poison every sum it appears in, silently and forever.
+  execute 'set local role authenticated';
+  perform set_config('request.jwt.claims', json_build_object('sub', user_a, 'role', 'authenticated')::text, true);
+
+  ok := false;
+  begin
+    insert into public.expenses (user_id, title, original_amount, original_currency, exchange_rate_aud_eur)
+      values (user_a, 'Nullausgabe', 0, 'AUD', 0.58);
+  exception when others then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: an expense of zero was accepted'; end if;
+
+  ok := false;
+  begin
+    insert into public.expenses (user_id, title, original_amount, original_currency, exchange_rate_aud_eur)
+      values (user_a, 'Dollarausgabe', 10, 'USD', 0.58);
+  exception when others then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: an expense in an unknown currency was accepted'; end if;
+
+  ok := false;
+  begin
+    insert into public.expenses (user_id, title, original_amount, original_currency, exchange_rate_aud_eur)
+      values (user_a, 'Ohne Kurs', 10, 'AUD', 0);
+  exception when others then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: an expense with a rate of zero was accepted'; end if;
+
+  ok := false;
+  begin
+    insert into public.expenses (user_id, title, original_amount, original_currency, exchange_rate_aud_eur)
+      values (user_a, '   ', 10, 'AUD', 0.58);
+  exception when others then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: a nameless expense was accepted'; end if;
+
+  -- The date defaults to today, which is what "Transaktionsdatum automatisch
+  -- auf das aktuelle Datum setzen" rests on when the client sends none.
+  insert into public.expenses (user_id, title, original_amount, original_currency, exchange_rate_aud_eur)
+    values (user_a, 'Ohne Datum', 10, 'AUD', 0.58);
+  select count(*) into n from public.expenses
+    where title = 'Ohne Datum' and transaction_date = current_date;
+  if n <> 1 then raise exception 'FAIL: an expense without a date did not default to today'; end if;
 
   -- ── 10. Every personal table actually has RLS switched on ────────────────
   execute 'reset role';
