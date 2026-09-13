@@ -21,6 +21,19 @@ export const STORAGE_KEY = `sb-${new URL(SUPABASE_URL).hostname.split('.')[0]}-a
 
 const nowIso = () => new Date().toISOString()
 
+// The finance module's tables, in the order supabase/migrations/0008_finance.sql
+// creates them.
+export const FINANCE_TABLES = [
+  'finance_accounts',
+  'finance_categories',
+  'finance_merchants',
+  'finance_merchant_patterns',
+  'finance_category_rules',
+  'finance_imports',
+  'finance_transactions',
+  'finance_transaction_overrides',
+]
+
 export function taskRow(data = {}) {
   return {
     id: data.id ?? randomUUID(),
@@ -118,6 +131,19 @@ export function expenseRow(data = {}) {
     exchange_rate_aud_eur: data.exchange_rate_aud_eur ?? 0.6,
     created_at: data.created_at ?? nowIso(),
     updated_at: data.updated_at ?? nowIso(),
+  }
+}
+
+// The finance tables. One factory for all eight: unlike tasks or events these
+// rows have no defaults worth emulating — what a test puts in is what the
+// engine has to work with, and inventing a column here would be inventing a
+// fact the database never wrote.
+export function financeRow(data = {}) {
+  return {
+    id: data.id ?? randomUUID(),
+    created_at: data.created_at ?? nowIso(),
+    updated_at: data.updated_at ?? nowIso(),
+    ...data,
   }
 }
 
@@ -231,6 +257,10 @@ export function makeBackend({
   lists = [],
   listItems = [],
   expenses = [],
+  // The eight finance tables, keyed by table name — `{ finance_transactions:
+  // [...] }`. One option instead of eight, because a test usually seeds two of
+  // them and nothing at all of the rest.
+  finance = {},
   profiles = null,
   password = 'richtiges-passwort',
   failTable = null,
@@ -241,6 +271,9 @@ export function makeBackend({
   // Per-action answers for the Edge Function, keyed by action name. A test
   // that wants "connect returns this URL" or "sync fails" supplies it here.
   functions = {},
+  // Answers for the database functions the app calls through PostgREST, keyed
+  // by function name. `rpcCalls` is what the assertions read.
+  rpc = {},
   // The public exchange-rate source (src/lib/exchangeRate.js). It is the one
   // request the app makes to something that is not Supabase, so the stub has to
   // answer it too — otherwise every Ausgaben test would silently be testing the
@@ -255,12 +288,16 @@ export function makeBackend({
     lists: lists.map(listRow),
     list_items: listItems.map(listItemRow),
     expenses: expenses.map(expenseRow),
+    ...Object.fromEntries(
+      FINANCE_TABLES.map((name) => [name, (finance[name] ?? []).map(financeRow)])
+    ),
     profiles: profiles ?? [
       { id: TEST_USER_ID, display_name: 'Julian', timezone: 'Europe/Berlin', created_at: nowIso(), updated_at: nowIso() },
     ],
   }
   const calls = []
   const functionCalls = []
+  const rpcCalls = []
   const rateCalls = []
   const auth = { session: makeSession(), signedOut: false, recoverEmails: [], newPasswords: [] }
 
@@ -345,6 +382,22 @@ export function makeBackend({
       return json({ ok: true })
     }
 
+    // ── Database functions ────────────────────────────────────────────────
+    // PostgREST offers a function at /rest/v1/rpc/<name>; supabase-js `.rpc()`
+    // posts the named arguments as the body. The finance module's learning
+    // call is one of these, and what matters to a test is exactly that body.
+    if (url.pathname.startsWith('/rest/v1/rpc/')) {
+      const name = url.pathname.replace('/rest/v1/rpc/', '')
+      if (!headers.get('apikey') || !headers.get('authorization')) {
+        return json({ message: 'No API key found in request', code: '401' }, 401)
+      }
+      const body = init.body ? JSON.parse(init.body) : {}
+      rpcCalls.push({ name, body })
+      const handler = rpc[name]
+      if (typeof handler === 'function') return handler(body)
+      return json({ ok: true })
+    }
+
     const table = url.pathname.replace('/rest/v1/', '')
     if (!(table in tables)) return json({ message: `unknown table ${table}` }, 404)
 
@@ -393,6 +446,7 @@ export function makeBackend({
           lists: listRow,
           list_items: listItemRow,
           expenses: expenseRow,
+          ...Object.fromEntries(FINANCE_TABLES.map((name) => [name, financeRow])),
         }[table] ?? taskRow
       const created = incoming.map((data) => {
         // The database rejects a row without an owner, and so does this.
@@ -435,5 +489,5 @@ export function makeBackend({
     return json({ message: `method ${method} not stubbed` }, 405)
   }
 
-  return { fetch: fetchStub, tables, calls, functionCalls, rateCalls, auth, session: auth.session }
+  return { fetch: fetchStub, tables, calls, functionCalls, rpcCalls, rateCalls, auth, session: auth.session }
 }

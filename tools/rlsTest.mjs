@@ -106,20 +106,24 @@ try {
   }
 
   // Negative control. A suite that cannot fail proves nothing, so RLS is
-  // switched off on one table and the very same script has to reject it.
-  psql(['-c', 'alter table public.tasks disable row level security'])
-  let caught = false
-  try {
-    psql(['-f', 'supabase/tests/rls.sql'])
-  } catch {
-    caught = true
+  // switched off on one table and the very same script has to reject it. One
+  // table per module that has its own assertion block — a control on `tasks`
+  // alone would say nothing about whether the finance assertions bite.
+  for (const table of ['public.tasks', 'public.finance_transactions']) {
+    psql(['-c', `alter table ${table} disable row level security`])
+    let caught = false
+    try {
+      psql(['-f', 'supabase/tests/rls.sql'])
+    } catch {
+      caught = true
+    }
+    psql(['-c', `alter table ${table} enable row level security`])
+    if (!caught) {
+      console.error(`rls: Gegenprobe bestanden — die Assertions zu ${table} prüfen nichts.`)
+      process.exit(1)
+    }
+    console.log(`  Gegenprobe: ohne RLS auf ${table} schlägt dasselbe Skript fehl`)
   }
-  psql(['-c', 'alter table public.tasks enable row level security'])
-  if (!caught) {
-    console.error('rls: Gegenprobe bestanden — die Assertions prüfen nichts.')
-    process.exit(1)
-  }
-  console.log('  Gegenprobe: ohne RLS auf public.tasks schlägt dasselbe Skript fehl')
 
   console.log('\nrls: alle Policies verhalten sich wie erwartet.')
 } catch (err) {
