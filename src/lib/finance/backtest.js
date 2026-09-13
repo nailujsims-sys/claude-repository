@@ -1,5 +1,5 @@
 import { patternMatches } from './merchantMatching'
-import { patternText, tokenize } from './normalize'
+import { patternText, transactionTokens } from './normalize'
 
 // What a pattern would do before it exists.
 //
@@ -10,6 +10,11 @@ import { patternText, tokenize } from './normalize'
 // question, it changes nothing, and it never proposes a pattern of its own: a
 // pattern is what a human marked in a booking text, never something derived
 // from the history.
+//
+// It reads each booking's STORED tokens, which is the same basis
+// finance_learn_merchant_rule verifies against — so the sentence the user sees
+// before saving and the set the database actually re-labels are the same set,
+// not two opinions about it.
 
 const isLocked = (transaction, overrideIds) =>
   transaction.manual_lock === true || overrideIds.has(transaction.id)
@@ -63,7 +68,7 @@ export function backtestPattern({
   let lockedCount = 0
 
   for (const transaction of transactions) {
-    const tokens = tokenize(transaction.raw_description)
+    const tokens = transactionTokens(transaction)
     if (!patternMatches(candidate, tokens)) continue
 
     // Who else would claim this booking once the new pattern exists: every

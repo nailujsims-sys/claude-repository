@@ -1,4 +1,4 @@
-import { phraseIndex, tokenize } from './normalize'
+import { phraseIndex, transactionTokens } from './normalize'
 
 // Which merchant a booking belongs to — and, just as often, the honest answer
 // that we cannot tell. Pure functions over rows; the caller loads the rows.
@@ -62,6 +62,7 @@ const byPattern = (a, b) =>
  * Which merchant a raw description belongs to.
  *
  * @param {{
+ *   transaction?: object,
  *   rawDescription?: string,
  *   tokens?: string[],
  *   patterns?: Array<object>,
@@ -74,8 +75,19 @@ const byPattern = (a, b) =>
  *   merchantIds: string[], reason: string|null,
  * }}
  */
-export function matchMerchant({ rawDescription, tokens, patterns = [], merchants = [] } = {}) {
-  const descriptionTokens = Array.isArray(tokens) ? tokens : tokenize(rawDescription)
+export function matchMerchant({
+  transaction,
+  rawDescription,
+  tokens,
+  patterns = [],
+  merchants = [],
+} = {}) {
+  // A booking row wins over a loose string: it carries the tokens the database
+  // will verify against, and matching on anything else would decide the
+  // question on a different basis than the one that counts.
+  const descriptionTokens = Array.isArray(tokens)
+    ? tokens
+    : transactionTokens(transaction ?? { raw_description: rawDescription })
 
   const matches = patterns
     .filter((pattern) => patternMatches(pattern, descriptionTokens))

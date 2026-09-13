@@ -128,6 +128,25 @@ export function phraseIndex(tokens, phrase) {
 }
 
 /**
+ * The tokens of one booking — the basis every match is decided on.
+ *
+ * A booking carries its tokens (`normalized_tokens`), written once by this
+ * module when the booking was created and frozen with the text they come from.
+ * When the column is there, it IS the answer, even when it is empty: the
+ * database verifies a learning call against exactly these tokens, so deriving
+ * something friendlier here would show the user a preview the server then
+ * refuses. Tokenising `raw_description` is the fallback for a row that was read
+ * without the column, and for fixtures.
+ *
+ * @param {{normalized_tokens?: string[], raw_description?: string}} transaction
+ * @returns {string[]}
+ */
+export function transactionTokens(transaction) {
+  if (Array.isArray(transaction?.normalized_tokens)) return transaction.normalized_tokens
+  return tokenize(transaction?.raw_description)
+}
+
+/**
  * A pattern's tokens as one readable line ('MAX UND MORITZ'). For screens and
  * error messages; the tokens array stays the stored representation.
  *

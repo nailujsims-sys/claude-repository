@@ -168,8 +168,15 @@ die beim Lesen Zeit sparen:
   in *einer* Transaktion an. Sie läuft mit den Rechten des Aufrufers
   (`security invoker`, kein Service-Role-Schlüssel im Client) und rührt keine
   Buchung an, die `manual_lock` trägt, bereits zugeordnet ist oder einen
-  Override hat. Das Matching selbst steht bewusst **nicht** in SQL, sondern als
-  reine Funktionen in `src/lib/finance/` — dort ist es testbar.
+  Override hat.
+* **Sie glaubt dem Client nicht.** Die mitgeschickten Buchungs-IDs werden einzeln
+  gegen die gespeicherten Tokens der jeweiligen Buchung geprüft
+  (`finance_pattern_matches` auf `finance_transactions.normalized_tokens`),
+  bevor irgendetwas geschrieben wird. Das Tokenisieren selbst steht bewusst
+  **nicht** in SQL — `upper('ß')` ist in Postgres `ß` und in JavaScript `SS`,
+  und zwei fast gleiche Normalisierer sind schlimmer als einer. Tokenisiert wird
+  genau einmal, in `src/lib/finance/normalize.js`, beim Anlegen der Buchung; die
+  Tokens gehören danach zur eingefrorenen Rohhälfte.
 
 Die fünf Kategorien (`lebensmittel`, `restaurant`, `klamotten`, `drogerie`,
 `sonstige`) legt ein Trigger auf `auth.users` an, genau wie das Profil in

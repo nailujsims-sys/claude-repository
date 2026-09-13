@@ -39,6 +39,7 @@ import {
   isNormalizedToken,
   normalizeDescription,
   normalizeTokens,
+  transactionTokens,
   patternText,
   phraseIndex,
   tokenize,
@@ -49,6 +50,7 @@ import {
   isDefaultRule,
   resolveCategory,
   resolveInclusion,
+  resolveTransactionType,
   ruleMatchesAmount,
 } from './src/lib/finance/categoryRules.js'
 import { backtestPattern } from './src/lib/finance/backtest.js'
@@ -636,6 +638,181 @@ const MERCHANTS = [merchant(REWE), merchant(EDEKA), merchant(MAXMORITZ), merchan
   // Only categories the account actually has may be chosen.
   ok('a category list from the database is what gets validated against',
      !buildLearnRequest({ ...base, categorySlug: 'drogerie', categories: [{ slug: 'lebensmittel' }] }).valid)
+}
+
+// ── F2. Hardening-Regressionen ──────────────────────────────────────────────
+// Jede Zusicherung hier stammt aus einem Befund des Reviews. Sie prüfen die
+// Produktionsfunktionen, nicht eine Nachbildung davon.
+{
+  const REWE_RULE = rule('r-rewe', REWE, LEBENSMITTEL)
+  const reweMatch = matchMerchant({
+    rawDescription: 'REWE TROISDORF', patterns: [pattern('p-rewe', REWE, ['REWE'])], merchants: MERCHANTS,
+  })
+
+  // ── Geld: was die Datenbank nicht exakt zurückgeben kann, entscheidet nichts
+  // PostgREST liefert bigint als JSON-Number; alles jenseits von 2^53 ist beim
+  // Ankommen bereits gerundet. Number.isFinite hätte das akzeptiert.
+  const boundRule = rule('r-b', EDEKA, RESTAURANT, { max_amount_minor: 1200, currency: 'EUR' })
+  const edekaTx = (over) => tx('t-safe', 'EDEKA MARKT', { amount_minor: -800, ...over })
+
+  // Gegen eine Untergrenze geprüft, denn nur dort ist „unbrauchbarer Betrag"
+  // von „trifft trotzdem" unterscheidbar: ein gerundeter Riesenwert erfüllt
+  // jedes >= und würde sonst still als Treffer durchgehen.
+  const minRule = rule('r-min', EDEKA, LEBENSMITTEL, { min_amount_minor: 1000, currency: 'EUR' })
+  ok('ein Betrag jenseits von MAX_SAFE_INTEGER trifft keine Betragsregel',
+     ruleMatchesAmount(minRule, { amount_minor: 9007199254740993, currency: 'EUR' }) === false)
+  ok('ein gebrochener Betrag trifft keine Betragsregel',
+     ruleMatchesAmount(minRule, { amount_minor: 1200.5, currency: 'EUR' }) === false)
+  ok('ein Betrag als Text, der keine Zahl ist, trifft keine Betragsregel',
+     ruleMatchesAmount(minRule, { amount_minor: 'zwölf', currency: 'EUR' }) === false)
+  ok('ein exakter Betrag trifft die Untergrenze weiterhin',
+     ruleMatchesAmount(minRule, { amount_minor: -1200, currency: 'EUR' }) === true)
+  ok('eine Betragsgrenze jenseits von MAX_SAFE_INTEGER trifft nicht',
+     ruleMatchesAmount(rule('r-x', EDEKA, RESTAURANT, { max_amount_minor: 9007199254740993, currency: 'EUR' }),
+                       { amount_minor: -800, currency: 'EUR' }) === false)
+  ok('der größte exakt darstellbare Betrag wird noch verglichen',
+     ruleMatchesAmount(rule('r-y', EDEKA, RESTAURANT, { max_amount_minor: 9007199254740991, currency: 'EUR' }),
+                       { amount_minor: -800, currency: 'EUR' }) === true)
+  ok('ein Betrag als Ziffernfolge bleibt vergleichbar',
+     ruleMatchesAmount(boundRule, { amount_minor: '-800', currency: 'EUR' }) === true)
+
+  // ── Währung: eine Regel in Euro sagt nichts über eine Buchung ohne Währung
+  ok('eine Betragsregel greift nicht auf einer Buchung ohne Währung',
+     ruleMatchesAmount(boundRule, { amount_minor: -800 }) === false)
+  ok('…und auch die Kategorie-Auflösung bleibt dann unresolved',
+     resolveCategory({
+       transaction: { id: 't', amount_minor: -800, manual_lock: false },
+       merchantMatch: matchMerchant({
+         rawDescription: 'EDEKA', patterns: [pattern('p-e', EDEKA, ['EDEKA'])], merchants: MERCHANTS,
+       }),
+       rules: [boundRule],
+     }).status === FINANCE_STATUS.UNRESOLVED)
+  ok('eine Default-Regel mit Währung greift ebenfalls nur bei passender Währung',
+     ruleMatchesAmount(rule('r-d', REWE, LEBENSMITTEL, { currency: 'EUR' }), { amount_minor: -800 }) === false)
+  ok('eine Regel ohne Währung greift weiter überall',
+     ruleMatchesAmount(REWE_RULE, { amount_minor: -800 }) === true)
+
+  // ── Die gespeicherten Tokens sind die Grundlage, nicht der Rohtext ────────
+  // Die Datenbank verifiziert gegen finance_transactions.normalized_tokens.
+  // Was die Vorschau anzeigt, muss deshalb dieselbe Grundlage benutzen —
+  // sonst zeigt der Backtest einen Treffer, den der Server dann ablehnt.
+  const stored = tx('t-stored', 'REWE TROISDORF', { normalized_tokens: ['REWE', 'TROISDORF'] })
+  ok('vorhandene gespeicherte Tokens sind die Antwort',
+     transactionTokens(stored).join(',') === 'REWE,TROISDORF')
+  ok('eine leere gespeicherte Tokenliste bleibt leer — genau wie in der Datenbank',
+     transactionTokens(tx('t-empty', 'REWE TROISDORF', { normalized_tokens: [] })).length === 0)
+  ok('ohne die Spalte wird der Rohtext tokenisiert',
+     transactionTokens({ raw_description: 'REWE TROISDORF' }).join(',') === 'REWE,TROISDORF')
+
+  const emptyTokens = tx('t-0', 'REWE TROISDORF', { normalized_tokens: [] })
+  ok('eine Buchung ohne gespeicherte Tokens wird von keinem Muster getroffen',
+     matchMerchant({
+       transaction: emptyTokens, patterns: [pattern('p-rewe', REWE, ['REWE'])], merchants: MERCHANTS,
+     }).status === FINANCE_STATUS.UNRESOLVED)
+  ok('…und taucht deshalb auch im Backtest nicht auf',
+     backtestPattern({
+       pattern: { pattern_type: 'exact_token', tokens: ['REWE'] },
+       merchantId: REWE, transactions: [emptyTokens, stored],
+     }).transactionIds.join(',') === 't-stored')
+  ok('der Matcher nimmt eine Buchung direkt entgegen',
+     matchMerchant({
+       transaction: stored, patterns: [pattern('p-rewe', REWE, ['REWE'])], merchants: MERCHANTS,
+     }).merchantId === REWE)
+
+  // Die gespeicherten Tokens gewinnen auch dann, wenn sie vom Rohtext
+  // abweichen — denn genau gegen sie prüft der Server.
+  const divergent = tx('t-div', 'REWE TROISDORF', { normalized_tokens: ['EDEKA'] })
+  ok('weicht die gespeicherte Tokenliste ab, entscheidet sie — nicht der Rohtext',
+     backtestPattern({
+       pattern: { pattern_type: 'exact_token', tokens: ['REWE'] },
+       merchantId: REWE, transactions: [divergent],
+     }).matchCount === 0)
+
+  // ── Lernen prüft gegen dieselbe Grundlage ────────────────────────────────
+  const learnOnStored = buildLearnRequest({
+    transaction: stored, selection: 'REWE', categorySlug: 'lebensmittel',
+    merchantName: 'REWE', transactions: [stored], patterns: [],
+  })
+  ok('eine Markierung auf gespeicherten Tokens ist gültig', learnOnStored.valid)
+  const learnOnEmpty = buildLearnRequest({
+    transaction: emptyTokens, selection: 'REWE', categorySlug: 'lebensmittel',
+    merchantName: 'REWE', transactions: [emptyTokens], patterns: [],
+  })
+  ok('eine Markierung auf einer Buchung ohne gespeicherte Tokens wird abgelehnt — so wie im Server',
+     !learnOnEmpty.valid && learnOnEmpty.errors.some((e) => e.code === 'pattern_not_in_description'))
+
+  // ── Wortgrenzen, noch einmal an pathologischen Fällen ────────────────────
+  for (const [name, raw] of [
+    ['als Präfix eines längeren Tokens', 'REWEMARKT KOELN'],
+    ['als Suffix eines längeren Tokens', 'SUPERREWE KOELN'],
+    ['mitten in einem Token', 'XREWEX KOELN'],
+    ['als Teil einer Ziffernfolge', 'REWE1 KOELN'],
+  ]) {
+    ok('REWE trifft nicht ' + name,
+       matchMerchant({
+         rawDescription: raw, patterns: [pattern('p-rewe', REWE, ['REWE'])], merchants: MERCHANTS,
+       }).status === FINANCE_STATUS.UNRESOLVED)
+  }
+  ok('REWE trifft dagegen, sobald es ein eigenes Token ist',
+     matchMerchant({
+       rawDescription: 'REWE1 KOELN REWE', patterns: [pattern('p-rewe', REWE, ['REWE'])], merchants: MERCHANTS,
+     }).merchantId === REWE)
+
+  // Eine Phrase am Rand der Tokenliste.
+  ok('eine Phrase am Ende der Buchung trifft',
+     matchMerchant({
+       rawDescription: 'KARTE MAX UND MORITZ',
+       patterns: [pattern('p-mm', MAXMORITZ, ['MAX', 'UND', 'MORITZ'])], merchants: MERCHANTS,
+     }).merchantId === MAXMORITZ)
+  ok('eine Phrase, die über das Ende hinausragt, trifft nicht',
+     matchMerchant({
+       rawDescription: 'KARTE MAX UND',
+       patterns: [pattern('p-mm', MAXMORITZ, ['MAX', 'UND', 'MORITZ'])], merchants: MERCHANTS,
+     }).status === FINANCE_STATUS.UNRESOLVED)
+
+  // ── Lernen (A) und Einzelkorrektur (B) sind zwei Dinge ───────────────────
+  // Die Datenbank setzt das durch (supabase/tests/rls.sql); hier zählt, dass
+  // der Client eine gesperrte oder überschriebene Buchung gar nicht erst
+  // mitschickt.
+  const mixed = [
+    tx('t-frei', 'REWE EINS', { normalized_tokens: ['REWE', 'EINS'] }),
+    tx('t-lock', 'REWE ZWEI', { normalized_tokens: ['REWE', 'ZWEI'], manual_lock: true }),
+    tx('t-over', 'REWE DREI', { normalized_tokens: ['REWE', 'DREI'] }),
+    tx('t-zu', 'REWE VIER', { normalized_tokens: ['REWE', 'VIER'], merchant_id: DM }),
+  ]
+  const plan = buildLearnRequest({
+    transaction: mixed[0], selection: 'REWE', categorySlug: 'lebensmittel', merchantName: 'REWE',
+    transactions: mixed, patterns: [], overrides: [{ transaction_id: 't-over' }],
+  })
+  ok('die Regel nimmt nur Buchungen mit, über die niemand entschieden hat',
+     plan.request.p_apply_transaction_ids.join(',') === '')
+  ok('…die gesperrte, die überschriebene und die zugeordnete bleiben außen vor',
+     plan.backtest.matchCount === 4 && plan.backtest.applicableTransactionIds.join(',') === 't-frei')
+
+  // Was ein Mensch je Buchung entscheiden kann, muss auch gelesen werden —
+  // eine Spalte im Override, die niemand ausliest, wäre totes Datenmodell.
+  ok('der Typ einer Buchung kommt aus dem Import …',
+     resolveTransactionType({ transaction: tx('t-typ', 'X', { transaction_type: 'purchase' }) }) === 'purchase')
+  ok('… und die bewusste Korrektur schlägt ihn',
+     resolveTransactionType({
+       transaction: tx('t-typ', 'X', { transaction_type: 'purchase' }),
+       override: { transaction_type: 'transfer' },
+     }) === 'transfer')
+  ok('ein leerer Override-Typ ändert nichts',
+     resolveTransactionType({
+       transaction: tx('t-typ', 'X', { transaction_type: 'refund' }),
+       override: { transaction_type: '' },
+     }) === 'refund')
+  ok('ohne alles ist eine Buchung ein Einkauf', resolveTransactionType() === 'purchase')
+
+  // Der Override gewinnt danach weiterhin gegen die frisch gelernte Regel.
+  ok('die Einzelkorrektur schlägt die allgemeine Regel',
+     resolveCategory({
+       transaction: mixed[2],
+       merchantMatch: reweMatch,
+       rules: [REWE_RULE],
+       override: { transaction_id: 't-over', category_id: DROGERIE },
+     }).categoryId === DROGERIE)
 }
 
 // ── G. What a client may write ──────────────────────────────────────────────

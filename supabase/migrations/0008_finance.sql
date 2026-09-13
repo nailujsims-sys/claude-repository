@@ -56,6 +56,56 @@ as $$
      );
 $$;
 
+-- ── Matching, as far as the database needs to do it itself ─────────────────
+-- This is NOT a second implementation of the normaliser, and that is the whole
+-- point. Turning a booking text into tokens is the Unicode-hairy half: NFKC,
+-- case folding (Postgres' `upper('ß')` is 'ß', JavaScript's is 'SS'), and what
+-- counts as a letter in a regex character class. Two implementations of that
+-- would agree in testing and disagree on somebody's real bank statement, and a
+-- matcher that is 99 % the same as the other one is worse than one matcher.
+--
+-- So tokenising happens exactly once, in src/lib/finance/normalize.js, and the
+-- result is stored on the booking. What is left here is the part that is pure
+-- array logic and trivially the same in both languages: does this pattern occur
+-- in this list of tokens — as a whole token, or as a contiguous phrase in order.
+-- That is what lets finance_learn_merchant_rule verify a client's claim instead
+-- of believing it.
+create or replace function public.finance_pattern_matches(
+  p_pattern_type   text,
+  p_pattern_tokens text[],
+  p_tokens         text[]
+)
+returns boolean
+language sql
+immutable
+set search_path = ''
+as $$
+  select case
+    when p_pattern_tokens is null or p_tokens is null then false
+    when coalesce(array_length(p_pattern_tokens, 1), 0) = 0 then false
+    -- A whole token, never a substring: 'REWE' is in
+    -- {REWE,TROISDORF,SAGT,DANKE,8407} and not in {REWERT,UND,SOEHNE}.
+    when p_pattern_type = 'exact_token' then
+      array_length(p_pattern_tokens, 1) = 1 and p_pattern_tokens[1] = any (p_tokens)
+    -- In this order and next to each other: {MAX,UND,MORITZ} occurs in
+    -- {MAX,UND,MORITZ,TROISDORF} and not in {MAX,MORITZ} or {MORITZ,UND,MAX}.
+    when p_pattern_type = 'exact_phrase' then
+      array_length(p_pattern_tokens, 1) >= 2
+      and exists (
+        -- Anchored on the array's own lower bound rather than on 1: every array
+        -- this schema stores is 1-based, and a slice that quietly assumed it
+        -- would be a matching bug rather than an error if one ever is not.
+        select 1
+        from generate_series(
+          coalesce(array_lower(p_tokens, 1), 1),
+          coalesce(array_upper(p_tokens, 1), 0) - array_length(p_pattern_tokens, 1) + 1
+        ) as s(i)
+        where p_tokens[s.i : s.i + array_length(p_pattern_tokens, 1) - 1] = p_pattern_tokens
+      )
+    else false
+  end;
+$$;
+
 -- ── finance_accounts: where a booking came from ─────────────────────────────
 -- A source of transactions — "DKB Girokonto", "Bargeld". No bank connection and
 -- no Open Banking: this is a label with a currency, and that is all Stufe 1
@@ -210,10 +260,19 @@ create table if not exists public.finance_merchant_patterns (
     check (pattern_type <> 'exact_phrase' or array_length(tokens, 1) >= 2)
 );
 
--- The same active pattern twice is either a duplicate (harmless but pointless)
--- or — if it points at a different merchant — a conflict that can never be
--- resolved: every booking it matches would be ambiguous forever. Refused at the
--- source, per account.
+-- ONE ACTIVE PATTERN BELONGS TO ONE MERCHANT, per account. The same active
+-- pattern under two merchants is not a duplicate to tolerate — it is a booking
+-- set that would be `conflict` forever, with no way for the user to resolve it
+-- except by deleting one of the two. Refused at the source.
+--
+-- This does NOT stand in the way of aliases, which is the case worth checking:
+-- a merchant may have as many patterns as it needs ('REWE', 'REWE MARKT',
+-- 'REWE CITY'), and two different merchants may have patterns that both match
+-- the same booking as long as the patterns themselves differ ('REWE' vs.
+-- 'REWE TO GO'). That booking is then a conflict — deliberately, because
+-- nothing in the product says which of the two should win, and inventing a
+-- specificity rule is exactly the guess this module refuses to make. The user
+-- resolves it by overriding that booking or by retiring a pattern.
 create unique index if not exists finance_merchant_patterns_unique_idx
   on public.finance_merchant_patterns (user_id, pattern_type, tokens)
   where active;
@@ -271,6 +330,12 @@ create table if not exists public.finance_category_rules (
   constraint finance_category_rules_currency_iso check (currency is null or currency ~ '^[A-Z]{3}$'),
   constraint finance_category_rules_bounds_need_currency check (
     (min_amount_minor is null and max_amount_minor is null) or currency is not null
+  ),
+  -- A bound the client cannot read back exactly would compare against a
+  -- rounded number. Same reason as finance_transactions_amount_exact.
+  constraint finance_category_rules_bounds_exact check (
+    (min_amount_minor is null or min_amount_minor <= 9007199254740991)
+    and (max_amount_minor is null or max_amount_minor <= 9007199254740991)
   )
 );
 
@@ -355,10 +420,21 @@ create table if not exists public.finance_transactions (
   value_date           date,
   -- Minor units. Negative is money out, positive is money in — as the bank
   -- reports it. Rules compare the size, never the sign (see the resolver).
+  --
+  -- bigint, bounded to ±(2^53 − 1). PostgREST serialises int8 as a JSON
+  -- *number*, and JavaScript reads that as a float64 — 9007199254740993 comes
+  -- back as …992, silently. The column keeps bigint's headroom for the day a
+  -- currency with more minor units or a different meaning shows up, and the
+  -- constraint guarantees that everything actually stored is exactly
+  -- representable in the client that has to read it. 90 billion euros of
+  -- headroom for a personal account is not a limitation.
   amount_minor         bigint not null,
   currency             text not null default 'EUR',
   raw_description      text not null,
   external_reference   text,
+  -- Derived from raw_description, deterministically, by the one normaliser —
+  -- see the constraint below for why the database keeps a copy at all.
+  normalized_tokens    text[] not null default '{}',
   -- ── interpretation from here on ──
   merchant_id          uuid references public.finance_merchants (id) on delete set null,
   category_id          uuid references public.finance_categories (id) on delete set null,
@@ -393,8 +469,51 @@ create table if not exists public.finance_transactions (
   constraint finance_transactions_refund_link
     check (refunds_transaction_id is null or transaction_type = 'refund'),
   constraint finance_transactions_refund_not_self
-    check (refunds_transaction_id is null or refunds_transaction_id <> id)
+    check (refunds_transaction_id is null or refunds_transaction_id <> id),
+  -- See the comment on amount_minor: what the database accepts, the client can
+  -- read back exactly. 9007199254740991 = Number.MAX_SAFE_INTEGER.
+  constraint finance_transactions_amount_exact
+    check (amount_minor between -9007199254740991 and 9007199254740991),
+  -- The tokens of raw_description, produced once by the one normaliser
+  -- (src/lib/finance/normalize.js) when the booking is created. They are part
+  -- of the raw half: derived from it, frozen with it, and never rewritten.
+  --
+  -- They exist so the DATABASE can check a match instead of believing a client:
+  -- finance_learn_merchant_rule verifies every booking it is asked to re-label
+  -- against these tokens (see finance_pattern_matches). An empty array is the
+  -- safe default — it matches nothing, so a booking that arrived without
+  -- tokens stays unresolved instead of being swept up by the next pattern.
+  constraint finance_transactions_tokens_normalized check (
+    array_length(normalized_tokens, 1) is null
+    or public.finance_tokens_normalized(normalized_tokens)
+  )
 );
+
+-- For a database that already ran an earlier copy of this file: the column and
+-- its constraint are added the way 0005 adds the Google columns to `events`.
+-- `create table if not exists` above does nothing to an existing table.
+alter table public.finance_transactions
+  add column if not exists normalized_tokens text[] not null default '{}';
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'finance_transactions_amount_exact'
+  ) then
+    alter table public.finance_transactions add constraint finance_transactions_amount_exact
+      check (amount_minor between -9007199254740991 and 9007199254740991);
+  end if;
+  if not exists (
+    select 1 from pg_constraint where conname = 'finance_transactions_tokens_normalized'
+  ) then
+    alter table public.finance_transactions add constraint finance_transactions_tokens_normalized
+      check (
+        array_length(normalized_tokens, 1) is null
+        or public.finance_tokens_normalized(normalized_tokens)
+      );
+  end if;
+end
+$$;
 
 -- The list every finance screen will ask for: one account's bookings, newest
 -- first, with created_at breaking ties inside a day.
@@ -435,6 +554,11 @@ begin
      or new.currency        is distinct from old.currency
      or new.raw_description is distinct from old.raw_description
      or new.external_reference is distinct from old.external_reference
+     -- The tokens are a function of raw_description. Letting them change while
+     -- the text stays put would be the one way to make a stored booking match a
+     -- pattern it does not contain — exactly what the verification below rests
+     -- on not happening.
+     or new.normalized_tokens is distinct from old.normalized_tokens
   then
     raise exception 'finance: die Originaldaten einer Buchung sind unveraenderlich (id %)', old.id
       using errcode = '23514';
@@ -828,12 +952,15 @@ create trigger finance_transaction_overrides_set_updated_at
 -- can therefore not reach a row the caller could not have reached by hand — it
 -- only makes the five writes atomic.
 --
--- WHAT IT DOES NOT DO: it does not tokenize, it does not match, it does not
--- decide which other bookings the new pattern explains. That is the engine's
--- job (src/lib/finance/), it is pure, and it is tested. The caller passes the
--- ids its backtest found in `p_apply_transaction_ids`, and the database's part
--- is to refuse the rows that must not be touched: anything already assigned to
--- a merchant, anything `manual_lock`ed, anything carrying a manual override.
+-- WHAT IT DOES NOT DO: it does not tokenise. That happens once, in
+-- src/lib/finance/normalize.js, and the result is stored on the booking.
+--
+-- WHAT IT DOES NOT TAKE ON TRUST: the match set. The caller passes the ids its
+-- backtest found in `p_apply_transaction_ids` — the same ones the user saw —
+-- and every single one is re-checked here against that booking's own stored
+-- tokens (public.finance_pattern_matches) before it is touched, on top of the
+-- three conditions that protect a decision somebody already made. A client bug
+-- can therefore narrow what gets re-labelled, never widen it.
 create or replace function public.finance_learn_merchant_rule(
   p_transaction_id        uuid,
   p_category_slug         text,
@@ -867,6 +994,8 @@ declare
   v_rule_created     boolean := false;
   v_rule_currency    text;
   v_applied          integer := 0;
+  v_requested        integer := 0;
+  v_tx_updated       boolean := false;
   v_name             text := btrim(coalesce(p_merchant_name, ''));
 begin
   if v_user is null then
@@ -907,6 +1036,14 @@ begin
   end if;
   if p_review_mode is not null and p_review_mode not in ('auto', 'conditional', 'always_review') then
     raise exception 'finance: unbekannter review_mode %', p_review_mode using errcode = '22023';
+  end if;
+
+  -- A pattern is what a human marked IN A BOOKING TEXT. If it does not occur in
+  -- the booking this call names, it was not marked — it was constructed, by a
+  -- bug or by hand. Refused before anything is written.
+  if not public.finance_pattern_matches(p_pattern_type, p_tokens, v_tx.normalized_tokens) then
+    raise exception 'finance: Muster % kommt in dieser Buchung nicht vor',
+      array_to_string(p_tokens, ' ') using errcode = '22023';
   end if;
 
   -- ── the merchant: an existing one, or a new one under this name ──
@@ -998,18 +1135,40 @@ begin
   end if;
 
   -- ── the booking the user was looking at ──
-  -- Assigned unconditionally: this is the row the decision was made on, by
-  -- hand, right now. `manual_lock` protects a row from *automatic*
-  -- re-evaluation, which this is not.
-  update public.finance_transactions
-  set merchant_id = v_merchant_id, category_id = v_category_id
-  where id = v_tx.id and user_id = v_user;
+  -- Two things decide what happens to it, and neither is "the client said so".
+  --
+  -- It is only assigned when nobody has decided it by hand. A booking the user
+  -- locked or overrode keeps that decision: learning a general rule (case A)
+  -- and correcting one single booking (case B) are different acts, and the
+  -- second one is the more specific of the two. The rule is still created —
+  -- the answer is "your rule is saved, this one booking stays as you set it",
+  -- which `transaction_updated` in the result lets a screen say out loud.
+  if v_tx.manual_lock = false and not exists (
+    select 1 from public.finance_transaction_overrides o where o.transaction_id = v_tx.id
+  ) then
+    update public.finance_transactions
+    set merchant_id = v_merchant_id, category_id = v_category_id
+    where id = v_tx.id and user_id = v_user;
+    v_tx_updated := true;
+  end if;
 
   -- ── everything else the new pattern explains ──
-  -- Only rows nobody has decided anything about: not assigned, not locked, no
-  -- override. This is where "a later rule run must not overwrite a manual
-  -- decision" is enforced in the database rather than trusted to a client.
-  if p_apply_transaction_ids is not null and array_length(p_apply_transaction_ids, 1) > 0 then
+  -- The client sends the ids its backtest found — the same ids the user saw
+  -- before saving — and the database believes NONE of them. Every row has to
+  -- pass, on its own stored tokens, the very match the pattern claims, plus the
+  -- three conditions that protect a decision somebody already made: not
+  -- assigned, not locked, no override.
+  --
+  -- So a bug in the client's match set cannot re-label a booking that does not
+  -- contain the pattern, and a hand-made request cannot sweep up unrelated
+  -- bookings. The applied set is always a subset of what the user was shown,
+  -- and every member of it provably matches. `requested_count` next to
+  -- `applied_count` makes the difference visible instead of silent.
+  if p_apply_transaction_ids is not null then
+    v_requested := coalesce(array_length(p_apply_transaction_ids, 1), 0);
+  end if;
+
+  if v_requested > 0 then
     update public.finance_transactions t
     set merchant_id = v_merchant_id, category_id = v_category_id
     where t.user_id = v_user
@@ -1017,6 +1176,7 @@ begin
       and t.id <> v_tx.id
       and t.merchant_id is null
       and t.manual_lock = false
+      and public.finance_pattern_matches(p_pattern_type, p_tokens, t.normalized_tokens)
       and not exists (
         select 1 from public.finance_transaction_overrides o where o.transaction_id = t.id
       );
@@ -1024,15 +1184,17 @@ begin
   end if;
 
   return jsonb_build_object(
-    'merchant_id',      v_merchant_id,
-    'merchant_created', v_merchant_created,
-    'pattern_id',       v_pattern_id,
-    'pattern_created',  v_pattern_created,
-    'rule_id',          v_rule_id,
-    'rule_created',     v_rule_created,
-    'category_id',      v_category_id,
-    'transaction_id',   v_tx.id,
-    'applied_count',    v_applied
+    'merchant_id',         v_merchant_id,
+    'merchant_created',    v_merchant_created,
+    'pattern_id',          v_pattern_id,
+    'pattern_created',     v_pattern_created,
+    'rule_id',             v_rule_id,
+    'rule_created',        v_rule_created,
+    'category_id',         v_category_id,
+    'transaction_id',      v_tx.id,
+    'transaction_updated', v_tx_updated,
+    'requested_count',     v_requested,
+    'applied_count',       v_applied
   );
 end;
 $$;

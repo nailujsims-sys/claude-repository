@@ -26,6 +26,29 @@ export const CATEGORY_SOURCE = Object.freeze({
   DEFAULT_RULE: 'default_rule',
 })
 
+/**
+ * An amount in minor units, as a number that is exactly what the database
+ * holds — or null when it is not. `Number.isSafeInteger` is the whole check:
+ * it rejects the fraction, the string, the NaN and, crucially, the value past
+ * 2^53 that JSON already rounded on the way in. The database refuses to store
+ * anything outside that range (finance_transactions_amount_exact), so null here
+ * means the input was never a legitimate amount.
+ *
+ * The sign is dropped on purpose: a bank books a purchase negative, and
+ * "EDEKA under 12 €" is a statement about how much was spent, not about which
+ * direction the money moved. A Retoure of 15 € from EDEKA is therefore read by
+ * the same rule as a 15 € purchase — which is what makes a refund land in the
+ * category of the thing that was returned.
+ *
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function safeAmount(value) {
+  if (value === null || value === undefined || value === '') return null
+  const number = typeof value === 'number' ? value : Number(value)
+  return Number.isSafeInteger(number) ? Math.abs(number) : null
+}
+
 /** A rule without amount bounds — the merchant's default. */
 export const isDefaultRule = (rule) =>
   !!rule && rule.min_amount_minor === null && rule.max_amount_minor === null
@@ -46,24 +69,31 @@ const isActive = (row) => !!row && row.active !== false
 export function ruleMatchesAmount(rule, transaction) {
   if (!isActive(rule)) return false
 
-  // A rule that counts in euros says nothing about a booking in dollars.
-  if (rule.currency && transaction?.currency && rule.currency !== transaction.currency) return false
+  // A rule that counts in euros says nothing about a booking in dollars — and
+  // nothing about a booking that does not say which currency it is in either.
+  // The database requires the column, so this only ever fires on malformed
+  // input; it fires closed, because "probably euros" is not a thing to decide
+  // somebody's spending report on.
+  if (rule.currency && rule.currency !== transaction?.currency) return false
 
   if (isDefaultRule(rule)) return true
 
-  // `Number(null)` is 0, and a booking without an amount would silently match
-  // every "up to …" rule there is. No amount means no bounded rule matches.
-  const raw = transaction?.amount_minor
-  if (raw === null || raw === undefined || raw === '') return false
-  const amount = Math.abs(Number(raw))
-  if (!Number.isFinite(amount)) return false
+  // Money arrives as a JSON number: PostgREST serialises bigint that way, and
+  // JavaScript reads it as a float64. Anything that is not an exact integer —
+  // a value past 2^53 that silently rounded, a fraction, a string that is not a
+  // number, `Number(null)` being 0 — is not something to compare a boundary
+  // against. No usable amount means no bounded rule matches.
+  const amount = safeAmount(transaction?.amount_minor)
+  if (amount === null) return false
 
   if (rule.min_amount_minor !== null && rule.min_amount_minor !== undefined) {
-    const min = Number(rule.min_amount_minor)
+    const min = safeAmount(rule.min_amount_minor)
+    if (min === null) return false
     if (rule.min_inclusive === false ? !(amount > min) : !(amount >= min)) return false
   }
   if (rule.max_amount_minor !== null && rule.max_amount_minor !== undefined) {
-    const max = Number(rule.max_amount_minor)
+    const max = safeAmount(rule.max_amount_minor)
+    if (max === null) return false
     if (rule.max_inclusive === false ? !(amount < max) : !(amount <= max)) return false
   }
   return true
@@ -210,6 +240,22 @@ export function resolveCategory({ transaction, merchantMatch, rules = [], overri
     ruleId: winner.id,
     candidateRuleIds: applicable.map((r) => r.id).sort(),
   })
+}
+
+/**
+ * The type of a booking: a purchase, a Retoure, a transfer between one's own
+ * accounts. The user's own correction beats whatever the import guessed —
+ * the same rule as the category and the analytics flag, and the reason the
+ * override row carries the column at all.
+ *
+ * @param {{transaction?: object, override?: object|null}} input
+ * @returns {string}
+ */
+export function resolveTransactionType({ transaction, override = null } = {}) {
+  if (typeof override?.transaction_type === 'string' && override.transaction_type !== '') {
+    return override.transaction_type
+  }
+  return transaction?.transaction_type ?? 'purchase'
 }
 
 /**

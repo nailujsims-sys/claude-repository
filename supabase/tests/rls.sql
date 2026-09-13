@@ -462,6 +462,9 @@ declare
   tx_b        uuid;
   merch_a     uuid;
   merch_b     uuid;
+  tx_fremd    uuid;
+  tx_fail     uuid;
+  cat_b       uuid;
   cat_food    uuid;
   n           integer;
   ok          boolean;
@@ -495,17 +498,21 @@ begin
   insert into public.finance_accounts (user_id, name, provider)
     values (user_a, 'DKB Giro', 'DKB') returning id into acc_a;
 
-  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description)
-    values (user_a, acc_a, '2026-09-05', -2483, 'EUR', 'REWE TROISDORF SAGT DANKE 8407')
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_a, acc_a, '2026-09-05', -2483, 'EUR', 'REWE TROISDORF SAGT DANKE 8407',
+            array['REWE','TROISDORF','SAGT','DANKE','8407'])
     returning id into tx_a;
-  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description)
-    values (user_a, acc_a, '2026-09-06', -1207, 'EUR', 'REWE MARKT KOELN')
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_a, acc_a, '2026-09-06', -1207, 'EUR', 'REWE MARKT KOELN',
+            array['REWE','MARKT','KOELN'])
     returning id into tx_second;
-  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, manual_lock)
-    values (user_a, acc_a, '2026-09-07', -999, 'EUR', 'REWE CITY BONN', true)
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens, manual_lock)
+    values (user_a, acc_a, '2026-09-07', -999, 'EUR', 'REWE CITY BONN',
+            array['REWE','CITY','BONN'], true)
     returning id into tx_locked;
-  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description)
-    values (user_a, acc_a, '2026-09-08', -1500, 'EUR', 'REWE SUED KOELN')
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_a, acc_a, '2026-09-08', -1500, 'EUR', 'REWE SUED KOELN',
+            array['REWE','SUED','KOELN'])
     returning id into tx_override;
   insert into public.finance_transaction_overrides (user_id, transaction_id, include_in_analytics)
     values (user_a, tx_override, false);
@@ -516,8 +523,9 @@ begin
   -- later rule run either.
   insert into public.finance_merchants (user_id, canonical_name) values (user_a, 'Drogerie')
     returning id into merch_a;
-  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, merchant_id)
-    values (user_a, acc_a, '2026-09-09', -700, 'EUR', 'REWE TO GO KOELN', merch_a)
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens, merchant_id)
+    values (user_a, acc_a, '2026-09-09', -700, 'EUR', 'REWE TO GO KOELN',
+            array['REWE','TO','GO','KOELN'], merch_a)
     returning id into tx_taken;
 
   -- ── 16. Learning a merchant: one call, five consistent writes ────────────
@@ -678,16 +686,222 @@ begin
   -- A Retoure is its own booking; the link only exists on one.
   ok := false;
   begin
-    insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, transaction_type, refunds_transaction_id)
-      values (user_a, acc_a, '2026-09-10', 500, 'EUR', 'RUECKZAHLUNG', 'purchase', tx_a);
+    insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens, transaction_type, refunds_transaction_id)
+      values (user_a, acc_a, '2026-09-10', 500, 'EUR', 'RUECKZAHLUNG', array['RUECKZAHLUNG'], 'purchase', tx_a);
   exception when others then ok := true;
   end;
   if not ok then raise exception 'FAIL: a purchase was allowed to be a refund of another booking'; end if;
 
-  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, transaction_type, refunds_transaction_id)
-    values (user_a, acc_a, '2026-09-10', 500, 'EUR', 'RUECKZAHLUNG REWE', 'refund', tx_a);
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens, transaction_type, refunds_transaction_id)
+    values (user_a, acc_a, '2026-09-10', 500, 'EUR', 'RUECKZAHLUNG REWE', array['RUECKZAHLUNG','REWE'], 'refund', tx_a);
   select count(*) into n from public.finance_transactions where id = tx_a and amount_minor = -2483;
   if n <> 1 then raise exception 'FAIL: booking a Retoure changed the original booking'; end if;
+
+  -- ── The database checks the match itself ─────────────────────────────────
+  -- The property this section exists for: `p_apply_transaction_ids` is a
+  -- CLAIM by the client, and the database believes none of it. Every id is
+  -- re-checked against that booking's own stored tokens before it is touched.
+  --
+  -- Here a booking that has nothing to do with REWE is smuggled into the list,
+  -- the way a bug in the client's backtest would do it.
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_a, acc_a, '2026-09-11', -4200, 'EUR', 'BAUHAUS KOELN KARTENZAHLUNG',
+            array['BAUHAUS','KOELN','KARTENZAHLUNG'])
+    returning id into tx_fremd;
+
+  res := public.finance_learn_merchant_rule(
+    p_transaction_id        => tx_a,
+    p_category_slug         => 'lebensmittel',
+    p_pattern_type          => 'exact_token',
+    p_tokens                => array['REWE'],
+    p_merchant_name         => 'REWE',
+    p_apply_transaction_ids => array[tx_fremd]
+  );
+  if (res ->> 'applied_count')::integer <> 0 then
+    raise exception 'FAIL: the database re-labelled a booking the pattern does not occur in';
+  end if;
+  if (res ->> 'requested_count')::integer <> 1 then
+    raise exception 'FAIL: the result hides how many bookings the client asked for';
+  end if;
+  select count(*) into n from public.finance_transactions where id = tx_fremd and merchant_id is null;
+  if n <> 1 then raise exception 'FAIL: an unrelated booking was assigned a merchant'; end if;
+
+  -- The same guard on the booking the call itself names: a pattern that does
+  -- not occur in it was never marked in it.
+  ok := false;
+  begin
+    perform public.finance_learn_merchant_rule(
+      p_transaction_id => tx_fremd,
+      p_category_slug  => 'lebensmittel',
+      p_pattern_type   => 'exact_token',
+      p_tokens         => array['REWE'],
+      p_merchant_name  => 'REWE'
+    );
+  exception when others then ok := true;
+  end;
+  if not ok then
+    raise exception 'FAIL: a pattern was learned from a booking it does not occur in';
+  end if;
+
+  -- A phrase has to stand contiguously and in order in the STORED tokens too —
+  -- the database's own matcher, not the client's.
+  if public.finance_pattern_matches('exact_phrase', array['KOELN','BAUHAUS'], array['BAUHAUS','KOELN','KARTENZAHLUNG']) then
+    raise exception 'FAIL: the database matched a phrase in the wrong order';
+  end if;
+  if not public.finance_pattern_matches('exact_phrase', array['BAUHAUS','KOELN'], array['BAUHAUS','KOELN','KARTENZAHLUNG']) then
+    raise exception 'FAIL: the database did not match a phrase that stands contiguously';
+  end if;
+  if public.finance_pattern_matches('exact_token', array['REWE'], array['REWERT','UND','SOEHNE']) then
+    raise exception 'FAIL: the database matched a token as a substring';
+  end if;
+
+  -- ── Learning a rule (A) never overwrites a single correction (B) ─────────
+  -- Both bookings below carry a deliberate decision. The rule still gets
+  -- created; the bookings keep what the user set, and the result says so.
+  res := public.finance_learn_merchant_rule(
+    p_transaction_id => tx_locked,
+    p_category_slug  => 'restaurant',
+    p_pattern_type   => 'exact_phrase',
+    p_tokens         => array['REWE','CITY'],
+    p_merchant_name  => 'REWE City'
+  );
+  if (res ->> 'transaction_updated')::boolean then
+    raise exception 'FAIL: learning a rule overwrote a manually locked booking';
+  end if;
+  if not (res ->> 'pattern_created')::boolean then
+    raise exception 'FAIL: the rule was not created although only the booking was protected';
+  end if;
+  select count(*) into n from public.finance_transactions where id = tx_locked and merchant_id is null;
+  if n <> 1 then raise exception 'FAIL: a manually locked booking was assigned after all'; end if;
+
+  res := public.finance_learn_merchant_rule(
+    p_transaction_id => tx_override,
+    p_category_slug  => 'restaurant',
+    p_pattern_type   => 'exact_phrase',
+    p_tokens         => array['REWE','SUED'],
+    p_merchant_name  => 'REWE Sued'
+  );
+  if (res ->> 'transaction_updated')::boolean then
+    raise exception 'FAIL: learning a rule overwrote a booking with a manual override';
+  end if;
+
+  -- ── Atomicity, step by step ─────────────────────────────────────────────
+  -- A failure AFTER the pattern was written: the rule insert violates its
+  -- bounds constraint, so merchant and pattern have to disappear with it.
+  ok := false;
+  begin
+    perform public.finance_learn_merchant_rule(
+      p_transaction_id   => tx_fremd,
+      p_category_slug    => 'sonstige',
+      p_pattern_type     => 'exact_token',
+      p_tokens           => array['BAUHAUS'],
+      p_merchant_name    => 'Bauhaus',
+      p_min_amount_minor => 5000,
+      p_max_amount_minor => 1000,
+      p_rule_currency    => 'EUR'
+    );
+  exception when others then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: a rule with an inverted amount range was accepted'; end if;
+  select count(*) into n from public.finance_merchants where user_id = user_a and canonical_name = 'Bauhaus';
+  if n <> 0 then raise exception 'FAIL: a failure at the rule step left the merchant behind'; end if;
+  select count(*) into n from public.finance_merchant_patterns where user_id = user_a and tokens = array['BAUHAUS'];
+  if n <> 0 then raise exception 'FAIL: a failure at the rule step left the pattern behind'; end if;
+
+  -- A failure DURING the assignment step — the last thing the function does,
+  -- and the hardest one to reach. A trigger installed for exactly this test
+  -- rejects the update; everything the call had written must roll back with it.
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_a, acc_a, '2026-09-12', -1000, 'EUR', 'SPERRE FUER ATOMARITAET',
+            array['SPERRE','FUER','ATOMARITAET'])
+    returning id into tx_fail;
+
+  execute 'reset role';
+  execute $ddl$
+    create or replace function pg_temp.rls_block_assignment() returns trigger
+    language plpgsql as $fn$
+    begin
+      if new.merchant_id is not null and old.raw_description = 'SPERRE FUER ATOMARITAET' then
+        raise exception 'Testsperre: Zuweisung schlaegt fehl';
+      end if;
+      return new;
+    end;
+    $fn$;
+  $ddl$;
+  create trigger rls_block_assignment
+    before update on public.finance_transactions
+    for each row execute function pg_temp.rls_block_assignment();
+  execute 'set local role authenticated';
+  perform set_config('request.jwt.claims', json_build_object('sub', user_a, 'role', 'authenticated')::text, true);
+
+  ok := false;
+  begin
+    perform public.finance_learn_merchant_rule(
+      p_transaction_id => tx_fail,
+      p_category_slug  => 'sonstige',
+      p_pattern_type   => 'exact_token',
+      p_tokens         => array['ATOMARITAET'],
+      p_merchant_name  => 'Atomarer Haendler'
+    );
+  exception when others then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: the blocked assignment did not fail the call'; end if;
+
+  execute 'reset role';
+  drop trigger rls_block_assignment on public.finance_transactions;
+  execute 'set local role authenticated';
+  perform set_config('request.jwt.claims', json_build_object('sub', user_a, 'role', 'authenticated')::text, true);
+
+  select count(*) into n from public.finance_merchants where user_id = user_a and canonical_name = 'Atomarer Haendler';
+  if n <> 0 then raise exception 'FAIL: a failure at the assignment step left the merchant behind'; end if;
+  select count(*) into n from public.finance_merchant_patterns where user_id = user_a and tokens = array['ATOMARITAET'];
+  if n <> 0 then raise exception 'FAIL: a failure at the assignment step left the pattern behind'; end if;
+  select count(*) into n from public.finance_transactions where id = tx_fail and merchant_id is not null;
+  if n <> 0 then raise exception 'FAIL: a failure at the assignment step left the booking assigned'; end if;
+
+  -- ── Money the client could not read back exactly ────────────────────────
+  -- PostgREST sends bigint as a JSON number and JavaScript rounds beyond 2^53.
+  -- What the database accepts is what the client can represent.
+  ok := false;
+  begin
+    insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description)
+      values (user_a, acc_a, '2026-09-13', 9007199254740993, 'EUR', 'ZU GROSS');
+  exception when others then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: an amount beyond Number.MAX_SAFE_INTEGER was accepted'; end if;
+
+  ok := false;
+  begin
+    insert into public.finance_category_rules (user_id, merchant_id, category_id, max_amount_minor, currency)
+      values (user_a, merch_a, cat_food, 9007199254740993, 'EUR');
+  exception when others then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: an amount bound beyond Number.MAX_SAFE_INTEGER was accepted'; end if;
+
+  -- ── One deliberate decision per booking ─────────────────────────────────
+  ok := false;
+  begin
+    insert into public.finance_transaction_overrides (user_id, transaction_id, category_id)
+      values (user_a, tx_override, cat_food);
+  exception when others then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: a booking got a second manual override'; end if;
+
+  ok := false;
+  begin
+    insert into public.finance_transaction_overrides (user_id, transaction_id, transaction_type)
+      values (user_a, tx_fremd, 'ausgabe');
+  exception when others then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: a manual override got an unknown transaction type'; end if;
+
+  -- A manual decision may say "this does not count in the analytics" and may
+  -- correct the type; both survive on their own row, next to the booking.
+  insert into public.finance_transaction_overrides (user_id, transaction_id, include_in_analytics, transaction_type)
+    values (user_a, tx_fremd, false, 'transfer');
+  select count(*) into n from public.finance_transaction_overrides
+   where transaction_id = tx_fremd and include_in_analytics = false and transaction_type = 'transfer';
+  if n <> 1 then raise exception 'FAIL: a manual decision about the analytics was not stored'; end if;
 
   -- ── The original booking is frozen ───────────────────────────────────────
   -- The invariant the whole module is built on, enforced where it cannot be
@@ -713,6 +927,16 @@ begin
   end;
   if not ok then raise exception 'FAIL: the booking date could be rewritten'; end if;
 
+  -- The tokens are derived from the text, so they are frozen with it. Being
+  -- able to change them while the text stays put is the one way to make a
+  -- booking match a pattern it does not contain.
+  ok := false;
+  begin
+    update public.finance_transactions set normalized_tokens = array['EDEKA'] where id = tx_a;
+  exception when others then ok := true;
+  end;
+  if not ok then raise exception 'FAIL: the stored tokens of a booking could be rewritten'; end if;
+
   update public.finance_transactions set include_in_analytics = false, manual_lock = true where id = tx_a;
   get diagnostics n = row_count;
   if n <> 1 then raise exception 'FAIL: the interpretation of a booking could not be changed'; end if;
@@ -724,8 +948,9 @@ begin
   execute 'reset role';
   insert into public.finance_accounts (user_id, name) values (user_b, 'Konto von B') returning id into acc_b;
   insert into public.finance_merchants (user_id, canonical_name) values (user_b, 'ALDI') returning id into merch_b;
-  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description)
-    values (user_b, acc_b, '2026-09-05', -1000, 'EUR', 'ALDI SUED KOELN') returning id into tx_b;
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_b, acc_b, '2026-09-05', -1000, 'EUR', 'ALDI SUED KOELN',
+            array['ALDI','SUED','KOELN']) returning id into tx_b;
 
   execute 'set local role authenticated';
   perform set_config('request.jwt.claims', json_build_object('sub', user_b, 'role', 'authenticated')::text, true);
@@ -788,8 +1013,8 @@ begin
 
   ok := false;
   begin
-    insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description)
-      values (user_b, acc_a, '2026-09-05', -100, 'EUR', 'UNTERGESCHOBEN');
+    insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+      values (user_b, acc_a, '2026-09-05', -100, 'EUR', 'UNTERGESCHOBEN', array['UNTERGESCHOBEN']);
   exception when others then ok := true;
   end;
   if not ok then raise exception 'FAIL: B parked a booking in A''s account'; end if;

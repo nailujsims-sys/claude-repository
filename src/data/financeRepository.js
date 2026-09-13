@@ -1,4 +1,5 @@
 import { requireSupabase } from '../lib/supabase'
+import { tokenize } from '../lib/finance/normalize'
 import {
   pickFinancePatternPatch,
   pickFinanceTransactionPatch,
@@ -97,10 +98,20 @@ export const financeRepository = {
     return row
   },
 
+  // The tokens are DERIVED here and nowhere else — never taken from the
+  // caller, which is why `normalized_tokens` is not in any writable whitelist.
+  // They are the basis the database verifies a learning call against, so the
+  // one thing that must be impossible is a booking whose tokens say something
+  // its text does not. Written once, with the text, and frozen with it.
   async createTransaction(userId, data) {
+    const payload = {
+      ...pickWritableFinanceTransaction(data),
+      user_id: requireUser(userId),
+      normalized_tokens: tokenize(data.raw_description),
+    }
     const { data: row, error } = await requireSupabase()
       .from('finance_transactions')
-      .insert({ ...pickWritableFinanceTransaction(data), user_id: requireUser(userId) })
+      .insert(payload)
       .select()
       .single()
     if (error) throw error

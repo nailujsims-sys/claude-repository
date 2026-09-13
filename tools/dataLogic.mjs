@@ -236,6 +236,21 @@ const lastCall = () => backend.calls[backend.calls.length - 1]
   ok('a forged id is dropped', booking.id !== 'forged-id')
   ok('an unknown column never reaches the bookings table', !('is_admin' in booking))
 
+  // The tokens the database verifies a learning call against are derived here
+  // from the text, by the one normaliser — never taken from the caller. A
+  // client able to set them could make a booking match a pattern its text does
+  // not contain, which is the whole property the server-side check rests on.
+  ok('a booking carries the tokens of its own text',
+     booking.normalized_tokens.join(',') === 'REWE,TROISDORF,SAGT,DANKE,8407')
+
+  const forgedTokens = await financeRepository.createTransaction(USER, {
+    account_id: account.id, booking_date: '2026-09-06', amount_minor: -100, currency: 'EUR',
+    raw_description: 'BAUHAUS KOELN',
+    normalized_tokens: ['REWE'],
+  })
+  ok('tokens handed in by the caller are ignored, not stored',
+     forgedTokens.normalized_tokens.join(',') === 'BAUHAUS,KOELN')
+
   await financeRepository.updateTransaction(USER, booking.id, {
     category_id: 'c-1', raw_description: 'ETWAS GANZ ANDERES', amount_minor: -1,
   })

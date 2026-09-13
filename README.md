@@ -338,7 +338,10 @@ the original's amount.
 
 **Money is an integer.** `amount_minor bigint` holds minor units — 24,83 € is
 `2483` — and every amount is stored next to its currency. There is no float
-anywhere in this module, and EUR is a value, not an assumption.
+anywhere in this module, and EUR is a value, not an assumption. The column is
+bounded to ±(2^53−1): PostgREST sends bigint as a JSON number and JavaScript
+reads it as a float64, so what the database accepts is exactly what the client
+can read back, and anything that is not an exact integer decides nothing.
 
 **Merchant and category are two questions.** `finance_merchants` +
 `finance_merchant_patterns` answer *who was this?*; `finance_category_rules`
@@ -359,16 +362,32 @@ is `unresolved`.
 A pattern only ever comes from a human: the user marks `REWE` in a booking text
 and picks *Lebensmittel*. Before saving, `backtestPattern` says what that would
 do — *"dieses Muster trifft 34 bestehende Buchungen, davon 2 mit einem anderen
-Händler"*. Saving it is one database function,
-`finance_learn_merchant_rule`, so merchant + pattern + rule + this booking + the
-bookings the pattern now explains either all happen or none of them do. It runs
-with the caller's own rights (no service role, no elevated function), and it
-refuses to touch a booking that is `manual_lock`ed, already assigned, or carries
-a manual override — "a human decision beats the automatic one" is enforced in
-the database, not only in the client.
+Händler"*. Saving it is one database function, `finance_learn_merchant_rule`, so
+merchant + pattern + rule + this booking + the bookings the pattern now explains
+either all happen or none of them do. It runs with the caller's own rights (no
+service role, no elevated function).
+
+**And it verifies instead of believing.** The client sends the ids its backtest
+found; the database re-checks every one of them against that booking's own
+stored tokens (`normalized_tokens`, derived from `raw_description` once, by the
+same normaliser, and frozen with it) before touching a single row — plus the
+three conditions that protect a decision somebody already made: not assigned,
+not `manual_lock`ed, no override. A bug in the client's match set can therefore
+narrow what gets re-labelled, never widen it, and the result reports
+`requested_count` next to `applied_count` so the difference is visible rather
+than silent. The same check decides whether the pattern may be learned from the
+booking at all: if it does not occur in it, it was not marked in it.
+
+**Learning a rule and correcting one booking are two different acts.** Marking
+`REWE` → *Lebensmittel* creates merchant, pattern and rule, and that booking
+follows the rule from then on like every other. Correcting a single booking
+writes a row in `finance_transaction_overrides` (or sets `manual_lock`), and
+that decision wins against every rule, now and after every future rule change —
+including the one being learned: the rule is still created, the booking keeps
+what the user set, and `transaction_updated: false` says so.
 
 The rules live in `src/lib/finance/` and are pure; `tools/financeLogic.mjs`
-covers them (142 assertions, incl. the EDEKA cent boundary in both directions
+covers them (177 assertions, incl. the EDEKA cent boundary in both directions
 and both signs). Atomicity, the constraints and the account isolation are
 database behaviour and are proved in `supabase/tests/rls.sql`
 (`npm run test:rls`).

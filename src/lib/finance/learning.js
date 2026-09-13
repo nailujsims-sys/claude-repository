@@ -7,7 +7,7 @@ import {
 } from '../../config/finance'
 import { backtestPattern } from './backtest'
 import { patternMatches } from './merchantMatching'
-import { isNormalizedToken, normalizeTokens, patternText, tokenize } from './normalize'
+import { isNormalizedToken, normalizeTokens, patternText, transactionTokens } from './normalize'
 
 // The user action this whole module exists for:
 //
@@ -87,9 +87,13 @@ export function buildLearnRequest({
   // The guard against a pattern nobody marked: whatever is saved has to occur
   // in the booking the user was looking at. A pattern may never be derived from
   // the history — only confirmed against the text in front of the user.
+  //
+  // Checked here so the user gets a sentence instead of a database error, and
+  // checked again inside finance_learn_merchant_rule against the booking's
+  // stored tokens, because this half runs on a machine we do not control.
   if (transaction && tokens.length > 0 && isPatternType(type)) {
     const candidate = { pattern_type: type, tokens, active: true }
-    if (!patternMatches(candidate, tokenize(transaction.raw_description))) {
+    if (!patternMatches(candidate, transactionTokens(transaction))) {
       errors.push(
         error('pattern_not_in_description', `„${patternText(tokens)}" kommt in dieser Buchung nicht vor.`)
       )

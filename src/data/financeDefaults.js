@@ -12,6 +12,11 @@
 //     INSERT, because that is when the import writes it — and is deliberately
 //     absent from WRITABLE_FINANCE_TRANSACTION_PATCH_FIELDS, so no later update
 //     can rewrite what a booking said it was.
+//   • `normalized_tokens` is in NO list at all. It is derived from
+//     `raw_description` by src/lib/finance/normalize.js inside
+//     financeRepository.createTransaction, because it is the basis the database
+//     verifies a learning call against — a caller able to set it could make a
+//     booking match a pattern its text does not contain.
 //   • A pattern is created, deactivated or replaced — never edited in place, and
 //     WRITABLE_FINANCE_PATTERN_PATCH_FIELDS is what makes that true: it holds
 //     `active` and nothing else. Editing a pattern's tokens would silently
