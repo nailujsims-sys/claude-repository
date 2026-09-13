@@ -23,6 +23,7 @@ Durchlauf ändert nichts und zerstört nichts.
 | `0005_google_calendar.sql` | Google-Kalender: `google_connections`, `google_credentials` (für Clients gesperrt), `google_calendars`, `google_channels`, `google_event_tombstones`, die Google-Spalten an `events`, die Sync-Trigger, RLS + Grants |
 | `0006_lists.sql` | Listen: Tabellen `lists` und `list_items` (Vorlage, Icon, Pin, Archiv, Menge/Einheit/Betrag/Kategorie), Indizes, Constraints, RLS + Policies, Realtime |
 | `0007_expenses.sql` | Ausgaben: Tabelle `expenses` (Titel, Originalbetrag, Eingabewährung AUD/EUR, Transaktionsdatum, verwendeter AUD/EUR-Kurs), Indizes, Constraints, RLS + Policies, Realtime |
+| `0008_finance.sql` | Finanzen: `finance_accounts`, `finance_categories` (die fünf MVP-Kategorien, per Trigger pro Konto angelegt), `finance_merchants`, `finance_merchant_patterns`, `finance_category_rules`, `finance_imports`, `finance_transactions`, `finance_transaction_overrides`, die Funktion `finance_learn_merchant_rule`, Indizes, Constraints, RLS + Policies |
 
 **Weg A — Dashboard (kein Werkzeug nötig).** SQL Editor öffnen, die Dateien
 nacheinander einfügen und ausführen.
@@ -103,7 +104,11 @@ fertig wird, auch auf dem Mac zu sehen ist. `0006_lists.sql` nimmt `lists` und
 Gerät verschwindet. `0007_expenses.sql` nimmt `expenses` auf, damit eine am
 Automaten erfasste Ausgabe sofort in der Gesamtsumme auf dem anderen Gerät
 steht. Die Zugangsdaten, die Push-Kanäle
-und die Grabsteine werden bewusst **nicht** veröffentlicht. Prüfen:
+und die Grabsteine werden bewusst **nicht** veröffentlicht. Die acht
+`finance_*`-Tabellen aus `0008` ebenfalls noch nicht: es gibt bislang keinen
+Screen, der sie abonniert, und eine Tabelle in die Publikation aufzunehmen ist
+ein eigener Einzeiler — der gehört in die Migration, die das Modul sichtbar
+macht. Prüfen:
 
 ```sql
 select schemaname, tablename from pg_publication_tables
@@ -145,7 +150,33 @@ Die eine Regel, die hier wiederholt gehört: die Google-Tokens liegen in
 (`service_role`) kommen daran. `tests/rls.sql` beweist genau das, zusammen mit
 der Nutzerisolation der übrigen Google-Tabellen.
 
-## 7. Eine neue persönliche Tabelle anlegen
+## 7. Finanzen
+
+`0008_finance.sql` folgt demselben Muster wie alles andere, mit drei Punkten,
+die beim Lesen Zeit sparen:
+
+* **Beträge sind `bigint` in Minor Units.** 24,83 € steht als `2483` in
+  `finance_transactions.amount_minor`, daneben immer die Währung. Kein Float,
+  nirgends — und EUR ist ein Wert, keine Annahme.
+* **Rohdaten und Interpretation sind getrennt.** `raw_description`,
+  `amount_minor`, `currency`, `booking_date` schreibt der Import einmal;
+  `merchant_id`, `category_id`, `include_in_analytics` sind jederzeit neu
+  berechenbar. Eine bewusste Entscheidung des Nutzers steht in
+  `finance_transaction_overrides` und überlebt jede Neuberechnung.
+* **Eine Funktion statt fünf Client-Writes.**
+  `finance_learn_merchant_rule(...)` legt Händler, Muster, Regel und Zuordnung
+  in *einer* Transaktion an. Sie läuft mit den Rechten des Aufrufers
+  (`security invoker`, kein Service-Role-Schlüssel im Client) und rührt keine
+  Buchung an, die `manual_lock` trägt, bereits zugeordnet ist oder einen
+  Override hat. Das Matching selbst steht bewusst **nicht** in SQL, sondern als
+  reine Funktionen in `src/lib/finance/` — dort ist es testbar.
+
+Die fünf Kategorien (`lebensmittel`, `restaurant`, `klamotten`, `drogerie`,
+`sonstige`) legt ein Trigger auf `auth.users` an, genau wie das Profil in
+`0001`; bestehende Konten bekommen sie am Ende der Migration nachgetragen.
+Eine Kategorie „Events" aus der alten Excel-Tabelle gibt es hier bewusst nicht.
+
+## 8. Eine neue persönliche Tabelle anlegen
 
 `0001_foundation.sql` beschreibt das Muster im Kopfkommentar: `id`, `user_id`
 mit Foreign Key auf `auth.users`, `created_at`/`updated_at`, Index auf

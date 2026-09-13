@@ -19,6 +19,7 @@ const TEST = `
 import { taskRepository } from './src/data/taskRepository.js'
 import { eventRepository } from './src/data/eventRepository.js'
 import { listRepository } from './src/data/listRepository.js'
+import { financeRepository } from './src/data/financeRepository.js'
 import { WRITABLE_FIELDS } from './src/data/taskDefaults.js'
 import { makeBackend } from './tools/supabaseStub.mjs'
 
@@ -52,6 +53,23 @@ const lastCall = () => backend.calls[backend.calls.length - 1]
     ['updateItem', () => listRepository.updateItem(null, 'id', { title: 'x' })],
     ['deleteItem', () => listRepository.deleteItem(null, 'id')],
     ['reorderItems', () => listRepository.reorderItems(null, [{ id: 'a', sort_order: 1 }])],
+    // Finanzen. A wide query over somebody's bank statements is the worst of
+    // all the wide queries, so every one of these has to refuse.
+    ['listAccounts', () => financeRepository.listAccounts(null)],
+    ['listCategories', () => financeRepository.listCategories(undefined)],
+    ['listMerchants', () => financeRepository.listMerchants('')],
+    ['listPatterns', () => financeRepository.listPatterns(null)],
+    ['listCategoryRules', () => financeRepository.listCategoryRules(null)],
+    ['listTransactions', () => financeRepository.listTransactions(null)],
+    ['listOverrides', () => financeRepository.listOverrides(null)],
+    ['listImports', () => financeRepository.listImports(null)],
+    ['createAccount', () => financeRepository.createAccount(null, { name: 'x' })],
+    ['createTransaction', () => financeRepository.createTransaction(null, { raw_description: 'x' })],
+    ['updateTransaction', () => financeRepository.updateTransaction(null, 'id', { category_id: 'c' })],
+    ['saveOverride', () => financeRepository.saveOverride(null, 'id', { category_id: 'c' })],
+    ['deleteOverride', () => financeRepository.deleteOverride(null, 'id')],
+    ['deactivatePattern', () => financeRepository.deactivatePattern(null, 'id')],
+    ['learnMerchantRule', () => financeRepository.learnMerchantRule(null, {})],
   ]
   for (const [name, run] of attempts) {
     let threw = false
@@ -177,6 +195,88 @@ const lastCall = () => backend.calls[backend.calls.length - 1]
   ok('an unknown column never reaches the entries table', !('is_admin' in ownedItem))
 }
 
+// ── 3b. the finance module: every statement scoped, nothing raw rewritten ───
+{
+  await financeRepository.listTransactions(USER)
+  ok('reading bookings filters by user', lastCall().search.includes('user_id=eq.' + USER))
+  ok('and reads them newest first',
+     lastCall().search.includes('order=booking_date.desc') && lastCall().search.includes('created_at.desc'))
+
+  await financeRepository.listPatterns(USER)
+  ok('reading patterns filters by user', lastCall().search.includes('user_id=eq.' + USER))
+  ok('and asks only for the active ones, which is all the matcher may use',
+     lastCall().search.includes('active=eq.true'))
+
+  await financeRepository.listCategoryRules(USER)
+  ok('reading rules filters by user and by active',
+     lastCall().search.includes('user_id=eq.' + USER) && lastCall().search.includes('active=eq.true'))
+
+  for (const [name, run] of [
+    ['accounts', () => financeRepository.listAccounts(USER)],
+    ['categories', () => financeRepository.listCategories(USER)],
+    ['merchants', () => financeRepository.listMerchants(USER)],
+    ['overrides', () => financeRepository.listOverrides(USER)],
+    ['imports', () => financeRepository.listImports(USER)],
+  ]) {
+    await run()
+    ok('reading ' + name + ' filters by user', lastCall().search.includes('user_id=eq.' + USER))
+  }
+
+  const account = await financeRepository.createAccount(USER, { name: 'DKB Giro', provider: 'DKB', user_id: OTHER })
+  ok('an account belongs to the signed-in user, whatever the caller passed', account.user_id === USER)
+
+  const booking = await financeRepository.createTransaction(USER, {
+    account_id: account.id, booking_date: '2026-09-05', amount_minor: -2483, currency: 'EUR',
+    raw_description: 'REWE TROISDORF SAGT DANKE 8407',
+    id: 'forged-id', user_id: OTHER, is_admin: true,
+  })
+  ok('a booking belongs to its user and keeps its raw text',
+     booking.user_id === USER && booking.raw_description === 'REWE TROISDORF SAGT DANKE 8407')
+  ok('money arrives as an integer in minor units', booking.amount_minor === -2483)
+  ok('a forged id is dropped', booking.id !== 'forged-id')
+  ok('an unknown column never reaches the bookings table', !('is_admin' in booking))
+
+  await financeRepository.updateTransaction(USER, booking.id, {
+    category_id: 'c-1', raw_description: 'ETWAS GANZ ANDERES', amount_minor: -1,
+  })
+  ok('a classification names both the row and its owner',
+     lastCall().search.includes('id=eq.' + booking.id) && lastCall().search.includes('user_id=eq.' + USER))
+  const stored = backend.tables.finance_transactions.find((r) => r.id === booking.id)
+  ok('the interpretation is written', stored.category_id === 'c-1')
+  ok('and the original text and amount are untouched — the repository cannot rewrite a fact',
+     stored.raw_description === 'REWE TROISDORF SAGT DANKE 8407' && stored.amount_minor === -2483)
+
+  await financeRepository.saveOverride(USER, booking.id, { category_id: 'c-2', include_in_analytics: false })
+  const override = backend.tables.finance_transaction_overrides.at(-1)
+  ok('a manual decision is stored against its booking and its owner',
+     override.transaction_id === booking.id && override.user_id === USER && override.category_id === 'c-2')
+
+  await financeRepository.deleteOverride(USER, booking.id)
+  ok('and taking it back names both the booking and its owner',
+     lastCall().search.includes('transaction_id=eq.' + booking.id) &&
+     lastCall().search.includes('user_id=eq.' + USER))
+
+  // The learning call is one request to one database function — that is what
+  // makes it atomic. The user is deliberately not part of the payload: the
+  // function reads auth.uid() itself.
+  const request = {
+    p_transaction_id: booking.id, p_category_slug: 'lebensmittel',
+    p_pattern_type: 'exact_token', p_tokens: ['REWE'], p_merchant_name: 'REWE',
+    p_apply_transaction_ids: ['t-2'],
+  }
+  const callsBefore = backend.calls.length
+  await financeRepository.learnMerchantRule(USER, request)
+  ok('learning a merchant is exactly one request', backend.calls.length - callsBefore === 1)
+  ok('…to the database function, not to a table',
+     lastCall().path === '/rest/v1/rpc/finance_learn_merchant_rule')
+  const sent = backend.rpcCalls.at(-1)
+  ok('…carrying merchant, pattern, category and booking in one payload',
+     sent.body.p_merchant_name === 'REWE' && sent.body.p_tokens.join(',') === 'REWE' &&
+     sent.body.p_category_slug === 'lebensmittel' && sent.body.p_transaction_id === booking.id)
+  ok('…and no user id, because the server resolves that itself',
+     !('user_id' in sent.body) && !('p_user_id' in sent.body))
+}
+
 // ── 4. a failing database throws instead of returning nothing ───────────────
 // Silently returning [] is how a broken connection turns into "all your tasks
 // are gone" on screen.
@@ -192,6 +292,12 @@ const lastCall = () => backend.calls[backend.calls.length - 1]
   let listsThrew = false
   try { await listRepository.listLists(USER) } catch { listsThrew = true }
   ok('and a 500 on the lists table does the same', listsThrew)
+
+  const failingFinance = makeBackend({ failTable: 'finance_transactions' })
+  globalThis.fetch = (...args) => failingFinance.fetch(...args)
+  let financeThrew = false
+  try { await financeRepository.listTransactions(USER) } catch { financeThrew = true }
+  ok('and a 500 on the bookings table does too', financeThrew)
 }
 
 console.log(\`data logic: \${pass} passed, \${fail} failed\`)

@@ -104,6 +104,15 @@ nothing (see *Supabase* below).
 Everything else (Morning Briefing, schedule, greeting quote) is intentionally
 static per the spec.
 
+**Not a module yet: Finanzen.** The database model and the classification engine
+exist (`supabase/migrations/0008_finance.sql`, `src/lib/finance/`), the rules are
+unit-tested, and no screen renders any of it. What is there is the foundation the
+future module stands on: a booking keeps its original text and its original
+amount forever, money is an integer in minor units, merchants are recognised by
+patterns a human confirmed, and categories come from rules — no AI, no fuzzy
+matching, and an honest "unresolved" whenever the software cannot tell. See
+*Finanzen — das Datenmodell und die Regel-Engine* below.
+
 ---
 
 ## ▶️ Quick start
@@ -213,7 +222,8 @@ uses a hash router so deep links work on Pages without server rewrites.
 index.html                  Vite entry
 vite.config.js              base path + React plugin
 tailwind.config.js          design tokens (colors, radii, animations)
-supabase/migrations/        SQL: profiles + tasks + events + Google + lists + expenses, indexes, RLS policies
+supabase/migrations/        SQL: profiles + tasks + events + Google + lists + expenses
+                            + finance, indexes, RLS policies
 supabase/functions/         Edge Functions — the only place Google tokens exist
   _shared/                  the sync engine, in plain JS so the Node tests run it
   google-api/               everything the signed-in app asks for (verify_jwt)
@@ -232,6 +242,8 @@ src/
   config/navigation.js      bottom nav / sidebar / action-sheet / modules (config arrays)
   config/listTemplates.js   the three Listen templates + the Einkauf categories (data only)
   config/listIcons.js       the curated 24-icon set a list picks from
+  config/finance.js         the Finanzen vocabulary: the five MVP categories,
+                            pattern types, review modes, transaction types
   lib/
     config.js               the two public Supabase values, read at build time
     supabase.js             the shared Supabase client (null without config)
@@ -256,6 +268,14 @@ src/
                             and the fallback chain when the request fails
     expenses.js             the Ausgaben views: converting with the rate stored
                             per row, the totals in either currency, formatting
+    finance/                the Finanzen engine — pure, no React, no Supabase:
+      normalize.js          raw booking text → tokens (and nothing else: no city,
+                            no company suffix and no number is ever removed)
+      merchantMatching.js   which merchant a booking is, or why it cannot be said
+      categoryRules.js      which category that means, incl. the amount rules
+      backtest.js           what a new pattern would do to existing bookings
+      learning.js           one marked token + one chosen category → one request
+      types.js              the row and result shapes, as JSDoc typedefs
   data/
     taskRepository.js       tasks in Supabase (+ taskDefaults.js: writable columns)
     eventRepository.js      events in Supabase (+ eventDefaults.js)
@@ -264,6 +284,8 @@ src/
                             goes through an Edge Function
     listRepository.js       lists and their entries (+ listDefaults.js)
     expenseRepository.js    expenses in Supabase (+ expenseDefaults.js)
+    financeRepository.js    the finance tables + the atomic learning RPC
+                            (+ financeDefaults.js: writable columns per table)
   context/                  Auth · Tasks · Events · Lists · Expenses · Google ·
                             UI (overlays) · Toast
   components/               TopBar (the global header of every main area),
@@ -297,6 +319,59 @@ hamburger, the title's typography and the notification/profile pair live in
 `src/components/TopBar.jsx`, so no screen can shift them. Controls that belong
 to one screen (a search, a filter, the calendar's period switch and its date)
 go into that screen's first content row, under the bar.
+
+---
+
+## 💶 Finanzen — das Datenmodell und die Regel-Engine
+
+The first stage of the Finanzen module: everything except a screen. It replaces
+a personal Excel expense tracker, and it is built around four rules that do not
+bend.
+
+**The original booking is never rewritten.** An imported booking keeps its
+`raw_description`, its `amount_minor`, its currency and its dates forever — not
+by convention but by a trigger that refuses the UPDATE, whoever sends it.
+Merchant, category, transaction type and "counts in the analytics" are separate,
+nullable columns — interpretation, re-computable at any time. A Retoure is its
+own booking of type `refund` that points back at the original; it never corrects
+the original's amount.
+
+**Money is an integer.** `amount_minor bigint` holds minor units — 24,83 € is
+`2483` — and every amount is stored next to its currency. There is no float
+anywhere in this module, and EUR is a value, not an assumption.
+
+**Merchant and category are two questions.** `finance_merchants` +
+`finance_merchant_patterns` answer *who was this?*; `finance_category_rules`
+answers *what kind of spending is that?*. That separation is what lets EDEKA be
+one merchant with two categories that depend on the amount (≤ 12,00 € →
+Restaurant, > 12,00 € → Lebensmittel), and what lets a merchant be recognised
+without its category being decided.
+
+**Nothing is guessed.** Matching is deterministic: Unicode, case and whitespace
+are unified, punctuation is a token boundary, and a pattern is either a whole
+token (`REWE` matches `REWE TROISDORF SAGT DANKE 8407`, never `REWERT`) or a
+contiguous phrase (`MAX UND MORITZ`, not `MORITZ UND MAX`). No Levenshtein, no
+semantic matching, no LLM, and no city name or company suffix is ever quietly
+removed. Two merchants matching the same booking is a **conflict**, and a
+conflict stays one — the software never picks a winner. When in doubt the answer
+is `unresolved`.
+
+A pattern only ever comes from a human: the user marks `REWE` in a booking text
+and picks *Lebensmittel*. Before saving, `backtestPattern` says what that would
+do — *"dieses Muster trifft 34 bestehende Buchungen, davon 2 mit einem anderen
+Händler"*. Saving it is one database function,
+`finance_learn_merchant_rule`, so merchant + pattern + rule + this booking + the
+bookings the pattern now explains either all happen or none of them do. It runs
+with the caller's own rights (no service role, no elevated function), and it
+refuses to touch a booking that is `manual_lock`ed, already assigned, or carries
+a manual override — "a human decision beats the automatic one" is enforced in
+the database, not only in the client.
+
+The rules live in `src/lib/finance/` and are pure; `tools/financeLogic.mjs`
+covers them (142 assertions, incl. the EDEKA cent boundary in both directions
+and both signs). Atomicity, the constraints and the account isolation are
+database behaviour and are proved in `supabase/tests/rls.sql`
+(`npm run test:rls`).
 
 ---
 
