@@ -154,3 +154,34 @@ export function transactionTokens(transaction) {
  * @returns {string}
  */
 export const patternText = (tokens) => (Array.isArray(tokens) ? tokens.join(' ') : '')
+
+/** U+FFFD — where an imported PDF did not encode a character. */
+export const REPLACEMENT_CHARACTER = String.fromCharCode(0xfffd)
+
+/**
+ * The tokens of a description that must never become a pattern.
+ *
+ * A PDF import can leave a replacement character behind where the file encoded
+ * no character at all (see src/lib/finance/dkb/glyphs.js). The tokenizer treats
+ * that character as a boundary, so it never ends up INSIDE a token — it splits
+ * the word instead: "A<U+FFFD>airs" becomes 'A' and 'AIRS'. Both are fragments
+ * of a word nobody can read, and either of them saved as a merchant pattern
+ * would keep matching the fragment forever, on every future import.
+ *
+ * So the rule is not "no token contains the character" — that is true anyway —
+ * but "no token came out of a word that contains it". Everything else in the
+ * same description stays usable: a REWE booking with one broken word can still
+ * teach REWE.
+ *
+ * @param {unknown} raw
+ * @returns {string[]}
+ */
+export function unreliableTokens(raw) {
+  if (typeof raw !== 'string' || !raw.includes(REPLACEMENT_CHARACTER)) return []
+  const affected = new Set()
+  for (const word of raw.normalize('NFKC').split(/\s+/)) {
+    if (!word.includes(REPLACEMENT_CHARACTER)) continue
+    for (const token of tokenize(word)) affected.add(token)
+  }
+  return [...affected]
+}

@@ -104,7 +104,8 @@ nothing (see *Supabase* below).
 Everything else (Morning Briefing, schedule, greeting quote) is intentionally
 static per the spec.
 
-**Not a module yet: Finanzen.** The database model and the classification engine
+**Not a module yet: Finanzen.** The database model, the classification engine and
+the DKB PDF import
 exist (`supabase/migrations/0008_finance.sql`, `src/lib/finance/`), the rules are
 unit-tested, and no screen renders any of it. What is there is the foundation the
 future module stands on: a booking keeps its original text and its original
@@ -276,6 +277,14 @@ src/
       backtest.js           what a new pattern would do to existing bookings
       learning.js           one marked token + one chosen category → one request
       types.js              the row and result shapes, as JSDoc typedefs
+      dkb/                  the DKB Umsatzexport importer, stage 1:
+        layout.js           the coordinates of the real export, as measured
+        lines.js            PDF.js items → printed lines (spaces included)
+        amount.js           "-54.80" → -5480, via BigInt and never a float
+        glyphs.js           positions the file does not encode → U+FFFD + warning
+        parse.js            blocks, the twelve checks, the parsed bookings
+        fingerprint.js      dedupe candidates and their collisions — no rule yet
+        extract.js          the only file that touches pdfjs
   data/
     taskRepository.js       tasks in Supabase (+ taskDefaults.js: writable columns)
     eventRepository.js      events in Supabase (+ eventDefaults.js)
@@ -391,6 +400,37 @@ covers them (177 assertions, incl. the EDEKA cent boundary in both directions
 and both signs). Atomicity, the constraints and the account isolation are
 database behaviour and are proved in `supabase/tests/rls.sql`
 (`npm run test:rls`).
+
+### Reading a DKB Umsatzexport
+
+`src/lib/finance/dkb/` turns the bank's PDF export into bookings, deterministically
+and with no OCR and no language model anywhere in the path. Every coordinate it
+relies on was **measured** on a real export with `pdfjs.getTextContent()`, not
+assumed: a booking block begins at an item that sits in the date column and is
+exactly `dd.mm.yyyy`, and ends before the next one.
+
+Three properties of the real file shape the implementation:
+
+- **The document counts itself.** It prints *"Anzahl der Transaktionen: 27"* and
+  no balance at all, so that count — not a sum — is what the import is verified
+  against. A sum could coincidentally balance out across wrongly split blocks; a
+  record count cannot.
+- **Spaces are their own text items.** Discarding items without visible content
+  turns `oePA Verkehrsgesellsch Troisdorf DE` into `oePA VerkehrsgesellschTroisdorfDE`.
+  Items are therefore kept as they are, sorted by x and concatenated.
+- **Some characters are not in the file.** Its ToUnicode table maps two ligature
+  glyphs to `U+0000` — so "A[ff]airs" is genuinely unreadable, not merely unread.
+  Those positions become `U+FFFD` (a NUL could not be stored in a `text` column
+  anyway) and raise a structured warning; the word they came from can never
+  become a merchant pattern (`unreliableTokens` in `normalize.js`).
+
+Anything the parser cannot read with certainty stops the **whole** import — a
+statement half-read is a spending total quietly missing a booking. There is no
+cross-import dedupe rule yet, on purpose: the export proves that two bookings can
+share date, amount and merchant, so `fingerprint.js` reports what each candidate
+would collide on and writes nothing. `tools/dkbParserLogic.mjs` covers all of it
+(131 assertions) against fixtures that reproduce the real geometry with invented
+content — the statement itself stays out of this repository.
 
 ---
 
