@@ -206,18 +206,66 @@ export const REFERENCE_PAGES = [
   ],
   [
     transferBooking('14.09.2026', '350.00', 'Daniel Muster', 'DE43 1203 0000 0011 7466 41', 'Zugtickets'),
+    paypalBooking('14.09.2026', '-0.50', '1052983361139', 'Use AI'),
     cardBooking('11.09.2026', '-7.50', 'ARENA Gastronomie', '10.09.2026'),
     cardBooking('10.09.2026', '-14.38', 'REWE', '09.09.2026'),
+    cardBooking('10.09.2026', '-0.40', 'EDEKA', '09.09.2026'),
+    // The purchase the +50.05 above refunds. In the first export it is the bare
+    // merchant name and carries no reference at all — the link only becomes
+    // visible in the second export.
+    cardBooking('10.09.2026', '-50.05', 'Deutsche Bahn', '09.09.2026'),
     foreignCurrencyBooking('09.09.2026', '-1.72', 'DAVINCI/WESTMINSTER', '08.09.2026', '1,99 USD', '1,15697680 USD'),
-    paypalBooking('09.09.2026', '-549.21', '1052906804694/PP.8169.PP', `Department of Home A${NUL}airs`),
   ],
   [
+    paypalBooking('09.09.2026', '-549.21', '1052906804694/PP.8169.PP', `Department of Home A${NUL}airs`),
     transferBooking('08.09.2026', '600.00', 'Max Mustermann', 'DE08 6005 0101 7007 7809 17', 'Ruecklage'),
     cardBooking('07.09.2026', '-4.54', 'EDEKA', '04.09.2026'),
   ],
 ]
 
 export const referenceDocument = () => buildDocument({ pages: REFERENCE_PAGES })
+
+// ── The second, overlapping export ──────────────────────────────────────────
+// 10.09.–14.09., i.e. the tail of the first one. It reproduces, with invented
+// content, every relationship the two real exports show:
+//
+//   • the provisional bookings of the first export, now settled and with a
+//     completely different text — including the pair that stays a pair
+//   • already settled bookings whose text simply got richer
+//   • two bookings that are word for word what was imported before
+//   • the refund whose reference also sits on the purchase
+//   • one booking that is genuinely new
+export const SECOND_EXPORT_PAGES = [
+  [
+    // Genuinely new: nothing in the first export matches it.
+    transferBooking('14.09.2026', '-255.00', 'Scalable Capital GmbH', 'DE86 1207 0070 0758 3769 30', 'Broker 2x Sparplaene'),
+    cardBooking('14.09.2026', '-1.50', 'OEPA.VERKEHRSGESELLSCH/MUSTERSTADT', '13.09.2026'),
+    // Same amount, same card date, different references — and nothing that says
+    // which of the two provisional ones each of them settles.
+    cardBooking('14.09.2026', '-60.65', 'DB.Vertrieb.GmbH/508354771568', '12.09.2026'),
+    cardBooking('14.09.2026', '-60.65', 'DB.Vertrieb.GmbH/198004303927', '12.09.2026'),
+    // The settled refund: no "vom" line at all, only a 14-digit timestamp —
+    // so its link to the announcement is the shared reference.
+    block('14.09.2026', '50.05', [
+      'DB.Vertrieb.GmbH/564851284265',
+      'IBAN DE96 1203 0000 9005 2909 04',
+      '20260914132522 DB.Vertrieb.GmbH DE',
+    ]),
+  ],
+  [
+    transferBooking('14.09.2026', '45.00', 'Erika Musterfrau', 'DE40 1203 0000 1003 0437 24', 'Alles gute noch zum Geburtstag.'),
+    transferBooking('14.09.2026', '350.00', 'Daniel Muster', 'DE43 1203 0000 0011 7466 41', 'Zugtickets'),
+    // Word for word what the first export already carried.
+    paypalBooking('14.09.2026', '-0.50', '1052983361139', 'Use AI'),
+    cardBooking('11.09.2026', '-7.50', 'ARENA.GASTRO/KOELN', '10.09.2026'),
+    cardBooking('10.09.2026', '-14.38', 'REWE.Mohamed.Boufo/Frankfurt', '09.09.2026'),
+    cardBooking('10.09.2026', '-0.40', 'EDEKA.FLECK/STUTTGART', '09.09.2026'),
+    cardBooking('10.09.2026', '-50.05', 'DB.Vertrieb.GmbH/564851284265', '09.09.2026'),
+  ],
+]
+
+export const secondExportDocument = () =>
+  buildDocument({ pages: SECOND_EXPORT_PAGES, periodStart: '10.09.2026', periodEnd: '14.09.2026' })
 
 /** The same document, but the control value disagrees with what is printed. */
 export const wrongCountDocument = () =>
