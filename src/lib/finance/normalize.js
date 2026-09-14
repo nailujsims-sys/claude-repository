@@ -154,3 +154,51 @@ export function transactionTokens(transaction) {
  * @returns {string}
  */
 export const patternText = (tokens) => (Array.isArray(tokens) ? tokens.join(' ') : '')
+
+/** U+FFFD — where an imported PDF did not encode a character. */
+export const REPLACEMENT_CHARACTER = String.fromCharCode(0xfffd)
+
+/**
+ * The tokens of a description that must never become a pattern.
+ *
+ * A PDF import can leave a replacement character behind where the file encoded
+ * no character at all (see src/lib/finance/dkb/glyphs.js). The tokenizer treats
+ * that character as a boundary, so it never ends up INSIDE a token — it splits
+ * the word instead: "A<U+FFFD>airs" becomes 'A' and 'AIRS'. Both are fragments
+ * of a word nobody can read, and either of them saved as a merchant pattern
+ * would keep matching the fragment forever, on every future import.
+ *
+ * So the rule is not "no token contains the character" — that is true anyway —
+ * but "no token came out of a word that contains it". Everything else in the
+ * same description stays usable: a REWE booking with one broken word can still
+ * teach REWE.
+ *
+ * @param {unknown} raw
+ * @returns {string[]}
+ */
+export function unreliableTokens(raw) {
+  if (typeof raw !== 'string' || !raw.includes(REPLACEMENT_CHARACTER)) return []
+
+  // Damaged is what TOUCHES the missing character, not the whole word it was
+  // written next to: in "EDEKA/Charlo<U+FFFD>enburg" the merchant is perfectly
+  // readable and only CHARLO and ENBURG are fragments. Splitting on whitespace
+  // instead would condemn EDEKA with them and make the booking unteachable for
+  // no reason.
+  //
+  // A missing character that sits next to a separator damages nothing at all —
+  // "REWE <U+FFFD> MARKT" still has both its tokens intact.
+  const STARTS_WITH_TOKEN_CHAR = /^[\p{L}\p{N}]/u
+  const ENDS_WITH_TOKEN_CHAR = /[\p{L}\p{N}]$/u
+
+  const affected = new Set()
+  const parts = raw.split(REPLACEMENT_CHARACTER)
+  parts.forEach((part, index) => {
+    const tokens = tokenize(part)
+    if (tokens.length === 0) return
+    if (index > 0 && STARTS_WITH_TOKEN_CHAR.test(part)) affected.add(tokens[0])
+    if (index < parts.length - 1 && ENDS_WITH_TOKEN_CHAR.test(part)) {
+      affected.add(tokens[tokens.length - 1])
+    }
+  })
+  return [...affected]
+}

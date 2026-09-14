@@ -1,7 +1,7 @@
 {
   "name": "mind-whiteboard",
   "private": true,
-  "version": "1.16.0",
+  "version": "1.17.0",
   "type": "module",
   "description": "Mind Whiteboard — a personal productivity app (Startseite, Aufgaben, Kalender mit Google-Synchronisierung, Listen, Ausgaben, Finanzen).",
   "scripts": {
@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "smoke": "node tools/smoke.mjs",
     "verify": "npm run test:logic && npm run smoke && npm run build",
-    "test:logic": "node tools/calendarLogic.mjs && node tools/pressLogic.mjs && node tools/overlayLogic.mjs && node tools/focusLogic.mjs && node tools/sheetLogic.mjs && node tools/restoreLogic.mjs && node tools/homeLogic.mjs && node tools/authLogic.mjs && node tools/dataLogic.mjs && node tools/listLogic.mjs && node tools/expenseLogic.mjs && node tools/financeLogic.mjs && node tools/realtimeLogic.mjs && node tools/googleLogic.mjs && node tools/googleSyncLogic.mjs",
+    "test:logic": "node tools/calendarLogic.mjs && node tools/pressLogic.mjs && node tools/overlayLogic.mjs && node tools/focusLogic.mjs && node tools/sheetLogic.mjs && node tools/restoreLogic.mjs && node tools/homeLogic.mjs && node tools/authLogic.mjs && node tools/dataLogic.mjs && node tools/listLogic.mjs && node tools/expenseLogic.mjs && node tools/financeLogic.mjs && node tools/dkbParserLogic.mjs && node tools/realtimeLogic.mjs && node tools/googleLogic.mjs && node tools/googleSyncLogic.mjs",
     "test:rls": "node tools/rlsTest.mjs"
   },
   "dependencies": {
@@ -19,6 +19,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@supabase/supabase-js": "^2.45.4",
     "lucide-react": "^0.439.0",
+    "pdfjs-dist": "^4.6.82",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.2"

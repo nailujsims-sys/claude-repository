@@ -7,7 +7,13 @@ import {
 } from '../../config/finance'
 import { backtestPattern } from './backtest'
 import { patternMatches } from './merchantMatching'
-import { isNormalizedToken, normalizeTokens, patternText, transactionTokens } from './normalize'
+import {
+  isNormalizedToken,
+  normalizeTokens,
+  patternText,
+  transactionTokens,
+  unreliableTokens,
+} from './normalize'
 
 // The user action this whole module exists for:
 //
@@ -96,6 +102,33 @@ export function buildLearnRequest({
     if (!patternMatches(candidate, transactionTokens(transaction))) {
       errors.push(
         error('pattern_not_in_description', `„${patternText(tokens)}" kommt in dieser Buchung nicht vor.`)
+      )
+    }
+  }
+
+  // A word the imported file did not fully encode may not become a rule. The
+  // tokenizer splits such a word at the replacement character, so what the user
+  // would be saving is a fragment — and a fragment saved as a pattern keeps
+  // matching every future import. The rest of the same booking stays usable.
+  if (transaction && tokens.length > 0) {
+    if (typeof transaction.raw_description !== 'string') {
+      // The check needs the original text; the stored tokens alone cannot show
+      // where a character was missing, because the tokenizer has already split
+      // the word at it. A row read without the column therefore cannot be
+      // learned from — refusing is the fail-closed half of this guard, and the
+      // repository selects the whole row anyway.
+      errors.push(
+        error('description_unavailable',
+          'Der Originaltext dieser Buchung wurde nicht geladen — ohne ihn kann kein Muster gespeichert werden.')
+      )
+    }
+    const unreliable = unreliableTokens(transaction.raw_description)
+    const affected = tokens.filter((token) => unreliable.includes(token))
+    if (affected.length > 0) {
+      errors.push(
+        error('selection_unmapped_glyph',
+          `„${patternText(affected)}" stammt aus einem Wort, das die importierte Datei nicht ` +
+          'vollständig kodiert. Bitte einen anderen Teil der Buchung markieren.')
       )
     }
   }
