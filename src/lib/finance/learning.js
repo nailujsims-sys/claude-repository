@@ -111,6 +111,17 @@ export function buildLearnRequest({
   // would be saving is a fragment — and a fragment saved as a pattern keeps
   // matching every future import. The rest of the same booking stays usable.
   if (transaction && tokens.length > 0) {
+    if (typeof transaction.raw_description !== 'string') {
+      // The check needs the original text; the stored tokens alone cannot show
+      // where a character was missing, because the tokenizer has already split
+      // the word at it. A row read without the column therefore cannot be
+      // learned from — refusing is the fail-closed half of this guard, and the
+      // repository selects the whole row anyway.
+      errors.push(
+        error('description_unavailable',
+          'Der Originaltext dieser Buchung wurde nicht geladen — ohne ihn kann kein Muster gespeichert werden.')
+      )
+    }
     const unreliable = unreliableTokens(transaction.raw_description)
     const affected = tokens.filter((token) => unreliable.includes(token))
     if (affected.length > 0) {

@@ -115,6 +115,22 @@ export function parseDkbUmsatzexport(doc) {
     return { number, items }
   })
 
+  // An item without usable coordinates compares false against every band
+  // boundary, so it would fall through the classification below without ever
+  // becoming an orphan — silence, in a parser whose whole contract is that it
+  // stays loud.
+  for (const page of pages) {
+    for (const item of page.items) {
+      if (!hasInk(item)) continue
+      if (Number.isFinite(item.x) && Number.isFinite(item.y) && Number.isFinite(item.fontSize)) continue
+      errors.push(
+        fail('item_coordinates_invalid',
+          `Seite ${page.number}: „${item.str.trim()}" hat keine lesbare Position und kann nicht eingeordnet werden.`,
+          { page: page.number })
+      )
+    }
+  }
+
   // A scan, or a PDF whose text layer is an image, arrives here as pages
   // without any content. That is the one case that must never be "parsed
   // leniently" — it is rejected before anything else is attempted.
@@ -197,6 +213,7 @@ export function parseDkbUmsatzexport(doc) {
     // ── everything above the table: known header shapes only ──
     for (const item of page.items) {
       if (!hasInk(item)) continue
+      if (item === pageLabelItem) continue
       if (near(item.fontSize, FOOTER_FONT_SIZE)) {
         // The DKB legal footer. Known, repeated identically on every page, and
         // deliberately discarded — but only where it belongs.
@@ -205,7 +222,21 @@ export function parseDkbUmsatzexport(doc) {
         }
         continue
       }
-      if (item === pageLabelItem) continue
+      // The document uses exactly two sizes. A third one is either a layout
+      // this parser has never seen or content it would otherwise fold into a
+      // description without noticing.
+      if (!near(item.fontSize, CONTENT_FONT_SIZE)) {
+        orphans.push({ page: page.number, item, where: `unbekannte Schriftgröße ${item.fontSize}` })
+        continue
+      }
+      // Content below the table band belongs to no block, no header and no
+      // footer. Without this it would simply disappear — and the count check
+      // cannot catch a line that was dropped out of a booking that still has
+      // its date and its amount.
+      if (item.y <= FOOTER_Y_MAX) {
+        orphans.push({ page: page.number, item, where: 'unterhalb des Tabellenbereichs' })
+        continue
+      }
       if (item.y >= bandTop) {
         if (headerLine.items.includes(item)) continue
         const text = item.str.trim()
@@ -389,7 +420,8 @@ export function parseDkbUmsatzexport(doc) {
         fail(amount.reason,
           amount.reason === 'amount_format_unknown'
             ? `Seite ${block.page}: „${block.amountText}" ist kein bekanntes Betragsformat. ` +
-              'Vierstellige Beträge sind bislang durch keinen echten Auszug belegt und werden nicht geraten.'
+              'Erwartet wird eine Zahl mit Punkt als Dezimaltrennzeichen und ohne Tausendertrennung ' +
+              '— welches Tausenderzeichen DKB setzt, ist durch keinen echten Auszug belegt und wird nicht geraten.'
             : `Seite ${block.page}: „${block.amountText}" liegt außerhalb des darstellbaren Bereichs.`,
           { page: block.page, y: block.y })
       )

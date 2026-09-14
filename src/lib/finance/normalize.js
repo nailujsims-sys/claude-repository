@@ -178,10 +178,27 @@ export const REPLACEMENT_CHARACTER = String.fromCharCode(0xfffd)
  */
 export function unreliableTokens(raw) {
   if (typeof raw !== 'string' || !raw.includes(REPLACEMENT_CHARACTER)) return []
+
+  // Damaged is what TOUCHES the missing character, not the whole word it was
+  // written next to: in "EDEKA/Charlo<U+FFFD>enburg" the merchant is perfectly
+  // readable and only CHARLO and ENBURG are fragments. Splitting on whitespace
+  // instead would condemn EDEKA with them and make the booking unteachable for
+  // no reason.
+  //
+  // A missing character that sits next to a separator damages nothing at all —
+  // "REWE <U+FFFD> MARKT" still has both its tokens intact.
+  const STARTS_WITH_TOKEN_CHAR = /^[\p{L}\p{N}]/u
+  const ENDS_WITH_TOKEN_CHAR = /[\p{L}\p{N}]$/u
+
   const affected = new Set()
-  for (const word of raw.normalize('NFKC').split(/\s+/)) {
-    if (!word.includes(REPLACEMENT_CHARACTER)) continue
-    for (const token of tokenize(word)) affected.add(token)
-  }
+  const parts = raw.split(REPLACEMENT_CHARACTER)
+  parts.forEach((part, index) => {
+    const tokens = tokenize(part)
+    if (tokens.length === 0) return
+    if (index > 0 && STARTS_WITH_TOKEN_CHAR.test(part)) affected.add(tokens[0])
+    if (index < parts.length - 1 && ENDS_WITH_TOKEN_CHAR.test(part)) {
+      affected.add(tokens[tokens.length - 1])
+    }
+  })
   return [...affected]
 }

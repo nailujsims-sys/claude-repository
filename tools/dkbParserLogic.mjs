@@ -20,6 +20,7 @@ import { parseAmountMinor, parseGermanDate } from './src/lib/finance/dkb/amount.
 import { sanitizeGlyphs, REPLACEMENT_CHARACTER } from './src/lib/finance/dkb/glyphs.js'
 import { groupIntoLines, lineText } from './src/lib/finance/dkb/lines.js'
 import { fingerprintReport, indistinguishable } from './src/lib/finance/dkb/fingerprint.js'
+import { extractPdfTextDocument } from './src/lib/finance/dkb/extract.js'
 import { tokenize, unreliableTokens } from './src/lib/finance/normalize.js'
 import { buildLearnRequest } from './src/lib/finance/learning.js'
 import {
@@ -237,7 +238,9 @@ const has = (result, code) => codes(result).includes(code)
   const badAmount = parseDkbUmsatzexport(unknownAmountFormatDocument())
   ok('an unproven amount format stops the import', badAmount.ok === false)
   ok('…with the reason named', has(badAmount, 'amount_format_unknown'))
-  ok('…and says so in German', badAmount.errors[0].message.includes('geraten'))
+  ok('…and blames the separator, not the number of digits',
+     badAmount.errors[0].message.includes('Tausendertrennung') &&
+     !badAmount.errors[0].message.includes('Vierstellige'))
 
   const orphan = parseDkbUmsatzexport(orphanItemDocument())
   ok('a stray text item stops the import', orphan.ok === false)
@@ -384,6 +387,104 @@ const has = (result, code) => codes(result).includes(code)
   ok('…and the tokens are unchanged', JSON.stringify(fine.tokens) === JSON.stringify(['DEPARTMENT']))
 }
 
+// ── 9. The gaps a review found: silence is the failure mode to hunt ─────────
+{
+  // Content below the table band belonged to no block, no header and no footer,
+  // and vanished without a word — with the count check none the wiser, because
+  // the booking still had its date and its amount.
+  const lowLine = singleBookingDocument()
+  lowLine.pages[0].items.push({ str: 'Verlorene Zeile', x: 155, y: 90, width: 60, fontSize: 8 })
+  const lowLineResult = parseDkbUmsatzexport(lowLine)
+  ok('content below the table band stops the import', lowLineResult.ok === false)
+  ok('…as an orphan', has(lowLineResult, 'orphan_item'))
+  ok('…and never reaches a booking', lowLineResult.transactions.length === 0)
+
+  // A third font size is either an unknown layout or content that would have
+  // been folded into a description unnoticed.
+  const oddSize = singleBookingDocument()
+  oddSize.pages[0].items.push({ str: 'Fremdes', x: 155, y: 470, width: 30, fontSize: 11 })
+  ok('an unknown font size stops the import', has(parseDkbUmsatzexport(oddSize), 'orphan_item'))
+
+  // An item without usable coordinates compares false against every boundary,
+  // so without an explicit check it would fall through in silence.
+  const noCoords = singleBookingDocument()
+  noCoords.pages[0].items.push({ str: 'Ohne Position', width: 30, fontSize: 8 })
+  const noCoordsResult = parseDkbUmsatzexport(noCoords)
+  ok('an item without coordinates stops the import', noCoordsResult.ok === false)
+  ok('…with the reason named', has(noCoordsResult, 'item_coordinates_invalid'))
+}
+
+// ── 10. Only what touches the missing character is unusable ─────────────────
+{
+  const damaged = 'EDEKA/Charlo' + REPLACEMENT_CHARACTER + 'enburg'
+  const marked = unreliableTokens(damaged)
+  ok('the fragments either side of the gap are marked',
+     marked.includes('CHARLO') && marked.includes('ENBURG'))
+  ok('a readable merchant in the same word is NOT condemned with them',
+     !marked.includes('EDEKA'))
+  ok('…so that booking can still teach its merchant',
+     buildLearnRequest({
+       transaction: { id: 't', raw_description: damaged, normalized_tokens: tokenize(damaged), currency: 'EUR' },
+       selection: 'EDEKA', categorySlug: 'lebensmittel', merchantName: 'EDEKA',
+     }).valid === true)
+
+  const besideSeparator = 'REWE ' + REPLACEMENT_CHARACTER + ' MARKT'
+  ok('a gap next to a separator damages no token', unreliableTokens(besideSeparator).length === 0)
+
+  // Without the original text the check cannot run at all — and a guard that
+  // cannot run must refuse, not wave things through.
+  const tokensOnly = { id: 't', normalized_tokens: ['REWE'], currency: 'EUR' }
+  const withoutText = buildLearnRequest({
+    transaction: tokensOnly, selection: 'REWE', categorySlug: 'lebensmittel', merchantName: 'REWE',
+  })
+  ok('a booking loaded without its text cannot teach a pattern', withoutText.valid === false)
+  ok('…with the reason named',
+     withoutText.errors.some((e) => e.code === 'description_unavailable'))
+}
+
+// ── 11. The adapter: what it must release, and what it must not consume ─────
+{
+  const calls = { destroy: 0, cleanup: 0, data: null }
+  const fakeGetDocument = (options) => {
+    calls.data = options.data
+    return {
+      promise: Promise.resolve({
+        numPages: 1,
+        getPage: async () => ({
+          getViewport: () => ({ width: 597, height: 842 }),
+          getTextContent: async () => ({
+            items: [{ str: '14.09.2026', transform: [8, 0, 0, 8, 73, 484], width: 36.67 }],
+          }),
+          cleanup: () => { calls.cleanup += 1 },
+        }),
+        destroy: async () => { calls.destroy += 1 },
+      }),
+    }
+  }
+
+  const original = new Uint8Array([1, 2, 3, 4])
+  const doc = await extractPdfTextDocument(original, { getDocument: fakeGetDocument })
+  ok('the adapter returns the page shape the parser expects',
+     doc.pages.length === 1 && doc.pages[0].number === 1 && doc.pages[0].items.length === 1)
+  ok('the font size comes from the transform, which is what separates content from footer',
+     doc.pages[0].items[0].fontSize === 8)
+  ok('the position comes from the transform',
+     doc.pages[0].items[0].x === 73 && doc.pages[0].items[0].y === 484)
+  ok('the document is released', calls.destroy === 1)
+  ok('every page is released', calls.cleanup === 1)
+  ok('the caller keeps its buffer — a refused import has to be retryable',
+     original.byteLength === 4 && calls.data !== original)
+
+  const failing = () => ({ promise: Promise.reject(new Error('kaputt')) })
+  let threw = false
+  try {
+    await extractPdfTextDocument(new Uint8Array([1]), { getDocument: failing })
+  } catch {
+    threw = true
+  }
+  ok('a broken file still reaches the caller as an error', threw === true)
+}
+
 console.log(\`dkb parser: \${pass} passed, \${fail} failed\`)
 process.exit(fail ? 1 : 0)
 `
@@ -393,7 +494,7 @@ const res = await build({
   bundle: true,
   format: 'esm',
   platform: 'node',
-  external: ['node:*', 'pdfjs-dist'],
+  external: ['node:*', 'pdfjs-dist', 'pdfjs-dist/build/pdf.worker.min.mjs?url'],
   define: { 'import.meta.env': JSON.stringify({ MODE: 'test', DEV: false, PROD: true }) },
   write: false,
   logLevel: 'silent',
