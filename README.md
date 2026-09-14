@@ -465,8 +465,15 @@ in the other. So the pair is superseded *as a pair*, with its cardinality
 preserved and no individual link invented. A booking carrying `manual_lock` or an
 override is never re-labelled; it becomes `review` with the decision untouched.
 The module is pure: it writes nothing and proposes a plan for a human to confirm.
-`tools/dkbReconcileLogic.mjs` covers it with 73 assertions against fixtures of
-both exports.
+Ambiguity never falls through to "new": when the number of candidates does not
+match on both sides, the case ends as `unresolved` rather than importing a
+booking that is already there a second time. Individual links are only drawn
+where they assert nothing — one against one, or members that are indistinguishable
+from each other. The account is part of every key, so a booking of one account can
+never be matched by another account's import, and the whole plan is computed in a
+fixed order, so the same input produces the same plan whichever way the rows were
+sorted on their way in. `tools/dkbReconcileLogic.mjs` covers it with 104
+assertions against fixtures of both exports.
 
 ---
 

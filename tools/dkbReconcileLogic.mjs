@@ -258,6 +258,213 @@ const find = (list, needle) => list.findIndex((t) => t.raw_description.startsWit
      reconcileImport({ existing: [], incoming: B.transactions }).summary.new === B.transactions.length)
 }
 
+// ── 11. What a hardening review found ───────────────────────────────────────
+{
+  const card = (merchant, vom) =>
+    merchant + '\\nIBAN DE96 1203 0000 9005 2909 04\\nVISA Debitkartenumsatz vom ' + vom
+  const prov = (ts) =>
+    'Deutsche Bahn\\nnull' + ts + ' Debitk. 0 2099-12 Zahl.System VISA De bit\\n(POS)'
+  const row = (id, date, amount, raw, over = {}) => ({
+    id, booking_date: date, amount_minor: amount, currency: 'EUR',
+    raw_description: raw, manual_lock: false, ...over,
+  })
+  const inc = (date, amount, raw, over = {}) => ({
+    booking_date: date, amount_minor: amount, currency: 'EUR', raw_description: raw, ...over,
+  })
+  const span = { start: '2026-09-10', end: '2026-09-14' }
+
+  // FINDING 1 (critical): an ambiguous tier fell through to "new", which would
+  // import bookings that are already stored a second time.
+  {
+    const twice = reconcileImport({
+      existing: [
+        row('s1', '2026-09-10', -1438, card('REWE', '09.09.2026')),
+        row('s2', '2026-09-10', -1438, card('REWE', '09.09.2026')),
+      ],
+      incoming: [
+        inc('2026-09-10', -1438, card('REWE.Mohamed.Boufo/Frankfurt', '09.09.2026')),
+        inc('2026-09-10', -1438, card('REWE.Mohamed.Boufo/Frankfurt', '09.09.2026')),
+      ],
+      period: span,
+    })
+    ok('two identical stored bookings are not imported a second time',
+       twice.decisions.every((d) => d.outcome !== 'new'))
+    ok('…they are recognised as the bookings they are',
+       twice.decisions.every((d) => d.outcome === 'enriched'))
+    ok('…and none is left over', twice.summary.unmatched_existing === 0)
+  }
+
+  // FINDING 2 (critical): a cardinality that does not add up must ask, not
+  // invent a booking.
+  {
+    const lopsided = reconcileImport({
+      existing: [
+        row('s1', '2026-09-10', -1438, card('REWE', '09.09.2026')),
+        row('s2', '2026-09-10', -1438, card('REWE', '09.09.2026')),
+      ],
+      incoming: [inc('2026-09-10', -1438, card('REWE.Mohamed.Boufo/Frankfurt', '09.09.2026'))],
+      period: span,
+    })
+    ok('one incoming against two stored is unresolved', lopsided.decisions[0].outcome === 'unresolved')
+    ok('…and never "new"', lopsided.decisions[0].outcome !== 'new')
+    ok('…and names both candidates', lopsided.decisions[0].existing_ids.length === 2)
+  }
+
+  // FINDING 3 (critical): no account boundary existed at all.
+  {
+    const crossing = reconcileImport({
+      existing: [row('fremd', '2026-09-10', -1438, card('REWE', '09.09.2026'), { account_id: 'konto-B' })],
+      incoming: [inc('2026-09-10', -1438, card('REWE.Neu/Frankfurt', '09.09.2026'), { account_id: 'konto-A' })],
+      period: span,
+    })
+    ok('a booking of another account is never matched', crossing.decisions[0].outcome === 'new')
+    ok('…and claims nothing', crossing.decisions[0].existing_ids.length === 0)
+
+    const filtered = reconcileImport({
+      existing: [
+        row('a1', '2026-09-10', -1438, card('REWE', '09.09.2026'), { account_id: 'konto-A' }),
+        row('b1', '2026-09-10', -1438, card('REWE', '09.09.2026'), { account_id: 'konto-B' }),
+      ],
+      incoming: [inc('2026-09-10', -1438, card('REWE.Neu/Frankfurt', '09.09.2026'), { account_id: 'konto-A' })],
+      period: span,
+      accountId: 'konto-A',
+    })
+    ok('an explicit account narrows the candidates', filtered.decisions[0].existing_ids.join() === 'a1')
+    ok('…and the other account is not even considered', filtered.summary.unmatched_existing === 0)
+  }
+
+  // FINDING 4 (high): the plan depended on the order the rows arrived in.
+  {
+    const one = row('s1', '2026-09-14', 4500, 'Erika\\nIBAN DE40\\nGeschenk')
+    const two = row('s2', '2026-09-14', 4500, 'Erika\\nIBAN DE40\\nGeschenk')
+    const arrivals = [
+      inc('2026-09-14', 4500, 'Erika\\nIBAN DE40\\nGeschenk'),
+      inc('2026-09-14', 4500, 'Erika\\nIBAN DE40\\nGeschenk'),
+    ]
+    const forwards = reconcileImport({ existing: [one, two], incoming: arrivals })
+    const backwards = reconcileImport({ existing: [two, one], incoming: arrivals })
+    ok('the plan does not depend on the order of the stored rows',
+       JSON.stringify(forwards.decisions) === JSON.stringify(backwards.decisions))
+    ok('…and both bookings survive as two', forwards.decisions.length === 2)
+    ok('…both recognised as already imported',
+       forwards.decisions.every((d) => d.outcome === 'duplicate'))
+    ok('…each claiming its own row',
+       forwards.decisions[0].existing_ids.join() !== forwards.decisions[1].existing_ids.join())
+
+    // The same for the incoming side.
+    const swapped = reconcileImport({ existing: [one, two], incoming: [arrivals[1], arrivals[0]] })
+    ok('nor on the order of the incoming rows',
+       JSON.stringify(forwards.summary) === JSON.stringify(swapped.summary))
+  }
+
+  // FINDING 5 (medium): two bookings without an amount must not match on that.
+  {
+    const nothing = reconcileImport({
+      existing: [row('x', '2026-09-10', null, 'Gleicher Text')],
+      incoming: [inc('2026-09-10', null, 'Gleicher Text')],
+    })
+    ok('a missing amount is never a match', nothing.decisions[0].outcome === 'new')
+    ok('…and claims nothing', nothing.decisions[0].existing_ids.length === 0)
+  }
+}
+
+// ── 12. Repeated and chained imports ────────────────────────────────────────
+{
+  const card = (merchant, vom) =>
+    merchant + '\\nIBAN DE96 1203 0000 9005 2909 04\\nVISA Debitkartenumsatz vom ' + vom
+  const prov = (ts) =>
+    'Deutsche Bahn\\nnull' + ts + ' Debitk. 0 2099-12 Zahl.System VISA De bit\\n(POS)'
+  const row = (id, date, amount, raw) => ({
+    id, booking_date: date, amount_minor: amount, currency: 'EUR', raw_description: raw, manual_lock: false,
+  })
+  const inc = (date, amount, raw) => ({
+    booking_date: date, amount_minor: amount, currency: 'EUR', raw_description: raw,
+  })
+
+  // A → B, then B again: the second run must change nothing.
+  {
+    const stored2 = [
+      row('p', '2026-09-14', -6065, prov('2026-09-12T17:06')),
+      row('s', '2026-09-14', -6065, card('DB.Vertrieb.GmbH/508354771568', '12.09.2026')),
+    ]
+    const again = reconcileImport({
+      existing: stored2,
+      incoming: [inc('2026-09-14', -6065, card('DB.Vertrieb.GmbH/508354771568', '12.09.2026'))],
+      period: { start: '2026-09-10', end: '2026-09-14' },
+    })
+    ok('re-importing the same export changes nothing', again.decisions[0].outcome === 'duplicate')
+    ok('…it matches the settled row, not the provisional one',
+       again.decisions[0].existing_ids.join() === 's')
+    ok('…and supersedes nothing a second time', again.groups.length === 0)
+  }
+
+  // A → B → C: what B settled stays settled when C repeats it.
+  {
+    const afterB = [
+      row('s1', '2026-09-14', -150, card('OEPA.VERKEHRSGESELLSCH/MUSTERSTADT', '13.09.2026')),
+      row('s2', '2026-09-10', -1438, card('REWE', '09.09.2026')),
+    ]
+    const C = [
+      inc('2026-09-14', -150, card('OEPA.VERKEHRSGESELLSCH/MUSTERSTADT', '13.09.2026')),
+      inc('2026-09-10', -1438, card('REWE.Mohamed.Boufo/Frankfurt', '09.09.2026')),
+      inc('2026-09-15', -999, card('NEU/IRGENDWO', '14.09.2026')),
+    ]
+    const third = reconcileImport({
+      existing: afterB, incoming: C, period: { start: '2026-09-10', end: '2026-09-15' },
+    })
+    ok('a third export keeps what the second settled', third.decisions[0].outcome === 'duplicate')
+    ok('…can still enrich what was never enriched', third.decisions[1].outcome === 'enriched')
+    ok('…and adds only what is genuinely new', third.decisions[2].outcome === 'new')
+    ok('…with nothing unresolved', third.summary.unresolved === 0)
+  }
+
+  // Partial overlap: a stored booking the new export does not cover is not
+  // touched, and does not count as missing.
+  {
+    const partial = reconcileImport({
+      existing: [
+        row('alt', '2026-09-07', -454, card('EDEKA', '04.09.2026')),
+        row('neu', '2026-09-12', -1000, card('REWE', '11.09.2026')),
+      ],
+      incoming: [inc('2026-09-12', -1000, card('REWE.Filiale/Koeln', '11.09.2026'))],
+      period: { start: '2026-09-10', end: '2026-09-14' },
+    })
+    ok('a booking before the period is out of scope', partial.summary.unmatched_existing === 0)
+    ok('…and is never claimed',
+       partial.decisions.every((d) => !d.existing_ids.includes('alt')))
+    ok('the overlapping one is recognised', partial.decisions[0].outcome === 'enriched')
+  }
+
+  // Genuinely repeated spending: two real bookings, twice, stay four.
+  {
+    const doubled = reconcileImport({
+      existing: [
+        row('d1', '2026-09-12', -500, card('BAECKER/KOELN', '11.09.2026')),
+        row('d2', '2026-09-12', -500, card('BAECKER/KOELN', '11.09.2026')),
+      ],
+      incoming: [
+        inc('2026-09-12', -500, card('BAECKER/KOELN', '11.09.2026')),
+        inc('2026-09-12', -500, card('BAECKER/KOELN', '11.09.2026')),
+      ],
+      period: { start: '2026-09-10', end: '2026-09-14' },
+    })
+    ok('two equal bookings stay two, not one', doubled.decisions.length === 2)
+    ok('…both already known', doubled.decisions.every((d) => d.outcome === 'duplicate'))
+    ok('…and neither is imported again', doubled.summary.new === 0)
+  }
+
+  // Currency is part of every key.
+  {
+    const currencies = reconcileImport({
+      existing: [{ id: 'usd', booking_date: '2026-09-12', amount_minor: -500, currency: 'USD', raw_description: card('BAECKER/KOELN', '11.09.2026'), manual_lock: false }],
+      incoming: [inc('2026-09-12', -500, card('BAECKER/KOELN', '11.09.2026'))],
+      period: { start: '2026-09-10', end: '2026-09-14' },
+    })
+    ok('a booking in another currency is never the same booking',
+       currencies.decisions[0].outcome === 'new')
+  }
+}
+
 console.log(\`dkb reconcile: \${pass} passed, \${fail} failed\`)
 process.exit(fail ? 1 : 0)
 `
