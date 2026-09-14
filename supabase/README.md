@@ -23,6 +23,7 @@ Durchlauf ändert nichts und zerstört nichts.
 | `0005_google_calendar.sql` | Google-Kalender: `google_connections`, `google_credentials` (für Clients gesperrt), `google_calendars`, `google_channels`, `google_event_tombstones`, die Google-Spalten an `events`, die Sync-Trigger, RLS + Grants |
 | `0006_lists.sql` | Listen: Tabellen `lists` und `list_items` (Vorlage, Icon, Pin, Archiv, Menge/Einheit/Betrag/Kategorie), Indizes, Constraints, RLS + Policies, Realtime |
 | `0007_expenses.sql` | Ausgaben: Tabelle `expenses` (Titel, Originalbetrag, Eingabewährung AUD/EUR, Transaktionsdatum, verwendeter AUD/EUR-Kurs), Indizes, Constraints, RLS + Policies, Realtime |
+| `0009_finance_import.sql` | Finanz-Import: `finance_transaction_observations` (append-only), `finance_transaction_relations` + `finance_transaction_relation_members` (Ablösung und Retouren-Vorschlag als Gruppe, 1↔1 bis n↔n), `finance_import_review_items`, die Sicht `finance_analytics_transactions`, die Spalte `finance_imports.apply_result`, die Funktion `finance_apply_reconciliation_plan`, Indizes, Constraints, RLS + Policies |
 | `0008_finance.sql` | Finanzen: `finance_accounts`, `finance_categories` (die fünf MVP-Kategorien, per Trigger pro Konto angelegt), `finance_merchants`, `finance_merchant_patterns`, `finance_category_rules`, `finance_imports`, `finance_transactions`, `finance_transaction_overrides`, die Funktion `finance_learn_merchant_rule`, Indizes, Constraints, RLS + Policies |
 
 **Weg A — Dashboard (kein Werkzeug nötig).** SQL Editor öffnen, die Dateien
@@ -85,10 +86,18 @@ Testkonten an, prüft SELECT/INSERT/UPDATE/DELETE für eigene und fremde Daten
 sowie den unauthentifizierten Zugriff — und endet mit `ROLLBACK`, hinterlässt
 also nichts.
 
-* In Supabase: SQL Editor → Inhalt von `tests/rls.sql` ausführen.
+`tests/finance_import.sql` beweist daneben, was keine Policy prüfen kann: dass
+ein Import ganz oder gar nicht ankommt, dass derselbe Export zweimal angewendet
+keine zweite Buchung erzeugt, und dass eine manuell entschiedene Buchung von
+keinem Import stillschweigend deaktiviert wird. Auch dieses Skript endet mit
+`ROLLBACK`.
+
+* In Supabase: SQL Editor → Inhalt von `tests/rls.sql`, danach
+  `tests/finance_import.sql` ausführen.
 * Lokal gegen ein Wegwerf-Postgres: `npm run test:rls`
-  (legt einen temporären Cluster an, spielt alle Migrationen zweimal ein und
-  führt danach eine Gegenprobe: ohne RLS muss dasselbe Skript fehlschlagen).
+  (legt einen temporären Cluster an, spielt alle Migrationen zweimal ein, führt
+  beide Skripte aus und danach fünf Gegenproben: ohne RLS auf je einer Tabelle
+  und ohne den Append-only-Trigger muss dasselbe Skript fehlschlagen).
 
 Nach jeder Migration ausführen.
 
@@ -104,8 +113,7 @@ fertig wird, auch auf dem Mac zu sehen ist. `0006_lists.sql` nimmt `lists` und
 Gerät verschwindet. `0007_expenses.sql` nimmt `expenses` auf, damit eine am
 Automaten erfasste Ausgabe sofort in der Gesamtsumme auf dem anderen Gerät
 steht. Die Zugangsdaten, die Push-Kanäle
-und die Grabsteine werden bewusst **nicht** veröffentlicht. Die acht
-`finance_*`-Tabellen aus `0008` ebenfalls noch nicht: es gibt bislang keinen
+und die Grabsteine werden bewusst **nicht** veröffentlicht. Die `finance_*`-Tabellen aus `0008` und `0009` ebenfalls noch nicht: es gibt bislang keinen
 Screen, der sie abonniert, und eine Tabelle in die Publikation aufzunehmen ist
 ein eigener Einzeiler — der gehört in die Migration, die das Modul sichtbar
 macht. Prüfen:
@@ -182,6 +190,51 @@ Die fünf Kategorien (`lebensmittel`, `restaurant`, `klamotten`, `drogerie`,
 `sonstige`) legt ein Trigger auf `auth.users` an, genau wie das Profil in
 `0001`; bestehende Konten bekommen sie am Ende der Migration nachgetragen.
 Eine Kategorie „Events" aus der alten Excel-Tabelle gibt es hier bewusst nicht.
+
+### Ein Import wird angewendet
+
+`0009_finance_import.sql` legt dazu, was ein zweiter Kontoauszug mit dem
+anstellt, was schon da ist. Vier Regeln, die als Struktur dastehen und nicht als
+Konvention:
+
+* **Das Original wird nie überschrieben.** Ein späterer Export, der dieselbe
+  Buchung besser beschreibt („REWE" wird zu „REWE.Mohamed.Boufo/Frankfurt"),
+  landet als Zeile in `finance_transaction_observations` — append-only, per
+  Trigger, nicht nur per Absprache. Der Einfrier-Trigger aus `0008` würde alles
+  andere ohnehin ablehnen.
+* **Eine Ablösung ist keine Spalte.** Zwei vorgemerkte −60,65-€-Buchungen und
+  zwei abgerechnete, und in keinem der beiden Auszüge steht, welche welche
+  ablöst. Eine Spalte `superseded_by_transaction_id` könnte darauf nur raten.
+  Also: eine Relation mit Mitgliedern und Rollen (`predecessor`/`replacement`,
+  für Retouren `purchase`/`refund`), in der 1↔1, 1↔n und n↔n gleich aussehen.
+  Zwei Teil-Indizes — je einer pro Rolle — sorgen dafür, dass eine Buchung
+  höchstens einmal abgelöst wird und höchstens einmal ablöst; die Kette
+  A → B → C bleibt dabei erlaubt, weil B beides sein darf.
+* **Ein Konflikt ist keine Logzeile.** Was der Abgleich nicht entscheiden
+  konnte, steht mit der vollständigen eingehenden Buchung in
+  `finance_import_review_items` — inklusive der Fälle, in denen eine manuelle
+  Entscheidung im Weg stand.
+* **Ein Import ist ein Akt.** `finance_apply_reconciliation_plan(...)` schreibt
+  Buchungen, Beobachtungen, Relationen, Analytics-Flags und Review-Items in
+  *einer* Transaktion. Sie sperrt die Import-Zeile, und ein bereits
+  angewendeter Import liefert sein gespeichertes Ergebnis mit `replayed: true`
+  zurück, statt ein zweites Mal zu schreiben. Auch sie läuft mit den Rechten
+  des Aufrufers und glaubt dem Plan nichts, was zählt: ob eine Buchung manuell
+  geschützt ist, liest sie selbst nach; ein Plan, der über eine Kontogrenze
+  greift, wird abgelehnt statt stillschweigend gefiltert.
+
+**Was nach einer bestätigten Ablösung in der Auswertung zählt**, steht einmal
+da: die Sicht `finance_analytics_transactions` (`security_invoker`) zeigt jede
+Buchung, die `include_in_analytics` trägt und nicht `predecessor` einer
+bestätigten Ablösung ist. Die RPC setzt zusätzlich `include_in_analytics =
+false` auf jeden Vorgänger — der schnelle Weg für einfache Abfragen. Beide
+stimmen konstruktionsbedingt überein, und wo sie es je nicht täten, ist die
+Sicht die strengere von beiden. Doppelt zählen ist der Fehler, den dieses Modul
+verhindern soll.
+
+`tests/finance_import.sql` beweist das gegen ein echtes Postgres: Atomarität,
+Wiederholung desselben Exports, die Kette A → B → C, n↔n, `manual_lock`,
+Override, Retouren-Vorschlag, Kontotrennung, Nutzerisolation und `anon`.
 
 ## 8. Eine neue persönliche Tabelle anlegen
 

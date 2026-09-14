@@ -97,23 +97,37 @@ try {
   for (const file of migrations) psql(['-f', join('supabase/migrations', file)])
   console.log(`  erneut angewandt: ${migrations.length} Migrationen laufen zweimal ohne Fehler`)
 
-  const out = psql(['-f', 'supabase/tests/rls.sql'])
-  process.stdout.write(out.split('\n').filter((l) => l.trim()).map((l) => `  ${l}`).join('\n') + '\n')
+  // Two suites against the same cluster: the policies, and the one operation
+  // that writes across all of them.
+  const suites = [
+    { file: 'supabase/tests/rls.sql', marker: 'RLS: all assertions passed' },
+    { file: 'supabase/tests/finance_import.sql', marker: 'FINANCE-IMPORT: all assertions passed' },
+  ]
 
-  if (!out.includes('all assertions passed')) {
-    console.error('rls: das Skript lief durch, meldete aber keinen Erfolg.')
-    process.exit(1)
+  for (const suite of suites) {
+    const out = psql(['-f', suite.file])
+    process.stdout.write(out.split('\n').filter((l) => l.trim()).map((l) => `  ${l}`).join('\n') + '\n')
+    if (!out.includes(suite.marker)) {
+      console.error(`rls: ${suite.file} lief durch, meldete aber keinen Erfolg.`)
+      process.exit(1)
+    }
   }
 
   // Negative control. A suite that cannot fail proves nothing, so RLS is
   // switched off on one table and the very same script has to reject it. One
   // table per module that has its own assertion block — a control on `tasks`
   // alone would say nothing about whether the finance assertions bite.
-  for (const table of ['public.tasks', 'public.finance_transactions']) {
+  const controls = [
+    { table: 'public.tasks', file: 'supabase/tests/rls.sql' },
+    { table: 'public.finance_transactions', file: 'supabase/tests/rls.sql' },
+    { table: 'public.finance_import_review_items', file: 'supabase/tests/finance_import.sql' },
+    { table: 'public.finance_transaction_relations', file: 'supabase/tests/finance_import.sql' },
+  ]
+  for (const { table, file } of controls) {
     psql(['-c', `alter table ${table} disable row level security`])
     let caught = false
     try {
-      psql(['-f', 'supabase/tests/rls.sql'])
+      psql(['-f', file])
     } catch {
       caught = true
     }
@@ -122,8 +136,23 @@ try {
       console.error(`rls: Gegenprobe bestanden — die Assertions zu ${table} prüfen nichts.`)
       process.exit(1)
     }
-    console.log(`  Gegenprobe: ohne RLS auf ${table} schlägt dasselbe Skript fehl`)
+    console.log(`  Gegenprobe: ohne RLS auf ${table} schlägt ${file} fehl`)
   }
+
+  // A second counter-proof, aimed at the promise RLS cannot make: take the
+  // append-only trigger off the observations and the same suite has to notice.
+  psql(['-c', 'drop trigger finance_observations_no_update on public.finance_transaction_observations'])
+  let triggerCaught = false
+  try {
+    psql(['-f', 'supabase/tests/finance_import.sql'])
+  } catch {
+    triggerCaught = true
+  }
+  if (!triggerCaught) {
+    console.error('rls: Gegenprobe bestanden — die Append-only-Assertion prüft nichts.')
+    process.exit(1)
+  }
+  console.log('  Gegenprobe: ohne Append-only-Trigger schlägt finance_import.sql fehl')
 
   console.log('\nrls: alle Policies verhalten sich wie erwartet.')
 } catch (err) {
