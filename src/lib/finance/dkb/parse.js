@@ -51,6 +51,7 @@ import {
   X_TOLERANCE,
 } from './layout'
 import { parseAmountMinor, parseGermanDate } from './amount'
+import { extractReference } from './reference'
 import { sanitizeGlyphs, unmappedGlyphWarning } from './glyphs'
 import { groupIntoLines, lineText } from './lines'
 
@@ -449,6 +450,9 @@ export function parseDkbUmsatzexport(doc) {
         : 'standard'
     const timestamp = CARD_TIMESTAMP_PATTERN.exec(rawDescription)
     const cardDate = CARD_DATE_PATTERN.exec(rawDescription)
+    // The merchant's booking reference, read off its position rather than its
+    // length (see reference.js). Recorded, never interpreted as an identity.
+    const reference = extractReference(rawDescription)
 
     transactions.push({
       booking_date: block.date,
@@ -471,6 +475,8 @@ export function parseDkbUmsatzexport(doc) {
         // promoted to a column of its own.
         card_timestamp: timestamp ? timestamp[0] : null,
         card_transaction_date: cardDate ? parseGermanDate(cardDate[1]) : null,
+        reference: reference ? reference.reference : null,
+        reference_form: reference ? reference.form : null,
         foreign_currency: rawDescription.includes(FOREIGN_CURRENCY_MARKER),
         has_iban_line: block.lines.some((line) => IBAN_PATTERN.test(line.replace(/^IBAN /, ''))),
         unmapped_glyphs: block.unmapped,

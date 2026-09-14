@@ -283,7 +283,9 @@ src/
         amount.js           "-54.80" → -5480, via BigInt and never a float
         glyphs.js           positions the file does not encode → U+FFFD + warning
         parse.js            blocks, the twelve checks, the parsed bookings
-        fingerprint.js      dedupe candidates and their collisions — no rule yet
+        reference.js        the merchant reference, read off its position
+        reconcile.js        a second export against what is already stored
+        fingerprint.js      dedupe candidates and their collisions
         extract.js          the only file that touches pdfjs
   data/
     taskRepository.js       tasks in Supabase (+ taskDefaults.js: writable columns)
@@ -425,12 +427,53 @@ Three properties of the real file shape the implementation:
   become a merchant pattern (`unreliableTokens` in `normalize.js`).
 
 Anything the parser cannot read with certainty stops the **whole** import — a
-statement half-read is a spending total quietly missing a booking. There is no
-cross-import dedupe rule yet, on purpose: the export proves that two bookings can
-share date, amount and merchant, so `fingerprint.js` reports what each candidate
-would collide on and writes nothing. `tools/dkbParserLogic.mjs` covers all of it
-(131 assertions) against fixtures that reproduce the real geometry with invented
-content — the statement itself stays out of this repository.
+statement half-read is a spending total quietly missing a booking.
+`tools/dkbParserLogic.mjs` covers all of it (150 assertions) against fixtures
+that reproduce the real geometry with invented content — the statement itself
+stays out of this repository.
+
+### Reconciling a second export
+
+`reconcile.js` answers what a single export could not: what a later, overlapping
+export does to bookings that are already stored. Two real exports settled it, and
+each of the three things they showed shaped a rule:
+
+- **A provisional booking comes back settled, with a different text.**
+  `Deutsche Bahn` plus an ISO timestamp becomes `DB.Vertrieb.GmbH/474717313729`
+  plus a card date. Counting both would double the spending, so the provisional
+  one is superseded.
+- **A booking that was already settled can come back richer.** `REWE` becomes
+  `REWE.Mohamed.Boufo/Frankfurt`, `EDEKA` becomes `EDEKA.FLECK/STUTTGART`. Same
+  booking, better text — so text is not identity, and the stored original stays
+  frozen either way.
+- **The reference is not a transaction id.** `564851284265` sits on the −50,05 €
+  purchase *and* on the +50,05 € refund of it. It is evidence that two bookings
+  belong together, nothing more — and it is read off its position in the text,
+  never off the length of a digit run, because a naive sweep also collects
+  exchange-rate fragments and timestamps.
+
+The hierarchy each candidate has to pass, always on the whole tuple and never on
+one field alone: identical text → date + amount + reference → date + amount +
+card date → provisional-to-settled by amount + card date (or reference). A tier
+only decides when exactly one candidate matches on each side; otherwise the case
+falls through and ends as `unresolved`.
+
+What it refuses is the point. Two −60,65 € bookings on the same day become two
+settled ones with different references, and **nothing in either document says
+which settles which** — the minute exists only in one export, the reference only
+in the other. So the pair is superseded *as a pair*, with its cardinality
+preserved and no individual link invented. A booking carrying `manual_lock` or an
+override is never re-labelled; it becomes `review` with the decision untouched.
+The module is pure: it writes nothing and proposes a plan for a human to confirm.
+Ambiguity never falls through to "new": when the number of candidates does not
+match on both sides, the case ends as `unresolved` rather than importing a
+booking that is already there a second time. Individual links are only drawn
+where they assert nothing — one against one, or members that are indistinguishable
+from each other. The account is part of every key, so a booking of one account can
+never be matched by another account's import, and the whole plan is computed in a
+fixed order, so the same input produces the same plan whichever way the rows were
+sorted on their way in. `tools/dkbReconcileLogic.mjs` covers it with 104
+assertions against fixtures of both exports.
 
 ---
 

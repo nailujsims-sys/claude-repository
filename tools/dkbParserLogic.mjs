@@ -111,8 +111,8 @@ const has = (result, code) => codes(result).includes(code)
   const result = parseDkbUmsatzexport(referenceDocument())
   ok('the reference document parses', result.ok === true)
   ok('…with no errors', result.errors.length === 0)
-  ok('all twelve bookings are found', result.transactions.length === 12)
-  ok('the control value is read', result.header.declared_count === 12)
+  ok('all fifteen bookings are found', result.transactions.length === 15)
+  ok('the control value is read', result.header.declared_count === 15)
   ok('the period is read', result.header.period_start === '2026-09-07' && result.header.period_end === '2026-09-14')
   ok('the currency comes from the column header', result.header.currency === 'EUR')
   ok('three pages are seen', result.header.page_count === 3)
@@ -139,7 +139,10 @@ const has = (result, code) => codes(result).includes(code)
      t.every((x) => !x.raw_description.includes('Erläuterung')))
 
   // Multi-line descriptions, verbatim.
-  const paypal = t.find((x) => x.raw_description.startsWith('PayPal'))
+  // The one PayPal booking that carries an unencoded position — there is a
+  // second, clean one in the fixture, and picking whichever comes first would
+  // make these assertions depend on the order of the pages.
+  const paypal = t.find((x) => x.source_metadata.unmapped_glyphs > 0)
   ok('a four-line description keeps all four lines', paypal.raw_description.split('\\n').length === 4)
   ok('…and its reference number', paypal.raw_description.includes('1052906804694/PP.8169.PP'))
   ok('…and is recorded as such', paypal.source_metadata.line_count === 4)
@@ -155,7 +158,7 @@ const has = (result, code) => codes(result).includes(code)
   const timestamped = t.filter((x) => x.source_variant === 'timestamped_card')
   const standard = t.filter((x) => x.source_variant === 'standard')
   ok('the timestamped variant is recognised structurally', timestamped.length === 4)
-  ok('everything else is standard', standard.length === 8)
+  ok('everything else is standard', standard.length === 11)
   ok('the variant is only ever these two',
      t.every((x) => x.source_variant === 'standard' || x.source_variant === 'timestamped_card'))
   ok('the timestamp is kept verbatim in the metadata',
@@ -173,7 +176,7 @@ const has = (result, code) => codes(result).includes(code)
   // The glyph the file does not encode.
   ok('the unmapped glyph raises a warning', result.warnings.some((w) => w.code === 'unmapped_glyph'))
   ok('both occurrences are reported', result.warnings.filter((w) => w.code === 'unmapped_glyph').length === 2)
-  ok('the warning names its page', result.warnings.find((w) => w.code === 'unmapped_glyph').page === 2)
+  ok('the warning names its page', result.warnings.find((w) => w.code === 'unmapped_glyph').page === 3)
   ok('the warning carries the surrounding text',
      result.warnings.find((w) => w.code === 'unmapped_glyph').context.includes(REPLACEMENT_CHARACTER))
   ok('the warning says whether it reaches the data',
