@@ -276,6 +276,8 @@ src/
       categoryRules.js      which category that means, incl. the amount rules
       backtest.js           what a new pattern would do to existing bookings
       learning.js           one marked token + one chosen category → one request
+      importFlow.js         the import as a person reads it: the three pipeline
+                            calls wired once, and outcomes turned into German
       types.js              the row and result shapes, as JSDoc typedefs
       dkb/                  the DKB Umsatzexport importer, stage 1:
         layout.js           the coordinates of the real export, as measured
@@ -287,6 +289,7 @@ src/
         reconcile.js        a second export against what is already stored
         plan.js             a confirmed plan → the payload the database applies
         fingerprint.js      dedupe candidates and their collisions
+        sourceHash.js       the identity of the file, without the file
         extract.js          the only file that touches pdfjs
   data/
     taskRepository.js       tasks in Supabase (+ taskDefaults.js: writable columns)
@@ -298,8 +301,8 @@ src/
     expenseRepository.js    expenses in Supabase (+ expenseDefaults.js)
     financeRepository.js    the finance tables + the atomic learning RPC
                             (+ financeDefaults.js: writable columns per table)
-  context/                  Auth · Tasks · Events · Lists · Expenses · Google ·
-                            UI (overlays) · Toast
+  context/                  Auth · Tasks · Events · Lists · Expenses · Finance ·
+                            Google · UI (overlays) · Toast
   components/               TopBar (the global header of every main area),
                             BottomNav, Sidebar, ActionSheet, BottomSheet, TaskForm,
                             EventForm, InlineCalendar, MiniCalendar, FilterSheet,
@@ -307,10 +310,11 @@ src/
                             (a list that scrolls inside its own height budget),
                             ListForm, ListActionsSheet, ListItemSheet, ListRow,
                             ListItemRow, ExpenseForm, ExpenseRow,
-                            CurrencySwitch, …
+                            CurrencySwitch, FinanceImportSheet, …
   screens/                  Home, TasksList, TaskDetail, Kalender, Listen,
-                            ListeDetail, ListenArchiv, Ausgaben, Mehr, Profil,
-                            ProfilGoogle, Login, NewPassword, BackendMissing
+                            ListeDetail, ListenArchiv, Ausgaben, Finanzen, Mehr,
+                            Profil, ProfilGoogle, Login, NewPassword,
+                            BackendMissing
     home/                   HomeGreeting, AgendaCard, TasksCard and the HomeCard
                             shell every Heute block is built from
     calendar/               DayView, WeekView, MonthView, parts (shared grid pieces),
@@ -522,6 +526,58 @@ A supersession can be taken back: `finance_resolve_relation` restores exactly
 the bookings that relation switched off and nothing else, so an undo can never
 re-enable something the user excluded themselves. A rejected relation stays as
 history and stops blocking the correct one.
+
+### Importing a statement
+
+`/finanzen` is the module's first productive screen, and deliberately not a
+dashboard: an empty account has nothing to summarise, so it shows an invitation
+and one button. Once bookings exist it shows how many there are and when the
+newest one is from — orientation, not analysis — and the import button stays
+directly under it.
+
+The import itself is one sheet with six states: pick a file, read it, name the
+account the first time, look at what arrived, save it, done. `importFlow.js`
+holds the whole of it that is not React — the three pipeline calls wired once
+(`readStatementFile` → `buildPlan` → `buildPayload`) and the translation of
+matcher vocabulary into sentences a person reads:
+
+| The plan says | The preview says |
+|---|---|
+| `new` | Neu |
+| `duplicate` | Bereits vorhanden |
+| `enriched` | Aktualisiert |
+| `supersedes` / `supersedes_group` | Ersetzt |
+| `unresolved` / `review` | Prüfen |
+
+Two of those pairs matter more than the labels. `supersedes` and
+`supersedes_group` read the same on purpose: whether the two statements allowed
+an individual link is a matching detail, and a preview that showed "this one
+replaces that one" for an ambiguous pair would be claiming something neither
+document says. And the summary counts what will actually be written —
+`new` + `supersedes` — so the confirm button promises the number of rows that
+appear, not the size of the file.
+
+**The PDF never leaves the device.** It is read into memory, parsed, and
+dropped; what is stored is the bookings the parser produced and a SHA-256 of
+the bytes (`sourceHash.js`) so that the same file picked twice is recognised as
+the same import rather than piling up import rows. A refused file says so in a
+sentence — the parser's codes stay available in a collapsed detail area, never
+in the headline.
+
+Categorisation deliberately does not happen at import: the apply function
+writes a booking's raw half and knows nothing of `merchant_id`, so assigning a
+merchant would need either a schema change or a second write path past the
+function's invariants. Bookings arrive unresolved and stay that way until the
+learning flow exists.
+
+`tools/financeImportFlowLogic.mjs` covers the flow with 92 assertions — the
+real parser, the real matcher, the real payload builder and the repository's
+RPC path — because that is where "15 neu" has to be true. The DOM assertions in
+`tools/smoke.mjs` cover the states reachable without a PDF (empty account, an
+account with bookings, a failed load, the sheet opening and closing, the file
+input accepting only PDFs); the states after a file is picked need pdfjs, which
+jsdom cannot run, and faking the parser to get a green DOM test would be exactly
+the UI mock this module is not allowed to have.
 
 `tools/financeImportLogic.mjs` covers the client half (44 assertions);
 `supabase/tests/finance_import.sql` covers the rest against a real Postgres
