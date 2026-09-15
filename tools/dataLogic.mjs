@@ -13,7 +13,7 @@
 import { build } from 'esbuild'
 import { writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabaseStub.mjs'
+import { SUPABASE_URL, SUPABASE_ANON_KEY, installRealtimeStub } from './supabaseStub.mjs'
 
 const TEST = `
 import { taskRepository } from './src/data/taskRepository.js'
@@ -338,17 +338,9 @@ const res = await build({
   logLevel: 'silent',
 })
 
-// Creating a Supabase client also builds its realtime client, and that one
-// insists on a WebSocket implementation. Browsers have one, Node 22 has one,
-// Node 20 — which CI pins — does not, so the suite passed locally and failed
-// on the runner. The app opens no realtime connection (that is the next piece
-// of work, not this one), so a stub that would throw if anything ever used it
-// is both enough and honest.
-globalThis.WebSocket ??= class RealtimeIsNotUnderTest {
-  constructor() {
-    throw new Error('dataLogic: the repositories must not open a realtime connection')
-  }
-}
+// See installRealtimeStub: without it this suite dies on the runner, which pins
+// Node 20, before its first assertion.
+installRealtimeStub()
 
 const out = `${process.env.SCRATCH || '/tmp'}/dataLogic.bundled.mjs`
 writeFileSync(out, res.outputFiles[0].text)
