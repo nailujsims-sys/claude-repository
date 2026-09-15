@@ -93,27 +93,66 @@ try {
     console.log(`  angewandt: ${file}`)
   }
 
+  // ── Upgrade-Probe: die neueste Migration auf einem BESTEHENDEN Schema ──────
+  // Alles oben baut die Datenbank in einem Zug. Produktion fragt etwas anderes:
+  // die vorige Migration liegt seit Wochen drauf, es stehen Daten darunter, und
+  // jetzt kommt die neue. Also eine zweite Datenbank, die genau diesen Weg geht.
+  const latest = migrations[migrations.length - 1]
+  const earlier = migrations.slice(0, -1)
+  psql(['-c', 'create database upgrade_probe'])
+  const probe = (args) =>
+    pg(exe('psql'), ['-h', sock, '-U', 'postgres', '-d', 'upgrade_probe', '-v', 'ON_ERROR_STOP=1', ...args], {
+      cwd: process.cwd(),
+    })
+  probe(['-f', 'tools/pgtest/supabase-stub.sql'])
+  for (const file of earlier) probe(['-f', join('supabase/migrations', file)])
+  probe(['-f', 'supabase/tests/finance_import_upgrade_seed.sql'])
+  probe(['-f', join('supabase/migrations', latest)])
+  probe(['-f', join('supabase/migrations', latest)])
+  const upgrade = probe(['-f', 'supabase/tests/finance_import_upgrade_verify.sql'])
+  if (!upgrade.includes('FINANCE-UPGRADE: all assertions passed')) {
+    console.error(`rls: ${latest} auf bestehendem Schema meldete keinen Erfolg.`)
+    process.exit(1)
+  }
+  console.log(`  Upgrade-Probe: ${latest} läuft zweimal auf einem bestehenden Schema und lässt die Daten in Ruhe`)
+
   // Idempotence is a promise the migration headers make — so it gets tested.
   for (const file of migrations) psql(['-f', join('supabase/migrations', file)])
   console.log(`  erneut angewandt: ${migrations.length} Migrationen laufen zweimal ohne Fehler`)
 
-  const out = psql(['-f', 'supabase/tests/rls.sql'])
-  process.stdout.write(out.split('\n').filter((l) => l.trim()).map((l) => `  ${l}`).join('\n') + '\n')
+  // Two suites against the same cluster: the policies, and the one operation
+  // that writes across all of them.
+  const suites = [
+    { file: 'supabase/tests/rls.sql', marker: 'RLS: all assertions passed' },
+    { file: 'supabase/tests/finance_import.sql', marker: 'FINANCE-IMPORT: all assertions passed' },
+  ]
 
-  if (!out.includes('all assertions passed')) {
-    console.error('rls: das Skript lief durch, meldete aber keinen Erfolg.')
-    process.exit(1)
+  for (const suite of suites) {
+    const out = psql(['-f', suite.file])
+    process.stdout.write(out.split('\n').filter((l) => l.trim()).map((l) => `  ${l}`).join('\n') + '\n')
+    if (!out.includes(suite.marker)) {
+      console.error(`rls: ${suite.file} lief durch, meldete aber keinen Erfolg.`)
+      process.exit(1)
+    }
   }
 
   // Negative control. A suite that cannot fail proves nothing, so RLS is
   // switched off on one table and the very same script has to reject it. One
   // table per module that has its own assertion block — a control on `tasks`
   // alone would say nothing about whether the finance assertions bite.
-  for (const table of ['public.tasks', 'public.finance_transactions']) {
+  const controls = [
+    { table: 'public.tasks', file: 'supabase/tests/rls.sql' },
+    { table: 'public.finance_transactions', file: 'supabase/tests/rls.sql' },
+    { table: 'public.finance_import_review_items', file: 'supabase/tests/finance_import.sql' },
+    { table: 'public.finance_transaction_relations', file: 'supabase/tests/finance_import.sql' },
+    { table: 'public.finance_transaction_observation_sightings', file: 'supabase/tests/finance_import.sql' },
+    { table: 'public.finance_import_review_item_transactions', file: 'supabase/tests/finance_import.sql' },
+  ]
+  for (const { table, file } of controls) {
     psql(['-c', `alter table ${table} disable row level security`])
     let caught = false
     try {
-      psql(['-f', 'supabase/tests/rls.sql'])
+      psql(['-f', file])
     } catch {
       caught = true
     }
@@ -122,7 +161,46 @@ try {
       console.error(`rls: Gegenprobe bestanden — die Assertions zu ${table} prüfen nichts.`)
       process.exit(1)
     }
-    console.log(`  Gegenprobe: ohne RLS auf ${table} schlägt dasselbe Skript fehl`)
+    console.log(`  Gegenprobe: ohne RLS auf ${table} schlägt ${file} fehl`)
+  }
+
+  // More counter-proofs, aimed at the promises RLS cannot make. Each one takes
+  // away exactly one guard and demands that the same suite notices — a suite
+  // that cannot fail proves nothing, and these are the guards that stand
+  // between a client bug and a wrong number in a spending report.
+  const guards = [
+    {
+      what: 'Append-only auf Beobachtungen',
+      drop: 'drop trigger finance_observations_no_update on public.finance_transaction_observations',
+    },
+    {
+      what: 'Append-only auf Sichtungen',
+      drop: 'drop trigger finance_sightings_no_update on public.finance_transaction_observation_sightings',
+    },
+    {
+      what: 'Kohärenz-Prüfung der Relationen',
+      drop: 'drop trigger finance_relation_members_coherent on public.finance_transaction_relation_members',
+    },
+    {
+      what: 'statusbewusster Vorgänger-Index',
+      drop: 'drop index finance_relation_members_one_predecessor_idx',
+    },
+  ]
+  for (const guard of guards) {
+    psql(['-c', guard.drop])
+    let caught = false
+    try {
+      psql(['-f', 'supabase/tests/finance_import.sql'])
+    } catch {
+      caught = true
+    }
+    if (!caught) {
+      console.error(`rls: Gegenprobe bestanden — ohne ${guard.what} merkt die Suite nichts.`)
+      process.exit(1)
+    }
+    console.log(`  Gegenprobe: ohne ${guard.what} schlägt finance_import.sql fehl`)
+    // Put it back, so the next counter-proof tests its own guard alone.
+    psql(['-f', 'supabase/migrations/0009_finance_import.sql'])
   }
 
   console.log('\nrls: alle Policies verhalten sich wie erwartet.')

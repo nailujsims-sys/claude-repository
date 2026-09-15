@@ -314,11 +314,39 @@ const find = (list, needle) => list.findIndex((t) => t.raw_description.startsWit
   {
     const crossing = reconcileImport({
       existing: [row('fremd', '2026-09-10', -1438, card('REWE', '09.09.2026'), { account_id: 'konto-B' })],
-      incoming: [inc('2026-09-10', -1438, card('REWE.Neu/Frankfurt', '09.09.2026'), { account_id: 'konto-A' })],
+      incoming: [inc('2026-09-10', -1438, card('REWE.Neu/Frankfurt', '09.09.2026'))],
       period: span,
+      accountId: 'konto-A',
     })
     ok('a booking of another account is never matched', crossing.decisions[0].outcome === 'new')
     ok('…and claims nothing', crossing.decisions[0].existing_ids.length === 0)
+
+    // A parsed booking carries no account of its own — it belongs to the one
+    // being imported into. Before this was stamped on, stored rows (which do
+    // have an account) and arrivals (which do not) could never share a key, so
+    // every arrival came out as "new" and an import would have doubled every
+    // booking it should have recognised.
+    const stamped = reconcileImport({
+      existing: [row('a1', '2026-09-10', -1438, card('REWE', '09.09.2026'), { account_id: 'konto-A' })],
+      incoming: [inc('2026-09-10', -1438, card('REWE.Neu/Frankfurt', '09.09.2026'))],
+      period: span,
+      accountId: 'konto-A',
+    })
+    ok('an arrival is matched against the account it is imported into',
+       stamped.decisions[0].outcome === 'enriched')
+    ok('…and names the stored booking', stamped.decisions[0].existing_ids.join() === 'a1')
+
+    // And when nobody says which account is being imported, a plan over
+    // account-bearing bookings is refused rather than answered with all-new.
+    let refused = null
+    try {
+      reconcileImport({
+        existing: [row('a1', '2026-09-10', -1438, card('REWE', '09.09.2026'), { account_id: 'konto-A' })],
+        incoming: [inc('2026-09-10', -1438, card('REWE.Neu/Frankfurt', '09.09.2026'))],
+        period: span,
+      })
+    } catch (e) { refused = e.message }
+    ok('an import without a named account is refused', refused !== null)
 
     const filtered = reconcileImport({
       existing: [

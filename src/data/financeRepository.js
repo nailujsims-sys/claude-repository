@@ -18,9 +18,8 @@ import {
 //
 // There is no screen for any of this yet. What is here is what the engine needs
 // to be exercised end to end: the reads that feed it, the two writes a
-// classification consists of, and the one learning call that must be atomic.
-// The import path is deliberately missing — no parser exists, and a repository
-// method for a file format nobody has read yet would be a guess.
+// classification consists of, and the two calls that must be atomic — learning
+// a merchant rule, and applying a confirmed import plan.
 
 function requireUser(userId) {
   if (!userId) throw new Error('Kein angemeldeter Benutzer.')
@@ -192,6 +191,88 @@ export const financeRepository = {
   async learnMerchantRule(userId, request) {
     requireUser(userId)
     const { data, error } = await requireSupabase().rpc('finance_learn_merchant_rule', request)
+    if (error) throw error
+    return data
+  },
+
+  // ── Reading what an import left behind ────────────────────────────────────
+  // The three tables 0009 adds are read the same way as everything else: by the
+  // signed-in user, with RLS deciding the rest.
+  listObservations: (userId) =>
+    readAll('finance_transaction_observations', userId, [['created_at', false]]),
+  listRelations: (userId) =>
+    readAll('finance_transaction_relations', userId, [['created_at', false]]),
+  listRelationMembers: (userId) =>
+    readAll('finance_transaction_relation_members', userId, [['created_at', true]]),
+
+  async listOpenReviewItems(userId) {
+    const { data, error } = await requireSupabase()
+      .from('finance_import_review_items')
+      .select('*')
+      .eq('user_id', requireUser(userId))
+      .eq('status', 'open')
+      .order('created_at', { ascending: false })
+    if (error) throw error
+    return data ?? []
+  },
+
+  /**
+   * Apply a confirmed reconciliation plan — new bookings, observations,
+   * relations, analytics and review items — in one transaction, or not at all.
+   *
+   * The payload comes from buildApplyPayload (src/lib/finance/dkb/plan.js),
+   * which is pure and tested; this only puts it on the wire. As with
+   * learnMerchantRule the user id is not sent: the function reads `auth.uid()`
+   * itself and runs with invoker rights, so there is nothing here a client
+   * could widen. Calling it twice for the same import is safe by design — the
+   * second call returns the stored result with `replayed: true` and writes
+   * nothing.
+   */
+  /**
+   * Stand by a relation, or take it back.
+   *
+   * The counterpart to applying a plan, and the only supported way to undo an
+   * analytics change an import made: the function restores exactly the bookings
+   * that relation switched off, and never one the user excluded themselves.
+   * Confirming a relation whose predecessor carries a manual decision is
+   * refused rather than forced — the lock has to be cleared first.
+   */
+  async resolveRelation(userId, relationId, status, note = null) {
+    requireUser(userId)
+    const { data, error } = await requireSupabase().rpc('finance_resolve_relation', {
+      p_relation_id: relationId,
+      p_status: status,
+      p_note: note,
+    })
+    if (error) throw error
+    return data
+  },
+
+  async resolveReviewItem(userId, itemId, status, resolution = null) {
+    requireUser(userId)
+    const { data, error } = await requireSupabase().rpc('finance_resolve_review_item', {
+      p_item_id: itemId,
+      p_status: status,
+      p_resolution: resolution,
+    })
+    if (error) throw error
+    return data
+  },
+
+  listObservationSightings: (userId) =>
+    readAll('finance_transaction_observation_sightings', userId, [['created_at', true]]),
+  listReviewItemTransactions: (userId) =>
+    readAll('finance_import_review_item_transactions', userId, [['created_at', true]]),
+
+  async applyReconciliationPlan(userId, payload) {
+    requireUser(userId)
+    const { data, error } = await requireSupabase().rpc('finance_apply_reconciliation_plan', {
+      p_import_id: payload.import_id,
+      p_account_id: payload.account_id,
+      p_bookings: payload.bookings,
+      p_decisions: payload.decisions,
+      p_refund_candidates: payload.refund_candidates,
+    })
     if (error) throw error
     return data
   },

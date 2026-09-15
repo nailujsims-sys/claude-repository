@@ -285,6 +285,7 @@ src/
         parse.js            blocks, the twelve checks, the parsed bookings
         reference.js        the merchant reference, read off its position
         reconcile.js        a second export against what is already stored
+        plan.js             a confirmed plan → the payload the database applies
         fingerprint.js      dedupe candidates and their collisions
         extract.js          the only file that touches pdfjs
   data/
@@ -472,8 +473,64 @@ where they assert nothing — one against one, or members that are indistinguish
 from each other. The account is part of every key, so a booking of one account can
 never be matched by another account's import, and the whole plan is computed in a
 fixed order, so the same input produces the same plan whichever way the rows were
-sorted on their way in. `tools/dkbReconcileLogic.mjs` covers it with 104
-assertions against fixtures of both exports.
+sorted on their way in — and the account being imported into has to be named,
+because stored bookings carry an account and freshly parsed ones do not; leaving
+that implicit would have let every arrival fall through to "new".
+`tools/dkbReconcileLogic.mjs` covers it with 107 assertions against fixtures of
+both exports.
+
+### Storing what the plan decided
+
+A plan is worth nothing while it lives in a browser tab. `plan.js` narrows it to
+what the database stores — the bookings' own columns, one decision each, the
+refund proposals as ids rather than as whole bookings — and refuses a malformed
+plan before a transaction is ever opened.
+`finance_apply_reconciliation_plan` (`supabase/migrations/0009_finance_import.sql`)
+then applies it in one transaction: new bookings, the richer texts as
+append-only *observations* next to the frozen originals, supersessions as
+*relations* with roles that express 1↔1, 1↔n and n↔n alike, the analytics flag,
+and everything nobody could decide as *review items* carrying the full incoming
+booking.
+
+Four properties matter more than the rest, and each is a database behaviour
+rather than a convention:
+
+- **All or nothing.** A plan that fails halfway leaves no booking, no relation
+  and no review item behind, and the import stays unapplied.
+- **Applied once.** The import row is locked, and one already applied returns
+  its stored result with `replayed: true` instead of writing again. The same
+  export re-imported produces no second booking, no second relation and no
+  second observation — the observation's key is its content, so equal evidence
+  is one row. Which imports actually contained it is recorded separately, as
+  sightings, so storing the evidence once costs no provenance.
+- **Manual beats automatic.** Whether a booking is protected is read from the
+  database, never from the plan. A protected predecessor is left exactly as it
+  is; the *new* booking stands down instead, so the two can never both count,
+  and a review item says so. Confirming such a relation by hand is refused too,
+  until the lock is cleared — the rule holds inside the undo path as well.
+- **The plan is not believed.** It is computed in a browser, so the database
+  re-checks what it can without re-implementing the matcher: owner, account,
+  the period the statement itself declares, and — the one that matters most —
+  that a supersession is *the same payment*, same amount and same currency on
+  both sides. Without that, any two of your own bookings could be declared a
+  supersession and the larger one would quietly leave the analytics. These
+  checks sit on the tables as a deferred constraint trigger rather than inside
+  the function, because the function runs with the caller's own rights and is
+  therefore not the only way a row can appear.
+
+A supersession can be taken back: `finance_resolve_relation` restores exactly
+the bookings that relation switched off and nothing else, so an undo can never
+re-enable something the user excluded themselves. A rejected relation stays as
+history and stops blocking the correct one.
+
+`tools/financeImportLogic.mjs` covers the client half (44 assertions);
+`supabase/tests/finance_import.sql` covers the rest against a real Postgres
+(113) — atomicity, the repeated export, the chain A → B → C, n↔n, `manual_lock`,
+overrides, refund candidates, account separation, the trust boundary, direct
+writes that bypass the function, the undo path, observation provenance and user
+isolation. `supabase/tests/finance_import_upgrade_*.sql` applies the migration
+to a database that already ran the previous one and holds data, and checks that
+nothing moved.
 
 ---
 
