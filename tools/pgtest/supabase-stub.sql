@@ -3,9 +3,22 @@
 -- real (see tools/rlsTest.mjs). This file is NEVER run against Supabase —
 -- there, all of this already exists and is owned by the platform.
 
-create role anon nologin noinherit;
-create role authenticated nologin noinherit;
-create role service_role nologin noinherit bypassrls;
+-- Roles belong to the cluster, not to a database, so a second database in the
+-- same cluster finds them already there. Created only if missing, which is what
+-- lets the upgrade probe build its own database beside the main one.
+do $$
+begin
+  if not exists (select 1 from pg_roles where rolname = 'anon') then
+    create role anon nologin noinherit;
+  end if;
+  if not exists (select 1 from pg_roles where rolname = 'authenticated') then
+    create role authenticated nologin noinherit;
+  end if;
+  if not exists (select 1 from pg_roles where rolname = 'service_role') then
+    create role service_role nologin noinherit bypassrls;
+  end if;
+end
+$$;
 
 grant usage on schema public to anon, authenticated, service_role;
 alter default privileges in schema public

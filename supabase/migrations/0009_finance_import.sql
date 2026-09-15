@@ -35,26 +35,6 @@
 -- WHAT THIS MIGRATION STILL DOES NOT BRING: no screen, no route, no realtime
 -- publication. It is the storage layer for a pipeline whose UI comes later.
 
--- ── A helper the policies need ──────────────────────────────────────────────
--- `finance_owns_transaction` of 0008 answers the question for one id. A review
--- item names a SET of bookings, and a set with one foreign member in it is
--- exactly the leak the per-row policies cannot see. Same shape as its
--- siblings: `stable`, invoker rights, null and empty pass.
-create or replace function public.finance_owns_transactions(p_ids uuid[])
-returns boolean language sql stable set search_path = '' as $$
-  select p_ids is null
-      or cardinality(p_ids) = 0
-      or not exists (
-        select 1
-        from unnest(p_ids) as t(id)
-        where t.id is null
-           or not exists (
-             select 1 from public.finance_transactions x
-             where x.id = t.id and x.user_id = (select auth.uid())
-           )
-      );
-$$;
-
 -- One sorted, comparable text for a set of ids. Used to group the decisions of
 -- one ambiguous group together and to build the idempotency key of a relation.
 -- Sorting is what makes it order-independent: the same set of bookings produces
@@ -91,6 +71,28 @@ $$;
 -- return instead of doing the work a second time.
 alter table public.finance_imports
   add column if not exists apply_result jsonb;
+
+-- The period the file itself declares. The DKB export prints it in its header,
+-- and the parser already reads it — so the database can check what it is asked
+-- to store against what the document claims to cover, instead of taking the
+-- client's word for a booking date.
+--
+-- Nullable, because a manual import covers no period. Declared or not is the
+-- client's choice; once declared it is enforced, and the importer always
+-- declares it.
+alter table public.finance_imports
+  add column if not exists period_start date;
+alter table public.finance_imports
+  add column if not exists period_end date;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'finance_imports_period_order') then
+    alter table public.finance_imports add constraint finance_imports_period_order
+      check (period_start is null or period_end is null or period_start <= period_end);
+  end if;
+end
+$$;
 
 -- ── finance_transaction_observations: later evidence, appended ──────────────
 -- WHY A TABLE AND NOT A COLUMN. A second export says the −14,38 € booking of
@@ -140,16 +142,36 @@ create table if not exists public.finance_transaction_observations (
     check (source_variant in ('standard', 'timestamped_card'))
 );
 
+-- The identity of a piece of evidence, as one value. Defined once and called
+-- from two places — the trigger that stamps it, and the apply function that has
+-- to find the row again when an equivalent observation was already there. Two
+-- copies of this formula would be two definitions of "the same evidence", and
+-- they would drift.
+create or replace function public.finance_observation_key(
+  p_transaction_id uuid,
+  p_description    text,
+  p_reference      text,
+  p_card_date      date,
+  p_card_timestamp text,
+  p_source_variant text
+)
+returns text language sql immutable set search_path = '' as $$
+  select md5(
+    p_transaction_id::text || E'\n' ||
+    coalesce(p_description, '') || E'\n' ||
+    coalesce(p_reference, '') || E'\n' ||
+    coalesce(p_card_date::text, '') || E'\n' ||
+    coalesce(p_card_timestamp, '') || E'\n' ||
+    coalesce(p_source_variant, '')
+  );
+$$;
+
 create or replace function public.finance_stamp_observation_key()
 returns trigger language plpgsql set search_path = '' as $$
 begin
-  new.observation_key := md5(
-    new.transaction_id::text || E'\n' ||
-    new.observed_description || E'\n' ||
-    coalesce(new.observed_reference, '') || E'\n' ||
-    coalesce(new.observed_card_date::text, '') || E'\n' ||
-    coalesce(new.observed_card_timestamp, '') || E'\n' ||
-    new.source_variant
+  new.observation_key := public.finance_observation_key(
+    new.transaction_id, new.observed_description, new.observed_reference,
+    new.observed_card_date, new.observed_card_timestamp, new.source_variant
   );
   return new;
 end;
@@ -179,6 +201,51 @@ create index if not exists finance_observations_tx_idx
   on public.finance_transaction_observations (transaction_id, created_at desc);
 create index if not exists finance_observations_import_idx
   on public.finance_transaction_observations (import_id);
+
+-- ── finance_transaction_observation_sightings: who saw it, and when ─────────
+-- WHY THIS EXISTS. The observation's identity is its CONTENT, deliberately: two
+-- imports that say the same thing about the same booking are one piece of
+-- evidence, and re-importing an equivalent export must not fill the table with
+-- copies. But `import_id` on the observation then only names the FIRST import
+-- that saw it, and "which imports actually contained this" is exactly the
+-- question an audit asks.
+--
+-- So the evidence is stored once and every sighting of it is recorded here. The
+-- observation stays append-only and free of counters; the provenance is a set of
+-- rows rather than a number that would have to be updated.
+create table if not exists public.finance_transaction_observation_sightings (
+  id             uuid primary key default gen_random_uuid(),
+  user_id        uuid not null references auth.users (id) on delete cascade,
+  observation_id uuid not null references public.finance_transaction_observations (id) on delete cascade,
+  -- `set null` like everywhere else: deleting import metadata must not delete
+  -- the fact that something was observed.
+  import_id      uuid references public.finance_imports (id) on delete set null,
+  created_at     timestamptz not null default now()
+);
+
+-- One sighting per import. A replayed apply records nothing new.
+create unique index if not exists finance_observation_sightings_unique_idx
+  on public.finance_transaction_observation_sightings (observation_id, import_id)
+  where import_id is not null;
+create index if not exists finance_observation_sightings_obs_idx
+  on public.finance_transaction_observation_sightings (observation_id, created_at);
+create index if not exists finance_observation_sightings_import_idx
+  on public.finance_transaction_observation_sightings (import_id);
+create index if not exists finance_observation_sightings_user_idx
+  on public.finance_transaction_observation_sightings (user_id);
+
+create or replace function public.finance_sightings_append_only()
+returns trigger language plpgsql set search_path = '' as $$
+begin
+  raise exception 'finance: Sichtungen sind unveraenderlich (id %)', old.id
+    using errcode = '23514';
+end;
+$$;
+
+drop trigger if exists finance_sightings_no_update on public.finance_transaction_observation_sightings;
+create trigger finance_sightings_no_update
+  before update on public.finance_transaction_observation_sightings
+  for each row execute function public.finance_sightings_append_only();
 
 -- ── finance_transaction_relations: what one booking is to another ───────────
 -- Two kinds so far, and they are kept apart because they mean different things:
@@ -230,25 +297,37 @@ create index if not exists finance_relations_user_type_idx
 create index if not exists finance_relations_import_idx
   on public.finance_transaction_relations (import_id);
 
--- The composite key the member table points at, so that "a role that does not
--- exist for this relation type" is refused by the database rather than by a
--- trigger somebody can forget to write.
-create unique index if not exists finance_relations_id_type_idx
-  on public.finance_transaction_relations (id, relation_type);
+-- The composite key the member table points at, so that two things are refused
+-- by the database rather than by a trigger somebody can forget to write: "a role
+-- that does not exist for this relation type", and "a member that still counts
+-- although its relation was rejected".
+--
+-- `status` is part of the key on purpose. The member table carries a copy of it
+-- and its foreign key is declared `on update cascade`, so changing a relation's
+-- status rewrites every member row automatically — which is what lets the
+-- uniqueness rules below be written in terms of the status without a trigger
+-- keeping two tables in step.
+create unique index if not exists finance_relations_id_type_status_idx
+  on public.finance_transaction_relations (id, relation_type, status);
 
 create table if not exists public.finance_transaction_relation_members (
   id             uuid primary key default gen_random_uuid(),
   user_id        uuid not null references auth.users (id) on delete cascade,
   relation_id    uuid not null,
-  -- Denormalised on purpose: it is what carries the composite foreign key
-  -- below, which is what makes the role check declarative.
+  -- Both denormalised on purpose: they are what carries the composite foreign
+  -- key below, which is what makes the role check and the status-aware
+  -- uniqueness declarative. Neither is ever written by hand — `relation_type`
+  -- has to match on insert, and `relation_status` is rewritten by the cascade
+  -- whenever the relation's own status changes.
   relation_type  text not null,
+  relation_status text not null default 'proposed',
   transaction_id uuid not null references public.finance_transactions (id) on delete cascade,
   role           text not null,
   created_at     timestamptz not null default now(),
   constraint finance_relation_members_relation_fk
-    foreign key (relation_id, relation_type)
-    references public.finance_transaction_relations (id, relation_type)
+    foreign key (relation_id, relation_type, relation_status)
+    references public.finance_transaction_relations (id, relation_type, status)
+    on update cascade
     on delete cascade,
   constraint finance_relation_members_role_fits_type check (
     (relation_type = 'supersession' and role in ('predecessor', 'replacement'))
@@ -264,19 +343,135 @@ create index if not exists finance_relation_members_tx_idx
 create index if not exists finance_relation_members_user_idx
   on public.finance_transaction_relation_members (user_id);
 
--- A booking is superseded at most once, and replaces at most once.
+-- A booking is superseded at most once, and replaces at most once — counting
+-- only relations that still stand.
 --
 -- TWO SEPARATE INDEXES, NOT ONE OVER BOTH ROLES. A provisional booking A that
 -- is replaced by B, and B that is later itself replaced by C, is a real chain:
 -- B is a `replacement` in the first relation and a `predecessor` in the second.
 -- A single index over both roles would forbid exactly that, and A → B → C is a
 -- sequence two overlapping exports can genuinely produce.
+--
+-- AND NEITHER COUNTS A REJECTED RELATION. A supersession a human looked at and
+-- turned down is history, not a claim — leaving it in the index would mean one
+-- wrong proposal permanently prevents the right one from ever being recorded.
+-- The `relation_status` column is kept true by the cascade above, so the
+-- predicate cannot drift from the relation it describes.
 create unique index if not exists finance_relation_members_one_predecessor_idx
   on public.finance_transaction_relation_members (transaction_id)
-  where role = 'predecessor';
+  where role = 'predecessor' and relation_status <> 'rejected';
 create unique index if not exists finance_relation_members_one_replacement_idx
   on public.finance_transaction_relation_members (transaction_id)
-  where role = 'replacement';
+  where role = 'replacement' and relation_status <> 'rejected';
+
+-- ── What a relation must be true about, whichever path wrote it ─────────────
+-- WHY A CONSTRAINT TRIGGER AND NOT A CHECK IN THE RPC. `authenticated` holds
+-- INSERT on these two tables, and it has to — the apply function runs with
+-- invoker rights, so it cannot have rights the caller lacks. That means the RPC
+-- is not the only way a relation can appear, and an invariant enforced only
+-- inside it is an invariant a buggy client can walk around. These are the rules
+-- that must hold for the row to mean anything, so they live with the row.
+--
+-- WHAT IS CHECKED:
+--
+--   supersession — every member, on both sides, is the SAME amount in the SAME
+--     currency. That is what a supersession IS: one payment seen twice, first
+--     as an announcement and then as a settled booking. It is also the one
+--     domain rule that can be checked without re-implementing the matcher, and
+--     it is what stops the worst failure this table could have — a client
+--     declaring any two of its own bookings a supersession and quietly taking
+--     the larger one out of the analytics.
+--   refund — the two sides cancel out: same currency, and the purchases sum to
+--     exactly the negative of the refunds. Two expenses are not a refund.
+--   both — at least one member per role, and no booking on both sides of the
+--     same relation.
+--
+-- DEFERRED to the end of the transaction, because a relation is written one
+-- side at a time and is only complete when the statement that wrote it is.
+create or replace function public.finance_relation_is_coherent()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_relation_id uuid := coalesce(new.relation_id, old.relation_id);
+  v_type        text;
+  v_left        integer;
+  v_right       integer;
+  v_currencies  integer;
+  v_amounts     integer;
+  v_overlap     integer;
+  v_sum         bigint;
+begin
+  select r.relation_type into v_type
+  from public.finance_transaction_relations r
+  where r.id = v_relation_id;
+  -- The relation is gone: the cascade is removing its members, nothing to say.
+  if not found then
+    return null;
+  end if;
+
+  select
+    count(*) filter (where m.role in ('predecessor', 'purchase')),
+    count(*) filter (where m.role in ('replacement', 'refund')),
+    count(distinct t.currency),
+    count(distinct t.amount_minor)
+  into v_left, v_right, v_currencies, v_amounts
+  from public.finance_transaction_relation_members m
+  join public.finance_transactions t on t.id = m.transaction_id
+  where m.relation_id = v_relation_id;
+
+  if v_left = 0 or v_right = 0 then
+    raise exception 'finance: eine Relation braucht auf beiden Seiten mindestens eine Buchung (id %)', v_relation_id
+      using errcode = '23514';
+  end if;
+
+  select count(*) into v_overlap
+  from (
+    select m.transaction_id
+    from public.finance_transaction_relation_members m
+    where m.relation_id = v_relation_id
+    group by m.transaction_id
+    having count(distinct m.role) > 1
+  ) as both_sides;
+  if v_overlap > 0 then
+    raise exception 'finance: eine Buchung kann nicht beide Seiten derselben Relation sein (id %)', v_relation_id
+      using errcode = '23514';
+  end if;
+
+  if v_currencies > 1 then
+    raise exception 'finance: eine Relation über mehrere Währungen (id %)', v_relation_id
+      using errcode = '23514';
+  end if;
+
+  if v_type = 'supersession' then
+    -- One payment, seen twice. A different amount is a different payment.
+    if v_amounts > 1 then
+      raise exception 'finance: eine Ablösung über verschiedene Beträge (id %)', v_relation_id
+        using errcode = '23514';
+    end if;
+  else
+    -- Purchase and refund cancel out. Summed, so that one purchase refunded in
+    -- two parts is expressible without loosening the rule.
+    select sum(t.amount_minor) into v_sum
+    from public.finance_transaction_relation_members m
+    join public.finance_transactions t on t.id = m.transaction_id
+    where m.relation_id = v_relation_id;
+    if coalesce(v_sum, 0) <> 0 then
+      raise exception 'finance: Kauf und Retoure gleichen sich nicht aus (id %, Differenz %)', v_relation_id, v_sum
+        using errcode = '23514';
+    end if;
+  end if;
+
+  return null;
+end;
+$$;
+
+drop trigger if exists finance_relation_members_coherent on public.finance_transaction_relation_members;
+create constraint trigger finance_relation_members_coherent
+  after insert or update or delete on public.finance_transaction_relation_members
+  deferrable initially deferred
+  for each row execute function public.finance_relation_is_coherent();
 
 -- ── finance_import_review_items: the queue of what nobody could decide ──────
 -- Every outcome the reconciliation refused to act on lands here, with the full
@@ -291,11 +486,17 @@ create table if not exists public.finance_import_review_items (
   item_type       text not null,
   status          text not null default 'open',
   reason          text not null,
-  -- The bookings the item is about. A uuid[] rather than a member table: a
-  -- review item is read as a whole, never joined against. Ownership of every
-  -- member is enforced by the policy, not by a foreign key — see
-  -- finance_owns_transactions.
-  transaction_ids uuid[] not null default '{}',
+  -- The bookings this item is about live in
+  -- finance_import_review_item_transactions, with real foreign keys. They were
+  -- a `uuid[]` here at first, and that was wrong twice over: an array cannot be
+  -- a foreign key, so a deleted booking left a dangling id nobody would ever
+  -- notice, and ownership of every element had to be re-checked by hand in a
+  -- policy instead of being a property of the reference.
+  --
+  -- `payload` keeps the frozen record — the incoming booking and the decision
+  -- exactly as they arrived, ids included. So the join table says what the item
+  -- points at NOW, and the payload says what it was about THEN; a booking
+  -- deleted later removes the link and leaves the history intact.
   payload         jsonb,
   resolution      text,
   created_at      timestamptz not null default now(),
@@ -333,6 +534,26 @@ create index if not exists finance_review_items_import_idx
   on public.finance_import_review_items (import_id);
 create index if not exists finance_review_items_account_idx
   on public.finance_import_review_items (account_id);
+
+create table if not exists public.finance_import_review_item_transactions (
+  id             uuid primary key default gen_random_uuid(),
+  user_id        uuid not null references auth.users (id) on delete cascade,
+  review_item_id uuid not null references public.finance_import_review_items (id) on delete cascade,
+  transaction_id uuid not null references public.finance_transactions (id) on delete cascade,
+  -- What the booking is to this item: the arrival's candidates, or the
+  -- protected bookings an automatic supersession stood down in front of.
+  role           text not null default 'candidate',
+  created_at     timestamptz not null default now(),
+  constraint finance_review_item_transactions_role_known
+    check (role in ('candidate', 'protected', 'replacement'))
+);
+
+create unique index if not exists finance_review_item_transactions_unique_idx
+  on public.finance_import_review_item_transactions (review_item_id, transaction_id, role);
+create index if not exists finance_review_item_transactions_tx_idx
+  on public.finance_import_review_item_transactions (transaction_id);
+create index if not exists finance_review_item_transactions_user_idx
+  on public.finance_import_review_item_transactions (user_id);
 
 -- ── What counts in the analytics, stated once ───────────────────────────────
 -- THE QUESTION THIS VIEW ANSWERS. After a confirmed supersession, the
@@ -386,6 +607,28 @@ create policy "finance_observations_insert_own" on public.finance_transaction_ob
 -- policy out means the attempt is denied before it ever reaches the trigger.
 drop policy if exists "finance_observations_delete_own" on public.finance_transaction_observations;
 create policy "finance_observations_delete_own" on public.finance_transaction_observations
+  for delete to authenticated using ((select auth.uid()) = user_id);
+
+alter table public.finance_transaction_observation_sightings enable row level security;
+
+drop policy if exists "finance_sightings_select_own" on public.finance_transaction_observation_sightings;
+create policy "finance_sightings_select_own" on public.finance_transaction_observation_sightings
+  for select to authenticated using ((select auth.uid()) = user_id);
+
+drop policy if exists "finance_sightings_insert_own" on public.finance_transaction_observation_sightings;
+create policy "finance_sightings_insert_own" on public.finance_transaction_observation_sightings
+  for insert to authenticated with check (
+    (select auth.uid()) = user_id
+    and public.finance_owns_import(import_id)
+    and exists (
+      select 1 from public.finance_transaction_observations o
+      where o.id = observation_id and o.user_id = (select auth.uid())
+    )
+  );
+
+-- No update policy: a sighting is a fact with a timestamp.
+drop policy if exists "finance_sightings_delete_own" on public.finance_transaction_observation_sightings;
+create policy "finance_sightings_delete_own" on public.finance_transaction_observation_sightings
   for delete to authenticated using ((select auth.uid()) = user_id);
 
 alter table public.finance_transaction_relations enable row level security;
@@ -447,7 +690,6 @@ create policy "finance_review_items_insert_own" on public.finance_import_review_
     (select auth.uid()) = user_id
     and public.finance_owns_account(account_id)
     and public.finance_owns_import(import_id)
-    and public.finance_owns_transactions(transaction_ids)
   );
 
 drop policy if exists "finance_review_items_update_own" on public.finance_import_review_items;
@@ -458,21 +700,45 @@ create policy "finance_review_items_update_own" on public.finance_import_review_
     (select auth.uid()) = user_id
     and public.finance_owns_account(account_id)
     and public.finance_owns_import(import_id)
-    and public.finance_owns_transactions(transaction_ids)
   );
 
 drop policy if exists "finance_review_items_delete_own" on public.finance_import_review_items;
 create policy "finance_review_items_delete_own" on public.finance_import_review_items
   for delete to authenticated using ((select auth.uid()) = user_id);
 
+alter table public.finance_import_review_item_transactions enable row level security;
+
+drop policy if exists "finance_review_item_transactions_select_own" on public.finance_import_review_item_transactions;
+create policy "finance_review_item_transactions_select_own" on public.finance_import_review_item_transactions
+  for select to authenticated using ((select auth.uid()) = user_id);
+
+drop policy if exists "finance_review_item_transactions_insert_own" on public.finance_import_review_item_transactions;
+create policy "finance_review_item_transactions_insert_own" on public.finance_import_review_item_transactions
+  for insert to authenticated with check (
+    (select auth.uid()) = user_id
+    and public.finance_owns_transaction(transaction_id)
+    and exists (
+      select 1 from public.finance_import_review_items i
+      where i.id = review_item_id and i.user_id = (select auth.uid())
+    )
+  );
+
+drop policy if exists "finance_review_item_transactions_delete_own" on public.finance_import_review_item_transactions;
+create policy "finance_review_item_transactions_delete_own" on public.finance_import_review_item_transactions
+  for delete to authenticated using ((select auth.uid()) = user_id);
+
 -- ── Grants ──────────────────────────────────────────────────────────────────
 revoke all on public.finance_transaction_observations      from anon;
+revoke all on public.finance_transaction_observation_sightings from anon;
+revoke all on public.finance_import_review_item_transactions   from anon;
 revoke all on public.finance_transaction_relations         from anon;
 revoke all on public.finance_transaction_relation_members  from anon;
 revoke all on public.finance_import_review_items           from anon;
 revoke all on public.finance_analytics_transactions        from anon;
 
 grant select, insert, delete on public.finance_transaction_observations to authenticated;
+grant select, insert, delete on public.finance_transaction_observation_sightings to authenticated;
+grant select, insert, delete on public.finance_import_review_item_transactions to authenticated;
 grant select, insert, update, delete on public.finance_transaction_relations to authenticated;
 grant select, insert, delete on public.finance_transaction_relation_members to authenticated;
 grant select, insert, update, delete on public.finance_import_review_items to authenticated;
@@ -554,6 +820,15 @@ declare
   v_refund_skipped  integer := 0;
   v_review          integer := 0;
   v_deactivated     uuid[];
+  v_obs_id          uuid;
+  v_item_id         uuid;
+  v_sightings       integer := 0;
+  v_desc            text;
+  v_ref             text;
+  v_card_date       date;
+  v_card_ts         text;
+  v_variant         text;
+  v_rel_status      text;
   v_charge          uuid;
   v_refund          uuid;
   v_type            text;
@@ -664,6 +939,16 @@ begin
     if b is null or jsonb_typeof(b) <> 'object' or nullif(btrim(coalesce(b->>'raw_description', '')), '') is null then
       raise exception 'finance: Umsatz % hat keinen Text', v_dec.index using errcode = '22023';
     end if;
+    -- A booking outside the period the file itself declares is not a booking
+    -- from this file. Checked only when the import declares one — a manual
+    -- import covers no period — and the parser always declares it.
+    if v_import.period_start is not null and v_import.period_end is not null
+       and ((b->>'booking_date')::date < v_import.period_start
+            or (b->>'booking_date')::date > v_import.period_end) then
+      raise exception 'finance: Umsatz % (%) liegt ausserhalb des erklaerten Zeitraums % bis %',
+        v_dec.index, b->>'booking_date', v_import.period_start, v_import.period_end
+        using errcode = '22023';
+    end if;
     insert into public.finance_transactions (
       user_id, account_id, import_id, booking_date, value_date, amount_minor,
       currency, raw_description, external_reference, normalized_tokens, source_metadata
@@ -707,6 +992,13 @@ begin
   loop
     b := p_bookings -> v_dec.index;
     v_tx := v_dec.existing_ids[1];
+    v_desc := b->>'raw_description';
+    v_ref := nullif(coalesce(b->>'external_reference', b->'source_metadata'->>'reference'), '');
+    v_card_date := nullif(b->'source_metadata'->>'card_transaction_date', '')::date;
+    v_card_ts := nullif(b->'source_metadata'->>'card_timestamp', '');
+    v_variant := case when b->>'source_variant' in ('standard', 'timestamped_card')
+                      then b->>'source_variant' else 'standard' end;
+
     if exists (
       select 1 from public.finance_transactions t
       where t.id = v_tx
@@ -717,25 +1009,15 @@ begin
           -- NOT "the arrival has a card date": a settled booking states its card
           -- date inside its own text, so that clause would fire on every literal
           -- duplicate and fill the table with copies of what is already there.
-          t.raw_description is distinct from (b->>'raw_description')
-          or (
-            nullif(coalesce(b->>'external_reference', b->'source_metadata'->>'reference'), '') is not null
-            and nullif(coalesce(b->>'external_reference', b->'source_metadata'->>'reference'), '')
-                is distinct from t.external_reference
-          )
+          t.raw_description is distinct from v_desc
+          or (v_ref is not null and v_ref is distinct from t.external_reference)
         )
     ) then
       insert into public.finance_transaction_observations (
         user_id, transaction_id, import_id, observed_description, observed_reference,
         observed_card_date, observed_card_timestamp, source_variant, evidence
       ) values (
-        v_user, v_tx, p_import_id,
-        b->>'raw_description',
-        nullif(coalesce(b->>'external_reference', b->'source_metadata'->>'reference'), ''),
-        nullif(b->'source_metadata'->>'card_transaction_date', '')::date,
-        nullif(b->'source_metadata'->>'card_timestamp', ''),
-        case when b->>'source_variant' in ('standard', 'timestamped_card')
-             then b->>'source_variant' else 'standard' end,
+        v_user, v_tx, p_import_id, v_desc, v_ref, v_card_date, v_card_ts, v_variant,
         jsonb_build_object(
           'outcome', v_dec.outcome,
           'tier', v_dec.tier,
@@ -746,6 +1028,24 @@ begin
       on conflict (user_id, observation_key) do nothing;
       get diagnostics v_count = row_count;
       v_obs := v_obs + v_count;
+
+      -- The evidence is stored once; THIS import having seen it is recorded
+      -- separately. `import_id` on the observation only ever names the first
+      -- import that contributed it, and "which imports actually contained this"
+      -- is the question an audit asks.
+      select o.id into v_obs_id
+      from public.finance_transaction_observations o
+      where o.user_id = v_user
+        and o.observation_key = public.finance_observation_key(
+              v_tx, v_desc, v_ref, v_card_date, v_card_ts, v_variant);
+
+      if v_obs_id is not null then
+        insert into public.finance_transaction_observation_sightings (user_id, observation_id, import_id)
+        values (v_user, v_obs_id, p_import_id)
+        on conflict (observation_id, import_id) where import_id is not null do nothing;
+        get diagnostics v_count = row_count;
+        v_sightings := v_sightings + v_count;
+      end if;
     end if;
   end loop;
 
@@ -766,13 +1066,21 @@ begin
     v_preds := (select array_agg(x::uuid order by x) from unnest(string_to_array(v_grp.pkey, ',')) as t(x));
     v_repl  := (select array_agg(v_new_ids[i + 1] order by i) from unnest(v_grp.idxs) as t(i));
 
-    -- A booking that is already the predecessor of a supersession cannot be
-    -- superseded a second time. Reaching this point means the plan was computed
-    -- against a state that has since moved on; repairing it here would be
-    -- guessing, so the whole import is refused and nothing is written.
+    -- A booking that is already the predecessor of a supersession that still
+    -- stands cannot be superseded a second time. Reaching this point means the
+    -- plan was computed against a state that has since moved on; repairing it
+    -- here would be guessing, so the whole import is refused and nothing is
+    -- written.
+    --
+    -- A REJECTED relation does not count — same reason as in the index it
+    -- mirrors: a proposal a human turned down must not block the right one
+    -- forever. The two have to agree, or this check would refuse imports the
+    -- database would happily have stored.
     if exists (
       select 1 from public.finance_transaction_relation_members m
-      where m.user_id = v_user and m.role = 'predecessor' and m.transaction_id = any (v_preds)
+      where m.user_id = v_user and m.role = 'predecessor'
+        and m.relation_status <> 'rejected'
+        and m.transaction_id = any (v_preds)
     ) then
       raise exception 'finance: eine der Buchungen wurde bereits abgeloest — der Plan ist veraltet'
         using errcode = '23505';
@@ -784,13 +1092,14 @@ begin
     v_protected := coalesce(v_protected, false);
 
     v_key := md5('supersession|' || public.finance_uuid_key(v_preds) || '>' || public.finance_uuid_key(v_repl));
+    v_rel_status := case when v_protected then 'proposed' else 'confirmed' end;
     v_relation_id := null;
 
     insert into public.finance_transaction_relations (
       user_id, import_id, relation_type, status, cardinality, reason, evidence, relation_key, confirmed_at
     ) values (
       v_user, p_import_id, 'supersession',
-      case when v_protected then 'proposed' else 'confirmed' end,
+      v_rel_status,
       greatest(cardinality(v_preds), cardinality(v_repl)),
       case when v_protected
         then 'Ablösung erkannt. Mindestens eine der vorhandenen Buchungen trägt eine manuelle Entscheidung, also wurde nichts automatisch deaktiviert.'
@@ -809,10 +1118,13 @@ begin
     returning id into v_relation_id;
 
     if v_relation_id is not null then
-      insert into public.finance_transaction_relation_members (user_id, relation_id, relation_type, transaction_id, role)
-      select v_user, v_relation_id, 'supersession', x, 'predecessor' from unnest(v_preds) as t(x);
-      insert into public.finance_transaction_relation_members (user_id, relation_id, relation_type, transaction_id, role)
-      select v_user, v_relation_id, 'supersession', x, 'replacement' from unnest(v_repl) as t(x);
+      -- `relation_status` mirrors the relation and is carried by the composite
+      -- foreign key, so it has to be stated here and is kept true afterwards by
+      -- the cascade.
+      insert into public.finance_transaction_relation_members (user_id, relation_id, relation_type, relation_status, transaction_id, role)
+      select v_user, v_relation_id, 'supersession', v_rel_status, x, 'predecessor' from unnest(v_preds) as t(x);
+      insert into public.finance_transaction_relation_members (user_id, relation_id, relation_type, relation_status, transaction_id, role)
+      select v_user, v_relation_id, 'supersession', v_rel_status, x, 'replacement' from unnest(v_repl) as t(x);
 
       if v_protected then
         v_rel_proposed := v_rel_proposed + 1;
@@ -829,12 +1141,12 @@ begin
         select coalesce(array_agg(id), '{}'::uuid[]) into v_deactivated from stood_down;
         v_excluded := v_excluded + cardinality(v_deactivated);
 
+        v_item_id := null;
         insert into public.finance_import_review_items (
-          user_id, import_id, account_id, item_type, status, reason, transaction_ids, payload, item_key
+          user_id, import_id, account_id, item_type, status, reason, payload, item_key
         ) values (
           v_user, p_import_id, p_account_id, 'manual_lock_conflict', 'open',
           'Diese Buchung löst eine vorhandene ab, die manuell entschieden wurde. Die alte Buchung bleibt unverändert, die neue zählt vorerst nicht.',
-          v_preds || v_repl,
           jsonb_build_object(
             'relation_id', v_relation_id,
             'predecessors', to_jsonb(v_preds),
@@ -847,9 +1159,18 @@ begin
           ),
           md5('manual_lock_conflict|' || public.finance_uuid_key(v_preds) || '>' || public.finance_uuid_key(v_repl))
         )
-        on conflict (user_id, item_key) where status = 'open' do nothing;
-        get diagnostics v_count = row_count;
-        v_review := v_review + v_count;
+        on conflict (user_id, item_key) where status = 'open' do nothing
+        returning id into v_item_id;
+        if v_item_id is not null then
+          v_review := v_review + 1;
+          insert into public.finance_import_review_item_transactions (user_id, review_item_id, transaction_id, role)
+          select v_user, v_item_id, x, 'candidate' from unnest(v_preds) as t(x)
+          union all
+          select v_user, v_item_id, x, 'protected' from unnest(v_preds) as t(x)
+            where public.finance_transaction_protected(x)
+          union all
+          select v_user, v_item_id, x, 'replacement' from unnest(v_repl) as t(x);
+        end if;
       else
         v_rel_confirmed := v_rel_confirmed + 1;
         with stood_down as (
@@ -889,12 +1210,12 @@ begin
   loop
     b := p_bookings -> v_dec.index;
     v_type := case v_dec.outcome when 'unresolved' then 'unresolved_match' else 'manual_review' end;
+    v_item_id := null;
     insert into public.finance_import_review_items (
-      user_id, import_id, account_id, item_type, status, reason, transaction_ids, payload, item_key
+      user_id, import_id, account_id, item_type, status, reason, payload, item_key
     ) values (
       v_user, p_import_id, p_account_id, v_type, 'open',
       left(coalesce(nullif(btrim(v_dec.reason), ''), 'Ohne Begründung aus dem Abgleich.'), 1000),
-      v_dec.existing_ids,
       jsonb_build_object(
         'booking', b,
         'decision', jsonb_build_object(
@@ -908,9 +1229,13 @@ begin
           || '|' || coalesce(b->>'currency', '')
           || '|' || coalesce(b->>'raw_description', ''))
     )
-    on conflict (user_id, item_key) where status = 'open' do nothing;
-    get diagnostics v_count = row_count;
-    v_review := v_review + v_count;
+    on conflict (user_id, item_key) where status = 'open' do nothing
+    returning id into v_item_id;
+    if v_item_id is not null then
+      v_review := v_review + 1;
+      insert into public.finance_import_review_item_transactions (user_id, review_item_id, transaction_id, role)
+      select v_user, v_item_id, x, 'candidate' from unnest(v_dec.existing_ids) as t(x);
+    end if;
   end loop;
 
   -- A richer text that belongs to a group rather than to a row. No booking is
@@ -923,19 +1248,24 @@ begin
     order by plan_row.index
   loop
     b := p_bookings -> v_dec.index;
+    v_item_id := null;
     insert into public.finance_import_review_items (
-      user_id, import_id, account_id, item_type, status, reason, transaction_ids, payload, item_key
+      user_id, import_id, account_id, item_type, status, reason, payload, item_key
     ) values (
       v_user, p_import_id, p_account_id, 'ambiguous_group', 'open',
       left(coalesce(nullif(btrim(v_dec.reason), ''), 'Mehrere gleichartige Buchungen — der Text lässt sich keiner einzelnen zuordnen.'), 1000),
-      v_dec.existing_ids,
-      jsonb_build_object('booking', b, 'outcome', v_dec.outcome, 'evidence', v_dec.evidence),
+      jsonb_build_object('booking', b, 'outcome', v_dec.outcome,
+                         'existing_ids', to_jsonb(v_dec.existing_ids), 'evidence', v_dec.evidence),
       md5('ambiguous_group|' || public.finance_uuid_key(v_dec.existing_ids)
           || '|' || coalesce(b->>'raw_description', ''))
     )
-    on conflict (user_id, item_key) where status = 'open' do nothing;
-    get diagnostics v_count = row_count;
-    v_review := v_review + v_count;
+    on conflict (user_id, item_key) where status = 'open' do nothing
+    returning id into v_item_id;
+    if v_item_id is not null then
+      v_review := v_review + 1;
+      insert into public.finance_import_review_item_transactions (user_id, review_item_id, transaction_id, role)
+      select v_user, v_item_id, x, 'candidate' from unnest(v_dec.existing_ids) as t(x);
+    end if;
   end loop;
 
   -- ── 5. refund candidates ──
@@ -989,20 +1319,35 @@ begin
     returning id into v_relation_id;
 
     if v_relation_id is not null then
-      insert into public.finance_transaction_relation_members (user_id, relation_id, relation_type, transaction_id, role)
-      values (v_user, v_relation_id, 'refund_candidate', v_charge, 'purchase'),
-             (v_user, v_relation_id, 'refund_candidate', v_refund, 'refund');
+      insert into public.finance_transaction_relation_members (user_id, relation_id, relation_type, relation_status, transaction_id, role)
+      values (v_user, v_relation_id, 'refund_candidate', 'proposed', v_charge, 'purchase'),
+             (v_user, v_relation_id, 'refund_candidate', 'proposed', v_refund, 'refund');
       v_refund_rel := v_refund_rel + 1;
     end if;
   end loop;
 
-  -- ── 6. the import is done ──
+  -- ── 6. every relation this call wrote has to hold ──
+  -- The coherence trigger is deferred, because a relation is written one side at
+  -- a time and is only complete when the statement that wrote it is. Forcing it
+  -- here rather than leaving it to COMMIT is what turns "the request failed
+  -- afterwards, somewhere" into an error raised at the point that caused it —
+  -- and it means the import is refused before its row is marked `imported`.
+  --
+  -- And straight back to deferred. `SET CONSTRAINTS` changes the mode for the
+  -- REST of the transaction, not just for this moment: left immediate, the next
+  -- relation written in the same transaction would be checked after its first
+  -- side was inserted and fail for having only one.
+  set constraints public.finance_relation_members_coherent immediate;
+  set constraints public.finance_relation_members_coherent deferred;
+
+  -- ── 7. the import is done ──
   v_result := jsonb_build_object(
     'import_id',                    p_import_id,
     'account_id',                   p_account_id,
     'decisions',                    v_booking_count,
     'transactions_created',         v_created,
     'observations_created',         v_obs,
+    'observation_sightings',        v_sightings,
     'supersessions_confirmed',      v_rel_confirmed,
     'supersessions_proposed',       v_rel_proposed,
     'analytics_excluded',           v_excluded,
@@ -1035,11 +1380,238 @@ revoke all on function public.finance_apply_reconciliation_plan(uuid, uuid, json
 grant execute on function public.finance_apply_reconciliation_plan(uuid, uuid, jsonb, jsonb, jsonb)
   to authenticated;
 
-revoke all on function public.finance_owns_transactions(uuid[])      from public, anon;
 revoke all on function public.finance_transaction_protected(uuid)    from public, anon;
-grant execute on function public.finance_owns_transactions(uuid[])   to authenticated;
 grant execute on function public.finance_transaction_protected(uuid) to authenticated;
 grant execute on function public.finance_uuid_key(uuid[])            to authenticated;
+
+-- ── Taking a relation back, or standing by it ───────────────────────────────
+-- WHY THIS EXISTS AT ALL. The apply function can take a booking out of the
+-- analytics; without a counterpart, nothing could ever put it back, and a
+-- relation marked `rejected` by hand would leave its predecessor excluded
+-- forever. A model that can only be driven in one direction is not a model, so
+-- the reverse gear ships with the forward one — as a function, not as a screen.
+--
+-- THE HARD RULE IT KEEPS. `evidence.analytics_deactivated` names the rows THIS
+-- relation switched off, by id. Undoing it touches those and nothing else, so a
+-- booking the user had excluded themselves — before the import or after it —
+-- is never switched back on by taking a supersession back. And a row that has
+-- since gained a manual decision is left alone entirely and reported, rather
+-- than quietly corrected.
+--
+-- CONFIRMING A RELATION THAT STOOD DOWN. When the apply function met a
+-- protected predecessor it left it alone and parked the new booking instead.
+-- Confirming that relation later would have to deactivate the protected row —
+-- which is exactly what must never happen automatically. So it is refused with
+-- a sentence that says what to do: clear the lock or the override first. That
+-- keeps "manual beats automatic" absolute, including inside this function.
+create or replace function public.finance_resolve_relation(
+  p_relation_id uuid,
+  p_status      text,
+  p_note        text default null
+)
+returns jsonb
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_user      uuid := (select auth.uid());
+  v_rel       public.finance_transaction_relations%rowtype;
+  v_preds     uuid[];
+  v_repl      uuid[];
+  v_marked    uuid[];
+  v_changed   uuid[];
+  v_skipped   uuid[];
+  v_blocked   uuid[];
+  v_items     integer := 0;
+begin
+  if v_user is null then
+    raise exception 'finance: kein angemeldeter Benutzer' using errcode = '28000';
+  end if;
+  if p_status not in ('confirmed', 'rejected') then
+    raise exception 'finance: unbekannter Status %', p_status using errcode = '22023';
+  end if;
+
+  select * into v_rel
+  from public.finance_transaction_relations
+  where id = p_relation_id and user_id = v_user
+  for update;
+  if not found then
+    raise exception 'finance: Relation % nicht gefunden', p_relation_id using errcode = 'P0002';
+  end if;
+
+  -- Already there. Idempotent by design: a repeated call is a no-op, not a
+  -- second round of analytics changes.
+  if v_rel.status = p_status then
+    return jsonb_build_object(
+      'relation_id', p_relation_id, 'status', p_status, 'unchanged', true,
+      'analytics_restored', '[]'::jsonb, 'analytics_left_off', '[]'::jsonb
+    );
+  end if;
+
+  select coalesce(array_agg(m.transaction_id order by m.transaction_id)
+           filter (where m.role in ('predecessor', 'purchase')), '{}'::uuid[]),
+         coalesce(array_agg(m.transaction_id order by m.transaction_id)
+           filter (where m.role in ('replacement', 'refund')), '{}'::uuid[])
+  into v_preds, v_repl
+  from public.finance_transaction_relation_members m
+  where m.relation_id = p_relation_id and m.user_id = v_user;
+
+  -- What this relation switched off when it was applied.
+  select coalesce(array_agg((x)::uuid), '{}'::uuid[]) into v_marked
+  from jsonb_array_elements_text(
+    case when jsonb_typeof(v_rel.evidence->'analytics_deactivated') = 'array'
+         then v_rel.evidence->'analytics_deactivated' else '[]'::jsonb end
+  ) as t(x);
+
+  if p_status = 'confirmed' then
+    if v_rel.relation_type <> 'supersession' then
+      -- A refund is two real payments; confirming it changes no analytics.
+      update public.finance_transaction_relations
+      set status = 'confirmed', confirmed_at = coalesce(confirmed_at, now()),
+          resolved_at = now(), reason = coalesce(nullif(btrim(p_note), ''), reason)
+      where id = p_relation_id and user_id = v_user;
+      return jsonb_build_object('relation_id', p_relation_id, 'status', 'confirmed',
+        'analytics_restored', '[]'::jsonb, 'analytics_left_off', '[]'::jsonb, 'unchanged', false);
+    end if;
+
+    select coalesce(array_agg(x order by x), '{}'::uuid[]) into v_blocked
+    from unnest(v_preds) as t(x)
+    where public.finance_transaction_protected(x);
+
+    if cardinality(v_blocked) > 0 then
+      raise exception 'finance: die abzuloesende Buchung traegt eine manuelle Entscheidung — erst Sperre oder Override aufheben'
+        using errcode = '42501';
+    end if;
+
+    -- The old side stops counting, the new side starts.
+    with stood_down as (
+      update public.finance_transactions
+      set include_in_analytics = false
+      where id = any (v_preds) and user_id = v_user and include_in_analytics
+      returning id
+    )
+    select coalesce(array_agg(id order by id), '{}'::uuid[]) into v_changed from stood_down;
+
+    -- Only the replacements THIS relation had parked; never a booking the user
+    -- excluded for reasons of their own.
+    with brought_back as (
+      update public.finance_transactions
+      set include_in_analytics = true
+      where id = any (v_repl) and id = any (v_marked) and user_id = v_user
+        and include_in_analytics = false
+        and not public.finance_transaction_protected(id)
+      returning id
+    )
+    select coalesce(array_agg(id order by id), '{}'::uuid[]) into v_skipped from brought_back;
+
+    update public.finance_transaction_relations
+    set status = 'confirmed',
+        confirmed_at = coalesce(confirmed_at, now()),
+        resolved_at = now(),
+        reason = coalesce(nullif(btrim(p_note), ''), reason),
+        evidence = evidence || jsonb_build_object('analytics_deactivated', to_jsonb(v_changed))
+    where id = p_relation_id and user_id = v_user;
+
+    return jsonb_build_object(
+      'relation_id', p_relation_id, 'status', 'confirmed', 'unchanged', false,
+      'analytics_deactivated', to_jsonb(v_changed),
+      'analytics_restored', to_jsonb(v_skipped),
+      'analytics_left_off', '[]'::jsonb
+    );
+  end if;
+
+  -- ── rejected ──
+  -- "These are not the same payment after all." Both sides are then real money
+  -- and both count again — but only the rows this relation switched off, and
+  -- only where nobody has decided about them since.
+  with brought_back as (
+    update public.finance_transactions
+    set include_in_analytics = true
+    where id = any (v_marked) and user_id = v_user
+      and include_in_analytics = false
+      and not public.finance_transaction_protected(id)
+    returning id
+  )
+  select coalesce(array_agg(id order by id), '{}'::uuid[]) into v_changed from brought_back;
+
+  select coalesce(array_agg(x order by x), '{}'::uuid[]) into v_skipped
+  from unnest(v_marked) as t(x)
+  where x <> all (v_changed);
+
+  update public.finance_transaction_relations
+  set status = 'rejected',
+      resolved_at = now(),
+      reason = coalesce(nullif(btrim(p_note), ''), reason),
+      evidence = evidence || jsonb_build_object(
+        'analytics_deactivated', '[]'::jsonb,
+        'analytics_restored', to_jsonb(v_changed),
+        'analytics_left_off', to_jsonb(v_skipped)
+      )
+  where id = p_relation_id and user_id = v_user;
+
+  -- Whatever was waiting on this relation is no longer waiting.
+  update public.finance_import_review_items
+  set status = 'resolved', resolved_at = now(),
+      resolution = coalesce(nullif(btrim(p_note), ''), 'Die zugehörige Ablösung wurde abgelehnt.')
+  where user_id = v_user and status = 'open'
+    and (payload->>'relation_id')::uuid = p_relation_id;
+  get diagnostics v_items = row_count;
+
+  return jsonb_build_object(
+    'relation_id', p_relation_id, 'status', 'rejected', 'unchanged', false,
+    'analytics_restored', to_jsonb(v_changed),
+    'analytics_left_off', to_jsonb(v_skipped),
+    'review_items_closed', v_items
+  );
+end;
+$$;
+
+-- ── Closing a review item, or opening it again ──────────────────────────────
+-- Deliberately thin: it moves the status and records what was decided. It
+-- changes no booking, because deciding what a conflict MEANT is a separate act
+-- that goes through the functions above or through an ordinary edit.
+create or replace function public.finance_resolve_review_item(
+  p_item_id    uuid,
+  p_status     text,
+  p_resolution text default null
+)
+returns jsonb
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_user uuid := (select auth.uid());
+  v_row  public.finance_import_review_items%rowtype;
+begin
+  if v_user is null then
+    raise exception 'finance: kein angemeldeter Benutzer' using errcode = '28000';
+  end if;
+  if p_status not in ('open', 'resolved', 'dismissed') then
+    raise exception 'finance: unbekannter Status %', p_status using errcode = '22023';
+  end if;
+
+  update public.finance_import_review_items
+  set status = p_status,
+      resolved_at = case when p_status = 'open' then null else now() end,
+      resolution = case when p_status = 'open' then null
+                        else left(coalesce(nullif(btrim(p_resolution), ''), 'Ohne Notiz erledigt.'), 1000) end
+  where id = p_item_id and user_id = v_user
+  returning * into v_row;
+
+  if not found then
+    raise exception 'finance: Review-Eintrag % nicht gefunden', p_item_id using errcode = 'P0002';
+  end if;
+
+  return jsonb_build_object('id', v_row.id, 'status', v_row.status, 'resolved_at', v_row.resolved_at);
+end;
+$$;
+
+revoke all on function public.finance_resolve_relation(uuid, text, text) from public, anon;
+grant execute on function public.finance_resolve_relation(uuid, text, text) to authenticated;
+revoke all on function public.finance_resolve_review_item(uuid, text, text) from public, anon;
+grant execute on function public.finance_resolve_review_item(uuid, text, text) to authenticated;
+revoke all on function public.finance_observation_key(uuid, text, text, date, text, text) from public, anon;
+grant execute on function public.finance_observation_key(uuid, text, text, date, text, text) to authenticated;
 
 -- ── Realtime: still deliberately not yet ────────────────────────────────────
 -- Same reason as in 0008. Nothing subscribes to these tables; the publication

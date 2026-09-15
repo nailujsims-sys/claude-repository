@@ -64,6 +64,11 @@ export const WRITABLE_FINANCE_IMPORT_FIELDS = [
   'source_type',
   'source_name',
   'source_hash',
+  // The period the file itself declares. The database checks every booking it
+  // is asked to store against it, so a column the client cannot set would make
+  // that check dead code — the importer reads both off the export's header.
+  'period_start',
+  'period_end',
   'status',
   'parser_version',
   'parser_notes',

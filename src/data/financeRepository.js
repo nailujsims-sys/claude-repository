@@ -228,6 +228,42 @@ export const financeRepository = {
    * second call returns the stored result with `replayed: true` and writes
    * nothing.
    */
+  /**
+   * Stand by a relation, or take it back.
+   *
+   * The counterpart to applying a plan, and the only supported way to undo an
+   * analytics change an import made: the function restores exactly the bookings
+   * that relation switched off, and never one the user excluded themselves.
+   * Confirming a relation whose predecessor carries a manual decision is
+   * refused rather than forced — the lock has to be cleared first.
+   */
+  async resolveRelation(userId, relationId, status, note = null) {
+    requireUser(userId)
+    const { data, error } = await requireSupabase().rpc('finance_resolve_relation', {
+      p_relation_id: relationId,
+      p_status: status,
+      p_note: note,
+    })
+    if (error) throw error
+    return data
+  },
+
+  async resolveReviewItem(userId, itemId, status, resolution = null) {
+    requireUser(userId)
+    const { data, error } = await requireSupabase().rpc('finance_resolve_review_item', {
+      p_item_id: itemId,
+      p_status: status,
+      p_resolution: resolution,
+    })
+    if (error) throw error
+    return data
+  },
+
+  listObservationSightings: (userId) =>
+    readAll('finance_transaction_observation_sightings', userId, [['created_at', true]]),
+  listReviewItemTransactions: (userId) =>
+    readAll('finance_import_review_item_transactions', userId, [['created_at', true]]),
+
   async applyReconciliationPlan(userId, payload) {
     requireUser(userId)
     const { data, error } = await requireSupabase().rpc('finance_apply_reconciliation_plan', {

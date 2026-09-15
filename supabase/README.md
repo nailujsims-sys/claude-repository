@@ -23,7 +23,7 @@ Durchlauf ändert nichts und zerstört nichts.
 | `0005_google_calendar.sql` | Google-Kalender: `google_connections`, `google_credentials` (für Clients gesperrt), `google_calendars`, `google_channels`, `google_event_tombstones`, die Google-Spalten an `events`, die Sync-Trigger, RLS + Grants |
 | `0006_lists.sql` | Listen: Tabellen `lists` und `list_items` (Vorlage, Icon, Pin, Archiv, Menge/Einheit/Betrag/Kategorie), Indizes, Constraints, RLS + Policies, Realtime |
 | `0007_expenses.sql` | Ausgaben: Tabelle `expenses` (Titel, Originalbetrag, Eingabewährung AUD/EUR, Transaktionsdatum, verwendeter AUD/EUR-Kurs), Indizes, Constraints, RLS + Policies, Realtime |
-| `0009_finance_import.sql` | Finanz-Import: `finance_transaction_observations` (append-only), `finance_transaction_relations` + `finance_transaction_relation_members` (Ablösung und Retouren-Vorschlag als Gruppe, 1↔1 bis n↔n), `finance_import_review_items`, die Sicht `finance_analytics_transactions`, die Spalte `finance_imports.apply_result`, die Funktion `finance_apply_reconciliation_plan`, Indizes, Constraints, RLS + Policies |
+| `0009_finance_import.sql` | Finanz-Import: `finance_transaction_observations` + `…_observation_sightings` (append-only, Evidenz einmal, Herkunft je Import), `finance_transaction_relations` + `…_relation_members` (Ablösung und Retouren-Vorschlag als Gruppe, 1↔1 bis n↔n, statusbewusst), `finance_import_review_items` + `…_review_item_transactions`, die Sicht `finance_analytics_transactions`, die Spalten `finance_imports.apply_result`/`period_start`/`period_end`, die Funktionen `finance_apply_reconciliation_plan`, `finance_resolve_relation` und `finance_resolve_review_item`, Indizes, Constraints, RLS + Policies |
 | `0008_finance.sql` | Finanzen: `finance_accounts`, `finance_categories` (die fünf MVP-Kategorien, per Trigger pro Konto angelegt), `finance_merchants`, `finance_merchant_patterns`, `finance_category_rules`, `finance_imports`, `finance_transactions`, `finance_transaction_overrides`, die Funktion `finance_learn_merchant_rule`, Indizes, Constraints, RLS + Policies |
 
 **Weg A — Dashboard (kein Werkzeug nötig).** SQL Editor öffnen, die Dateien
@@ -88,16 +88,27 @@ also nichts.
 
 `tests/finance_import.sql` beweist daneben, was keine Policy prüfen kann: dass
 ein Import ganz oder gar nicht ankommt, dass derselbe Export zweimal angewendet
-keine zweite Buchung erzeugt, und dass eine manuell entschiedene Buchung von
-keinem Import stillschweigend deaktiviert wird. Auch dieses Skript endet mit
-`ROLLBACK`.
+keine zweite Buchung erzeugt, dass eine manuell entschiedene Buchung von keinem
+Import stillschweigend deaktiviert wird — und dass ein Plan, der zwei beliebige
+eigene Buchungen zur Ablösung erklärt, abgelehnt wird statt die Auswertung zu
+verändern. Auch dieses Skript endet mit `ROLLBACK`.
+
+`tests/finance_import_upgrade_seed.sql` und `…_verify.sql` stellen die Frage,
+die Produktion stellt: die vorige Migration liegt seit Wochen drauf, es stehen
+Daten darunter, jetzt kommt die neue. Der Runner baut dafür eine zweite
+Datenbank, spielt `0001`–`0008` ein, legt die unangenehmen Zeilen an (gesperrte
+Buchung, selbst ausgeschlossene Buchung, Override, bereits angewendeter Import),
+spielt `0009` zweimal ein und prüft, dass nichts davon sich verändert hat — bis
+hin zu „jede Tabelle aus 0008 hat danach immer noch genau ihre vier Policies".
 
 * In Supabase: SQL Editor → Inhalt von `tests/rls.sql`, danach
   `tests/finance_import.sql` ausführen.
 * Lokal gegen ein Wegwerf-Postgres: `npm run test:rls`
   (legt einen temporären Cluster an, spielt alle Migrationen zweimal ein, führt
-  beide Skripte aus und danach fünf Gegenproben: ohne RLS auf je einer Tabelle
-  und ohne den Append-only-Trigger muss dasselbe Skript fehlschlagen).
+  die Upgrade-Probe und beide Skripte aus und danach zehn Gegenproben: ohne RLS
+  auf je einer von sechs Tabellen, ohne die beiden Append-only-Trigger, ohne die
+  Kohärenzprüfung der Relationen und ohne den Vorgänger-Index muss dasselbe
+  Skript fehlschlagen).
 
 Nach jeder Migration ausführen.
 
@@ -201,7 +212,10 @@ Konvention:
   Buchung besser beschreibt („REWE" wird zu „REWE.Mohamed.Boufo/Frankfurt"),
   landet als Zeile in `finance_transaction_observations` — append-only, per
   Trigger, nicht nur per Absprache. Der Einfrier-Trigger aus `0008` würde alles
-  andere ohnehin ablehnen.
+  andere ohnehin ablehnen. Die Identität einer Beobachtung ist ihr *Inhalt*,
+  damit ein erneut eingelesener Export keine Kopien erzeugt; **wer** sie gesehen
+  hat, steht in `finance_transaction_observation_sightings`, eine Zeile je
+  Import. Ohne die wäre nur der erste Import je wieder auffindbar.
 * **Eine Ablösung ist keine Spalte.** Zwei vorgemerkte −60,65-€-Buchungen und
   zwei abgerechnete, und in keinem der beiden Auszüge steht, welche welche
   ablöst. Eine Spalte `superseded_by_transaction_id` könnte darauf nur raten.
@@ -213,7 +227,10 @@ Konvention:
 * **Ein Konflikt ist keine Logzeile.** Was der Abgleich nicht entscheiden
   konnte, steht mit der vollständigen eingehenden Buchung in
   `finance_import_review_items` — inklusive der Fälle, in denen eine manuelle
-  Entscheidung im Weg stand.
+  Entscheidung im Weg stand. Die betroffenen Buchungen hängen über
+  `finance_import_review_item_transactions` mit echten Fremdschlüsseln daran;
+  der `payload` hält daneben den eingefrorenen Stand, sodass eine später
+  gelöschte Buchung die Verknüpfung verliert, aber nicht die Geschichte.
 * **Ein Import ist ein Akt.** `finance_apply_reconciliation_plan(...)` schreibt
   Buchungen, Beobachtungen, Relationen, Analytics-Flags und Review-Items in
   *einer* Transaktion. Sie sperrt die Import-Zeile, und ein bereits
@@ -232,9 +249,41 @@ stimmen konstruktionsbedingt überein, und wo sie es je nicht täten, ist die
 Sicht die strengere von beiden. Doppelt zählen ist der Fehler, den dieses Modul
 verhindern soll.
 
+**Was die Datenbank selbst nachprüft.** Der Plan wird im Browser berechnet, also
+ist die spannende Frage nicht, was er behauptet, sondern was ihm geglaubt wird.
+Geprüft wird serverseitig: dass jede genannte Buchung dem Nutzer *und* dem
+Konto des Imports gehört; dass jede gespeicherte Buchung innerhalb des
+Zeitraums liegt, den der Auszug selbst angibt; dass eine Ablösung dieselbe
+Zahlung meint — **gleicher Betrag, gleiche Währung auf beiden Seiten**, denn
+alles andere ist keine Ablösung; dass Kauf und Retoure sich rechnerisch
+ausgleichen; dass keine Buchung auf beiden Seiten derselben Relation steht; und
+dass eine bereits abgelöste Buchung nicht ein zweites Mal abgelöst wird.
+
+Diese Regeln stehen absichtlich **nicht** nur in der RPC. `authenticated` hält
+INSERT auf diesen Tabellen und muss es halten, weil die Funktion mit
+Aufruferrechten läuft — eine Invariante nur in der Funktion wäre eine, um die
+ein fehlerhafter Client herumläuft. Sie hängen deshalb als aufgeschobener
+Constraint-Trigger an den Mitgliedern und gelten für jeden Schreibweg. Die RPC
+löst sie am Ende ausdrücklich aus, damit ein Fehler dort auftaucht, wo er
+entstanden ist, und der Import nicht erst beim Commit scheitert.
+
+**Der Rückweg.** `finance_resolve_relation(relation_id, status, note)` steht
+neben dem Anwenden: `rejected` heißt „doch nicht dieselbe Zahlung", schaltet
+genau die Buchungen wieder ein, die *diese* Relation ausgeschaltet hatte
+(`evidence.analytics_deactivated`), und lässt alles andere in Ruhe — eine vom
+Nutzer selbst ausgeschlossene Buchung kommt dadurch nie zurück. `confirmed`
+über eine gesperrte Buchung wird **abgelehnt**, mit dem Hinweis, erst die
+Sperre oder den Override aufzuheben: „manuell schlägt automatisch" gilt auch
+innerhalb dieser Funktion. Abgelehnte Relationen bleiben als Historie stehen
+und blockieren über `relation_status` keine spätere, richtige Ablösung mehr.
+`finance_resolve_review_item(...)` schließt, verwirft oder öffnet einen
+Review-Eintrag wieder; sie ändert bewusst keine Buchung.
+
 `tests/finance_import.sql` beweist das gegen ein echtes Postgres: Atomarität,
 Wiederholung desselben Exports, die Kette A → B → C, n↔n, `manual_lock`,
-Override, Retouren-Vorschlag, Kontotrennung, Nutzerisolation und `anon`.
+Override, Retouren-Vorschlag, Kontotrennung, Zeitraum, Betrags- und
+Währungsgleichheit, direkte Schreibwege an der RPC vorbei, Zurücknehmen und
+erneutes Ablösen, Provenienz der Beobachtungen, Nutzerisolation und `anon`.
 
 ## 8. Eine neue persönliche Tabelle anlegen
 

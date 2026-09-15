@@ -492,7 +492,7 @@ append-only *observations* next to the frozen originals, supersessions as
 and everything nobody could decide as *review items* carrying the full incoming
 booking.
 
-Three properties matter more than the rest, and each is a database behaviour
+Four properties matter more than the rest, and each is a database behaviour
 rather than a convention:
 
 - **All or nothing.** A plan that fails halfway leaves no booking, no relation
@@ -501,16 +501,36 @@ rather than a convention:
   its stored result with `replayed: true` instead of writing again. The same
   export re-imported produces no second booking, no second relation and no
   second observation — the observation's key is its content, so equal evidence
-  is one row.
+  is one row. Which imports actually contained it is recorded separately, as
+  sightings, so storing the evidence once costs no provenance.
 - **Manual beats automatic.** Whether a booking is protected is read from the
   database, never from the plan. A protected predecessor is left exactly as it
   is; the *new* booking stands down instead, so the two can never both count,
-  and a review item says so.
+  and a review item says so. Confirming such a relation by hand is refused too,
+  until the lock is cleared — the rule holds inside the undo path as well.
+- **The plan is not believed.** It is computed in a browser, so the database
+  re-checks what it can without re-implementing the matcher: owner, account,
+  the period the statement itself declares, and — the one that matters most —
+  that a supersession is *the same payment*, same amount and same currency on
+  both sides. Without that, any two of your own bookings could be declared a
+  supersession and the larger one would quietly leave the analytics. These
+  checks sit on the tables as a deferred constraint trigger rather than inside
+  the function, because the function runs with the caller's own rights and is
+  therefore not the only way a row can appear.
 
-`tools/financeImportLogic.mjs` covers the client half (30 assertions);
-`supabase/tests/finance_import.sql` covers the rest against a real Postgres —
-atomicity, the repeated export, the chain A → B → C, n↔n, `manual_lock`,
-overrides, refund candidates, account separation and user isolation.
+A supersession can be taken back: `finance_resolve_relation` restores exactly
+the bookings that relation switched off and nothing else, so an undo can never
+re-enable something the user excluded themselves. A rejected relation stays as
+history and stops blocking the correct one.
+
+`tools/financeImportLogic.mjs` covers the client half (44 assertions);
+`supabase/tests/finance_import.sql` covers the rest against a real Postgres
+(113) — atomicity, the repeated export, the chain A → B → C, n↔n, `manual_lock`,
+overrides, refund candidates, account separation, the trust boundary, direct
+writes that bypass the function, the undo path, observation provenance and user
+isolation. `supabase/tests/finance_import_upgrade_*.sql` applies the migration
+to a database that already ran the previous one and holds data, and checks that
+nothing moved.
 
 ---
 

@@ -664,6 +664,590 @@ begin
 end
 $$;
 
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Zweiter Block: was der Hardening-Review gefunden hat.
+--
+-- Jeder Abschnitt hier gehört zu einem Befund, der gegen 60f9955 reproduzierbar
+-- war. Sie stehen getrennt vom ersten Block, weil sie eine andere Frage stellen:
+-- der erste prüft, ob ein korrekter Import korrekt ankommt, dieser, ob ein
+-- falscher abgelehnt wird — und ob es einen Rückweg gibt.
+-- ════════════════════════════════════════════════════════════════════════════
+do $$
+declare
+  user_a   uuid := gen_random_uuid();
+  user_b   uuid := gen_random_uuid();
+  acct     uuid;
+  acct_b   uuid;
+  imp      uuid;
+  imp_b    uuid;
+  tx_big   uuid;
+  tx_usd   uuid;
+  tx_prov  uuid;
+  tx_new   uuid;
+  tx_b     uuid;
+  tx_c     uuid;
+  tx_off   uuid;
+  tx_foreign uuid;
+  obs      uuid;
+  item     uuid;
+  rel      uuid;
+  rel2     uuid;
+  rel3     uuid;
+  res      jsonb;
+  n        integer;
+  caught   text;
+
+  -- One shape, used by most of the plans below: a settled booking that claims
+  -- to supersede a stored one.
+  plan_booking jsonb;
+begin
+  insert into auth.users (id, email) values
+    (user_a, 'hard-a@mindwhiteboard.test'),
+    (user_b, 'hard-b@mindwhiteboard.test');
+
+  execute 'set local role authenticated';
+  perform set_config('request.jwt.claims', json_build_object('sub', user_b, 'role', 'authenticated')::text, true);
+  insert into public.finance_accounts (user_id, name) values (user_b, 'Konto B') returning id into acct_b;
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_b, acct_b, '2026-09-10', -1438, 'EUR', 'Fremde Buchung', array['FREMD'])
+    returning id into tx_foreign;
+
+  perform set_config('request.jwt.claims', json_build_object('sub', user_a, 'role', 'authenticated')::text, true);
+  insert into public.finance_accounts (user_id, name) values (user_a, 'DKB Giro') returning id into acct;
+
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_a, acct, '2026-09-01', -100000, 'EUR', 'Teure Miete', array['MIETE'])
+    returning id into tx_big;
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_a, acct, '2026-09-02', -500, 'USD', 'Etwas in Dollar', array['DOLLAR'])
+    returning id into tx_usd;
+
+  -- ══ 19. TRUST BOUNDARY: was die Datenbank selbst nachprüft ═══════════════
+  -- Der Plan kommt aus dem Browser. Vor der Härtung reichte er aus, um zwei
+  -- beliebige eigene Buchungen zur Ablösung zu erklären — und damit die größere
+  -- aus der Auswertung zu nehmen. Eine Ablösung ist dieselbe Zahlung, zweimal
+  -- gesehen; alles andere ist keine.
+
+  -- 19a — anderer Betrag, gleiche Währung.
+  insert into public.finance_imports (user_id, account_id, source_type, source_hash)
+    values (user_a, acct, 'pdf', 'h-19a') returning id into imp;
+  caught := null;
+  begin
+    perform public.finance_apply_reconciliation_plan(imp, acct,
+      jsonb_build_array(jsonb_build_object('booking_date','2026-09-01','amount_minor',-1,'currency','EUR',
+        'raw_description','Ein Cent loest die Miete ab','normalized_tokens',jsonb_build_array('CENT'),
+        'source_variant','standard','source_metadata',jsonb_build_object())),
+      jsonb_build_array(jsonb_build_object('index',0,'outcome','supersedes','tier',3,
+        'existing_ids',jsonb_build_array(tx_big),'reason','angeblich','evidence',jsonb_build_object())));
+  exception when others then caught := sqlerrm;
+  end;
+  if caught is null then raise exception 'FAIL: eine Ablösung über verschiedene Beträge wurde akzeptiert'; end if;
+  select count(*) into n from public.finance_analytics_transactions where id = tx_big;
+  if n <> 1 then raise exception 'FAIL: die Miete wurde durch einen abgelehnten Plan aus der Auswertung genommen'; end if;
+  select count(*) into n from public.finance_transactions where user_id = user_a and import_id = imp;
+  if n <> 0 then raise exception 'FAIL: der abgelehnte Plan hat % Buchungen hinterlassen', n; end if;
+
+  -- 19b — andere Währung, gleicher Betrag.
+  caught := null;
+  begin
+    perform public.finance_apply_reconciliation_plan(imp, acct,
+      jsonb_build_array(jsonb_build_object('booking_date','2026-09-02','amount_minor',-500,'currency','EUR',
+        'raw_description','Euro loest Dollar ab','normalized_tokens',jsonb_build_array('EURO'),
+        'source_variant','standard','source_metadata',jsonb_build_object())),
+      jsonb_build_array(jsonb_build_object('index',0,'outcome','supersedes','tier',3,
+        'existing_ids',jsonb_build_array(tx_usd),'reason','angeblich','evidence',jsonb_build_object())));
+  exception when others then caught := sqlerrm;
+  end;
+  if caught is null then raise exception 'FAIL: eine Ablösung über zwei Währungen wurde akzeptiert'; end if;
+
+  -- 19c — eine Retoure, die sich nicht ausgleicht.
+  caught := null;
+  begin
+    perform public.finance_apply_reconciliation_plan(imp, acct,
+      jsonb_build_array(jsonb_build_object('booking_date','2026-09-03','amount_minor',-7,'currency','EUR',
+        'raw_description','Auch eine Ausgabe','normalized_tokens',jsonb_build_array('AUCH'),
+        'source_variant','standard','source_metadata',jsonb_build_object())),
+      jsonb_build_array(jsonb_build_object('index',0,'outcome','new','tier',4,'existing_ids',jsonb_build_array(),'reason','n','evidence',jsonb_build_object())),
+      jsonb_build_array(jsonb_build_object('reference','r',
+        'charge', jsonb_build_object('source','existing','id',tx_big),
+        'refund', jsonb_build_object('source','incoming','index',0),
+        'reason','angeblich')));
+  exception when others then caught := sqlerrm;
+  end;
+  if caught is null then raise exception 'FAIL: zwei Ausgaben wurden als Kauf und Retoure gespeichert'; end if;
+
+  -- 19d — dieselben Regeln gelten für den direkten Schreibweg.
+  -- `authenticated` hält INSERT auf diesen Tabellen und muss es halten, weil die
+  -- RPC mit Aufruferrechten läuft. Eine Invariante, die nur in der Funktion
+  -- steht, ist eine, um die ein fehlerhafter Client herumläuft.
+  caught := null;
+  begin
+    insert into public.finance_transaction_relations (user_id, relation_type, status, cardinality, relation_key, confirmed_at)
+      values (user_a, 'supersession', 'confirmed', 1, 'handgemacht', now()) returning id into rel;
+    insert into public.finance_transaction_relation_members (user_id, relation_id, relation_type, relation_status, transaction_id, role)
+      values (user_a, rel, 'supersession', 'confirmed', tx_big, 'predecessor');
+    set constraints public.finance_relation_members_coherent immediate;
+  exception when others then caught := sqlerrm;
+  end;
+  set constraints public.finance_relation_members_coherent deferred;
+  if caught is null then raise exception 'FAIL: eine einseitige Ablösung ließ sich von Hand schreiben'; end if;
+  select count(*) into n from public.finance_analytics_transactions where id = tx_big;
+  if n <> 1 then raise exception 'FAIL: eine handgemachte Relation hat die Auswertung verändert'; end if;
+
+  -- 19e — dieselbe Buchung auf beiden Seiten einer Relation.
+  caught := null;
+  begin
+    insert into public.finance_transaction_relations (user_id, relation_type, status, cardinality, relation_key)
+      values (user_a, 'supersession', 'proposed', 1, 'selbstbezug') returning id into rel;
+    insert into public.finance_transaction_relation_members (user_id, relation_id, relation_type, relation_status, transaction_id, role)
+      values (user_a, rel, 'supersession', 'proposed', tx_big, 'predecessor'),
+             (user_a, rel, 'supersession', 'proposed', tx_big, 'replacement');
+    set constraints public.finance_relation_members_coherent immediate;
+  exception when others then caught := sqlerrm;
+  end;
+  set constraints public.finance_relation_members_coherent deferred;
+  if caught is null then raise exception 'FAIL: eine Buchung konnte sich selbst ablösen'; end if;
+
+  -- ══ 20. IMPORT-ZEITRAUM ══════════════════════════════════════════════════
+  -- Was der Auszug selbst als Zeitraum angibt, ist prüfbar — und wird geprüft,
+  -- sobald er ihn angibt.
+  insert into public.finance_imports (user_id, account_id, source_type, source_hash, period_start, period_end)
+    values (user_a, acct, 'pdf', 'h-20', '2026-09-10', '2026-09-14') returning id into imp;
+  caught := null;
+  begin
+    perform public.finance_apply_reconciliation_plan(imp, acct,
+      jsonb_build_array(jsonb_build_object('booking_date','2027-05-05','amount_minor',-1,'currency','EUR',
+        'raw_description','Weit ausserhalb','normalized_tokens',jsonb_build_array('WEIT'),
+        'source_variant','standard','source_metadata',jsonb_build_object())),
+      jsonb_build_array(jsonb_build_object('index',0,'outcome','new','tier',4,'existing_ids',jsonb_build_array(),'reason','n','evidence',jsonb_build_object())));
+  exception when others then caught := sqlerrm;
+  end;
+  if caught is null then raise exception 'FAIL: eine Buchung außerhalb des erklärten Zeitraums wurde gespeichert'; end if;
+
+  res := public.finance_apply_reconciliation_plan(imp, acct,
+    jsonb_build_array(jsonb_build_object('booking_date','2026-09-14','amount_minor',-6065,'currency','EUR',
+      'raw_description', E'Deutsche Bahn\nnull2026-09-12T17:06 Debitk. 0 2099-12 Zahl.System VISA De bit',
+      'normalized_tokens',jsonb_build_array('DEUTSCHE','BAHN'),
+      'source_variant','timestamped_card','source_metadata',jsonb_build_object())),
+    jsonb_build_array(jsonb_build_object('index',0,'outcome','new','tier',4,'existing_ids',jsonb_build_array(),'reason','n','evidence',jsonb_build_object())));
+  if (res->>'transactions_created')::int <> 1 then
+    raise exception 'FAIL: eine Buchung innerhalb des Zeitraums wurde abgelehnt';
+  end if;
+  select id into tx_prov from public.finance_transactions where user_id = user_a and import_id = imp;
+
+  -- ══ 21. ABLÖSEN, ZURÜCKNEHMEN, WIEDER ABLÖSEN ════════════════════════════
+  insert into public.finance_imports (user_id, account_id, source_type, source_hash)
+    values (user_a, acct, 'pdf', 'h-21') returning id into imp;
+  res := public.finance_apply_reconciliation_plan(imp, acct,
+    jsonb_build_array(jsonb_build_object('booking_date','2026-09-14','amount_minor',-6065,'currency','EUR',
+      'raw_description','DB.Vertrieb.GmbH/508354771568','normalized_tokens',jsonb_build_array('DB'),
+      'source_variant','standard','source_metadata',jsonb_build_object('reference','508354771568'))),
+    jsonb_build_array(jsonb_build_object('index',0,'outcome','supersedes','tier',3,
+      'existing_ids',jsonb_build_array(tx_prov),'reason','Löst ab.','evidence',jsonb_build_object())));
+  select id into tx_new from public.finance_transactions where user_id = user_a and import_id = imp;
+  select id into rel from public.finance_transaction_relations
+   where user_id = user_a and relation_type = 'supersession' and import_id = imp;
+
+  select count(*) into n from public.finance_analytics_transactions where id = tx_prov;
+  if n <> 0 then raise exception 'FAIL: die abgelöste Buchung zählt noch'; end if;
+
+  -- Zurücknehmen: beide zählen wieder, denn "keine Ablösung" heißt "zwei
+  -- verschiedene Zahlungen".
+  res := public.finance_resolve_relation(rel, 'rejected', 'War doch nicht dieselbe Zahlung.');
+  if jsonb_array_length(res->'analytics_restored') <> 1 or (res->'analytics_restored'->>0)::uuid <> tx_prov then
+    raise exception 'FAIL: das Zurücknehmen hat die falschen Buchungen eingeschaltet (%)', res;
+  end if;
+  select count(*) into n from public.finance_analytics_transactions where id in (tx_prov, tx_new);
+  if n <> 2 then raise exception 'FAIL: nach dem Zurücknehmen zählen % von 2 Buchungen', n; end if;
+
+  -- Zweimal zurücknehmen ändert nichts.
+  res := public.finance_resolve_relation(rel, 'rejected');
+  if coalesce((res->>'unchanged')::boolean, false) is not true then
+    raise exception 'FAIL: das zweite Zurücknehmen war kein No-op';
+  end if;
+
+  -- Und die abgelehnte Relation blockiert die richtige nicht mehr. Das war der
+  -- Befund: die Teil-Indizes kannten den Status nicht, also sperrte ein einmal
+  -- abgelehnter Vorschlag die Buchung für immer.
+  insert into public.finance_imports (user_id, account_id, source_type, source_hash)
+    values (user_a, acct, 'pdf', 'h-21b') returning id into imp;
+  res := public.finance_apply_reconciliation_plan(imp, acct,
+    jsonb_build_array(jsonb_build_object('booking_date','2026-09-14','amount_minor',-6065,'currency','EUR',
+      'raw_description','DB.Vertrieb.GmbH/999999999999','normalized_tokens',jsonb_build_array('DB'),
+      'source_variant','standard','source_metadata',jsonb_build_object('reference','999999999999'))),
+    jsonb_build_array(jsonb_build_object('index',0,'outcome','supersedes','tier',3,
+      'existing_ids',jsonb_build_array(tx_prov),'reason','Jetzt aber.','evidence',jsonb_build_object())));
+  if (res->>'supersessions_confirmed')::int <> 1 then
+    raise exception 'FAIL: nach einer abgelehnten Ablösung ist keine neue mehr möglich';
+  end if;
+  select id into rel2 from public.finance_transaction_relations
+   where user_id = user_a and relation_type = 'supersession' and import_id = imp;
+  select count(*) into n from public.finance_analytics_transactions where id = tx_prov;
+  if n <> 0 then raise exception 'FAIL: die zweite Ablösung hat nicht gegriffen'; end if;
+
+  -- Und eine ZWEITE gültige Ablösung derselben Buchung bleibt unmöglich, auch
+  -- an der RPC vorbei. Deren eigene Vorprüfung fängt den Fall im normalen Weg
+  -- ab; dieser Weg geht daran vorbei, und dann ist der Teil-Index das Einzige,
+  -- was noch zwischen einer doppelten Ablösung und den Zahlen steht. Die
+  -- Relation ist absichtlich in sich stimmig (zwei Seiten, gleicher Betrag,
+  -- gleiche Währung), damit wirklich nur der Index greifen kann.
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_a, acct, '2026-09-14', -6065, 'EUR', 'Noch eine Abrechnung', array['NOCH'])
+    returning id into tx_c;
+  caught := null;
+  begin
+    insert into public.finance_transaction_relations (user_id, relation_type, status, cardinality, relation_key)
+      values (user_a, 'supersession', 'proposed', 1, 'zweite-abloesung') returning id into rel3;
+    insert into public.finance_transaction_relation_members (user_id, relation_id, relation_type, relation_status, transaction_id, role)
+      values (user_a, rel3, 'supersession', 'proposed', tx_prov, 'predecessor'),
+             (user_a, rel3, 'supersession', 'proposed', tx_c, 'replacement');
+    set constraints public.finance_relation_members_coherent immediate;
+  exception when others then caught := sqlerrm;
+  end;
+  set constraints public.finance_relation_members_coherent deferred;
+  if caught is null then
+    raise exception 'FAIL: eine Buchung konnte ein zweites Mal abgelöst werden';
+  end if;
+  delete from public.finance_transactions where id = tx_c;
+
+  -- Die abgelehnte Relation ist trotzdem noch da — auditierbar, nicht gelöscht.
+  select count(*) into n from public.finance_transaction_relations where id = rel and status = 'rejected';
+  if n <> 1 then raise exception 'FAIL: die abgelehnte Relation wurde entfernt statt archiviert'; end if;
+  select count(*) into n from public.finance_transaction_relation_members
+   where relation_id = rel and relation_status = 'rejected';
+  if n <> 2 then raise exception 'FAIL: der Status wurde nicht auf die Mitglieder durchgereicht'; end if;
+
+  -- ══ 22. EINE VOM NUTZER SELBST AUSGESCHLOSSENE BUCHUNG ═══════════════════
+  -- Sie wird abgelöst wie jede andere, steht aber nicht in
+  -- analytics_deactivated — und darf durch ein Zurücknehmen niemals wieder
+  -- eingeschaltet werden.
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens, include_in_analytics)
+    values (user_a, acct, '2026-09-18', -900, 'EUR', E'Selbst ausgeschlossen\nnull2026-09-17T10:00 Debitk. 0 2099-12 Zahl.System VISA De bit', array['SELBST'], false)
+    returning id into tx_off;
+  insert into public.finance_imports (user_id, account_id, source_type, source_hash)
+    values (user_a, acct, 'pdf', 'h-22') returning id into imp;
+  res := public.finance_apply_reconciliation_plan(imp, acct,
+    jsonb_build_array(jsonb_build_object('booking_date','2026-09-18','amount_minor',-900,'currency','EUR',
+      'raw_description','Abgerechnet','normalized_tokens',jsonb_build_array('ABGERECHNET'),
+      'source_variant','standard','source_metadata',jsonb_build_object())),
+    jsonb_build_array(jsonb_build_object('index',0,'outcome','supersedes','tier',3,
+      'existing_ids',jsonb_build_array(tx_off),'reason','Löst ab.','evidence',jsonb_build_object())));
+  select id into rel from public.finance_transaction_relations
+   where user_id = user_a and relation_type = 'supersession' and import_id = imp;
+  res := public.finance_resolve_relation(rel, 'rejected');
+  if jsonb_array_length(res->'analytics_restored') <> 0 then
+    raise exception 'FAIL: das Zurücknehmen hat eine vom Nutzer ausgeschlossene Buchung eingeschaltet';
+  end if;
+  select count(*) into n from public.finance_transactions where id = tx_off and include_in_analytics;
+  if n <> 0 then raise exception 'FAIL: die selbst ausgeschlossene Buchung zählt wieder'; end if;
+
+  -- ══ 23. EINE GESCHÜTZTE BUCHUNG LÄSST SICH AUCH VON HAND NICHT ABLÖSEN ═══
+  -- Der Import stellt sie zurück (Block 1 prüft das). Auch das ausdrückliche
+  -- Bestätigen der Relation darf die manuelle Entscheidung nicht überfahren:
+  -- es wird abgelehnt, mit dem Hinweis, erst die Sperre aufzuheben.
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens, manual_lock)
+    values (user_a, acct, '2026-09-19', -1100, 'EUR', E'Gesperrt\nnull2026-09-18T10:00 Debitk. 0 2099-12 Zahl.System VISA De bit', array['GESPERRT'], true)
+    returning id into tx_c;
+  insert into public.finance_imports (user_id, account_id, source_type, source_hash)
+    values (user_a, acct, 'pdf', 'h-23') returning id into imp;
+  res := public.finance_apply_reconciliation_plan(imp, acct,
+    jsonb_build_array(jsonb_build_object('booking_date','2026-09-19','amount_minor',-1100,'currency','EUR',
+      'raw_description','Abgerechnet gegen gesperrt','normalized_tokens',jsonb_build_array('ABGERECHNET'),
+      'source_variant','standard','source_metadata',jsonb_build_object())),
+    jsonb_build_array(jsonb_build_object('index',0,'outcome','supersedes','tier',3,
+      'existing_ids',jsonb_build_array(tx_c),'reason','Löst ab.','evidence',jsonb_build_object())));
+  select id into rel from public.finance_transaction_relations
+   where user_id = user_a and relation_type = 'supersession' and import_id = imp;
+  caught := null;
+  begin
+    perform public.finance_resolve_relation(rel, 'confirmed');
+  exception when others then caught := sqlerrm;
+  end;
+  if caught is null then raise exception 'FAIL: eine gesperrte Buchung ließ sich per Bestätigung abschalten'; end if;
+  select count(*) into n from public.finance_transactions where id = tx_c and include_in_analytics;
+  if n <> 1 then raise exception 'FAIL: die gesperrte Buchung wurde doch abgeschaltet'; end if;
+
+  -- Sperre weg, jetzt darf es. Die neue Buchung, die der Import zurückgestellt
+  -- hatte, kommt dabei wieder in die Auswertung — genau eine Seite zählt.
+  update public.finance_transactions set manual_lock = false where id = tx_c;
+  res := public.finance_resolve_relation(rel, 'confirmed');
+  select count(*) into n from public.finance_analytics_transactions where id = tx_c;
+  if n <> 0 then raise exception 'FAIL: die abgelöste Buchung zählt nach dem Bestätigen noch'; end if;
+  select count(*) into n from public.finance_analytics_transactions where import_id = imp;
+  if n <> 1 then raise exception 'FAIL: die ablösende Buchung zählt nach dem Bestätigen nicht'; end if;
+  select count(*) into n from public.finance_import_review_items
+   where user_id = user_a and item_type = 'manual_lock_conflict' and status = 'open';
+  if n <> 1 then raise exception 'FAIL: der Review-Eintrag zur Sperre fehlt'; end if;
+
+  -- ══ 23b. ZWEI PARALLELE ABLÖSE-GRUPPEN IN EINEM IMPORT ══════════════════
+  -- Unabhängig voneinander, im selben Aufruf. Jede bekommt ihre eigene
+  -- Relation; keine greift in die andere.
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_a, acct, '2026-09-25', -2500, 'EUR', E'Erste Gruppe\nnull2026-09-24T10:00 Debitk. 0 2099-12 Zahl.System VISA De bit', array['ERSTE'])
+    returning id into tx_new;
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_a, acct, '2026-09-25', -3700, 'EUR', E'Zweite Gruppe\nnull2026-09-24T11:00 Debitk. 0 2099-12 Zahl.System VISA De bit', array['ZWEITE'])
+    returning id into tx_c;
+  insert into public.finance_imports (user_id, account_id, source_type, source_hash)
+    values (user_a, acct, 'pdf', 'h-23b') returning id into imp;
+  res := public.finance_apply_reconciliation_plan(imp, acct,
+    jsonb_build_array(
+      jsonb_build_object('booking_date','2026-09-25','amount_minor',-2500,'currency','EUR',
+        'raw_description','Erste abgerechnet','normalized_tokens',jsonb_build_array('ERSTE'),
+        'source_variant','standard','source_metadata',jsonb_build_object()),
+      jsonb_build_object('booking_date','2026-09-25','amount_minor',-3700,'currency','EUR',
+        'raw_description','Zweite abgerechnet','normalized_tokens',jsonb_build_array('ZWEITE'),
+        'source_variant','standard','source_metadata',jsonb_build_object())),
+    jsonb_build_array(
+      jsonb_build_object('index',0,'outcome','supersedes','tier',3,
+        'existing_ids',jsonb_build_array(tx_new),'reason','Löst ab.','evidence',jsonb_build_object()),
+      jsonb_build_object('index',1,'outcome','supersedes','tier',3,
+        'existing_ids',jsonb_build_array(tx_c),'reason','Löst ab.','evidence',jsonb_build_object())));
+  if (res->>'supersessions_confirmed')::int <> 2 then
+    raise exception 'FAIL: zwei parallele Gruppen ergaben % Relationen, erwartet 2', res->>'supersessions_confirmed';
+  end if;
+  select count(*) into n from public.finance_analytics_transactions where id in (tx_new, tx_c);
+  if n <> 0 then raise exception 'FAIL: % der beiden vorgemerkten Buchungen zählen noch', n; end if;
+  select count(*) into n from public.finance_analytics_transactions where import_id = imp;
+  if n <> 2 then raise exception 'FAIL: % der beiden neuen Buchungen zählen, erwartet 2', n; end if;
+  -- Und jede Relation hat genau ein Mitglied je Seite — nicht eine große Gruppe.
+  select count(*) into n from public.finance_transaction_relations
+   where user_id = user_a and import_id = imp and cardinality = 1;
+  if n <> 2 then raise exception 'FAIL: die beiden Gruppen wurden zu einer verschmolzen'; end if;
+
+  -- ══ 23c. ABBRUCH NACH BEOBACHTUNGEN, RELATIONEN UND ANALYTICS ════════════
+  -- Der bisherige Atomaritätstest scheitert beim ersten Insert. Dieser kommt
+  -- durch alle Stufen — Buchungen, Beobachtung, Ablösung, Analytics-Flag — und
+  -- stolpert erst über den Retouren-Vorschlag ganz am Ende. Danach darf von
+  -- keiner dieser Stufen etwas übrig sein.
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_a, acct, '2026-09-26', -4400, 'EUR', E'Spaeter Abbruch\nnull2026-09-25T10:00 Debitk. 0 2099-12 Zahl.System VISA De bit', array['SPAETER'])
+    returning id into tx_new;
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_a, acct, '2026-09-26', -1500, 'EUR', 'Bestehende Buchung', array['BESTEHEND'])
+    returning id into tx_c;
+  insert into public.finance_imports (user_id, account_id, source_type, source_hash)
+    values (user_a, acct, 'pdf', 'h-23c') returning id into imp;
+  caught := null;
+  begin
+    perform public.finance_apply_reconciliation_plan(imp, acct,
+      jsonb_build_array(
+        jsonb_build_object('booking_date','2026-09-26','amount_minor',-4400,'currency','EUR',
+          'raw_description','Spaet abgerechnet','normalized_tokens',jsonb_build_array('SPAET'),
+          'source_variant','standard','source_metadata',jsonb_build_object()),
+        jsonb_build_object('booking_date','2026-09-26','amount_minor',-1500,'currency','EUR',
+          'raw_description','Bestehende Buchung, ausfuehrlicher','normalized_tokens',jsonb_build_array('BESTEHEND'),
+          'source_variant','standard','source_metadata',jsonb_build_object('reference','777777777777'))),
+      jsonb_build_array(
+        jsonb_build_object('index',0,'outcome','supersedes','tier',3,
+          'existing_ids',jsonb_build_array(tx_new),'reason','Löst ab.','evidence',jsonb_build_object()),
+        jsonb_build_object('index',1,'outcome','enriched','tier',2,
+          'existing_ids',jsonb_build_array(tx_c),'reason','Reicherer Text.','evidence',jsonb_build_object())),
+      -- Die fremde Buchung ganz am Ende bringt alles zu Fall.
+      jsonb_build_array(jsonb_build_object('reference','r',
+        'charge', jsonb_build_object('source','existing','id',tx_foreign),
+        'refund', jsonb_build_object('source','incoming','index',0),
+        'reason','fremd')));
+  exception when others then caught := sqlerrm;
+  end;
+  if caught is null then raise exception 'FAIL: ein Plan mit fremder Buchung im Retouren-Vorschlag ging durch'; end if;
+  select count(*) into n from public.finance_transactions where import_id = imp;
+  if n <> 0 then raise exception 'FAIL: der späte Abbruch hat % Buchungen hinterlassen', n; end if;
+  select count(*) into n from public.finance_transaction_observations where import_id = imp;
+  if n <> 0 then raise exception 'FAIL: der späte Abbruch hat Beobachtungen hinterlassen'; end if;
+  select count(*) into n from public.finance_transaction_relations where import_id = imp;
+  if n <> 0 then raise exception 'FAIL: der späte Abbruch hat Relationen hinterlassen'; end if;
+  select count(*) into n from public.finance_analytics_transactions where id = tx_new;
+  if n <> 1 then raise exception 'FAIL: der späte Abbruch hat eine Buchung aus der Auswertung genommen'; end if;
+  select status into caught from public.finance_imports where id = imp;
+  if caught <> 'pending' then raise exception 'FAIL: der abgebrochene Import steht auf %', caught; end if;
+
+  -- Und derselbe Import lässt sich danach sauber anwenden.
+  res := public.finance_apply_reconciliation_plan(imp, acct,
+    jsonb_build_array(jsonb_build_object('booking_date','2026-09-26','amount_minor',-4400,'currency','EUR',
+      'raw_description','Spaet abgerechnet','normalized_tokens',jsonb_build_array('SPAET'),
+      'source_variant','standard','source_metadata',jsonb_build_object())),
+    jsonb_build_array(jsonb_build_object('index',0,'outcome','supersedes','tier',3,
+      'existing_ids',jsonb_build_array(tx_new),'reason','Löst ab.','evidence',jsonb_build_object())));
+  if (res->>'supersessions_confirmed')::int <> 1 then
+    raise exception 'FAIL: der Neuversuch nach dem späten Abbruch scheiterte';
+  end if;
+
+  -- ══ 24. OBSERVATION-PROVENIENZ ═══════════════════════════════════════════
+  -- Gleiche Evidenz aus zwei Imports: EINE Beobachtung, ZWEI Sichtungen. Ohne
+  -- die Sichtungen wäre nur der erste Import je wieder auffindbar.
+  insert into public.finance_transactions (user_id, account_id, booking_date, amount_minor, currency, raw_description, normalized_tokens)
+    values (user_a, acct, '2026-09-20', -1438, 'EUR', 'REWE', array['REWE'])
+    returning id into tx_b;
+  insert into public.finance_imports (user_id, account_id, source_type, source_hash)
+    values (user_a, acct, 'pdf', 'h-24a') returning id into imp;
+  perform public.finance_apply_reconciliation_plan(imp, acct,
+    jsonb_build_array(jsonb_build_object('booking_date','2026-09-20','amount_minor',-1438,'currency','EUR',
+      'raw_description','REWE.Mohamed.Boufo/Frankfurt','normalized_tokens',jsonb_build_array('REWE','FRANKFURT'),
+      'source_variant','standard','source_metadata',jsonb_build_object())),
+    jsonb_build_array(jsonb_build_object('index',0,'outcome','enriched','tier',2,
+      'existing_ids',jsonb_build_array(tx_b),'reason','Reicherer Text.','evidence',jsonb_build_object())));
+
+  insert into public.finance_imports (user_id, account_id, source_type, source_hash)
+    values (user_a, acct, 'pdf', 'h-24b') returning id into imp_b;
+  res := public.finance_apply_reconciliation_plan(imp_b, acct,
+    jsonb_build_array(jsonb_build_object('booking_date','2026-09-20','amount_minor',-1438,'currency','EUR',
+      'raw_description','REWE.Mohamed.Boufo/Frankfurt','normalized_tokens',jsonb_build_array('REWE','FRANKFURT'),
+      'source_variant','standard','source_metadata',jsonb_build_object())),
+    jsonb_build_array(jsonb_build_object('index',0,'outcome','enriched','tier',2,
+      'existing_ids',jsonb_build_array(tx_b),'reason','Reicherer Text.','evidence',jsonb_build_object())));
+
+  if (res->>'observations_created')::int <> 0 then
+    raise exception 'FAIL: dieselbe Evidenz wurde ein zweites Mal gespeichert';
+  end if;
+  if (res->>'observation_sightings')::int <> 1 then
+    raise exception 'FAIL: die zweite Sichtung wurde nicht festgehalten (%)', res->>'observation_sightings';
+  end if;
+  select count(*) into n from public.finance_transaction_observations
+   where user_id = user_a and transaction_id = tx_b;
+  if n <> 1 then raise exception 'FAIL: % Beobachtungen zu einer Buchung, erwartet 1', n; end if;
+  select id into obs from public.finance_transaction_observations where user_id = user_a and transaction_id = tx_b;
+  select count(distinct import_id) into n from public.finance_transaction_observation_sightings
+   where observation_id = obs;
+  if n <> 2 then raise exception 'FAIL: % Importe sind als Quelle nachweisbar, erwartet 2', n; end if;
+  select count(*) into n from public.finance_transaction_observation_sightings
+   where observation_id = obs and import_id = imp_b;
+  if n <> 1 then raise exception 'FAIL: der zweite Import ist nicht als Quelle nachweisbar'; end if;
+
+  -- Sichtungen sind ebenfalls unveränderlich.
+  execute 'reset role';
+  caught := null;
+  begin
+    update public.finance_transaction_observation_sightings set created_at = now();
+  exception when others then caught := sqlerrm;
+  end;
+  if caught is null then raise exception 'FAIL: eine Sichtung ließ sich umschreiben'; end if;
+  execute 'set local role authenticated';
+
+  -- ══ 25. REVIEW-ITEMS: echte Fremdschlüssel statt eines uuid[] ════════════
+  insert into public.finance_imports (user_id, account_id, source_type, source_hash)
+    values (user_a, acct, 'pdf', 'h-25') returning id into imp;
+  perform public.finance_apply_reconciliation_plan(imp, acct,
+    jsonb_build_array(jsonb_build_object('booking_date','2026-09-21','amount_minor',-1234,'currency','EUR',
+      'raw_description','Unklarer Fall','normalized_tokens',jsonb_build_array('UNKLAR'),
+      'source_variant','standard','source_metadata',jsonb_build_object())),
+    jsonb_build_array(jsonb_build_object('index',0,'outcome','unresolved','tier',3,
+      'existing_ids',jsonb_build_array(tx_b),'reason','2 gegen 1.','evidence',jsonb_build_object())));
+  select id into item from public.finance_import_review_items
+   where user_id = user_a and import_id = imp and item_type = 'unresolved_match';
+  select count(*) into n from public.finance_import_review_item_transactions
+   where review_item_id = item and transaction_id = tx_b;
+  if n <> 1 then raise exception 'FAIL: der Review-Eintrag verweist nicht auf die Buchung'; end if;
+
+  -- Die eingehende Buchung ist vollständig erhalten — das ist der Unterschied
+  -- zwischen „nicht importiert" und „verloren".
+  select count(*) into n from public.finance_import_review_items
+   where id = item and payload->'booking'->>'raw_description' = 'Unklarer Fall';
+  if n <> 1 then raise exception 'FAIL: die eingehende Buchung fehlt im Review-Eintrag'; end if;
+
+  -- Wird die Buchung gelöscht, verschwindet die Verknüpfung — und hinterlässt
+  -- keine Leiche. Vorher war das ein uuid[] ohne Fremdschlüssel, in dem eine
+  -- gelöschte ID für immer stehen blieb.
+  select count(*) into n from public.finance_import_review_item_transactions where transaction_id = tx_b;
+  if n < 1 then raise exception 'FAIL: keine Verknüpfung zum Löschen vorhanden'; end if;
+  delete from public.finance_transaction_observation_sightings where user_id = user_a;
+  delete from public.finance_transaction_observations where user_id = user_a and transaction_id = tx_b;
+  delete from public.finance_transactions where id = tx_b;
+  select count(*) into n from public.finance_import_review_item_transactions where transaction_id = tx_b;
+  if n <> 0 then raise exception 'FAIL: nach dem Löschen bleibt eine tote Verknüpfung'; end if;
+  -- Die Historie bleibt trotzdem lesbar.
+  select count(*) into n from public.finance_import_review_items
+   where id = item and payload->'decision'->'existing_ids' ? tx_b::text;
+  if n <> 1 then raise exception 'FAIL: die Historie des Review-Eintrags ging mit der Buchung verloren'; end if;
+
+  -- Eine fremde Buchung lässt sich nicht anhängen.
+  caught := null;
+  begin
+    insert into public.finance_import_review_item_transactions (user_id, review_item_id, transaction_id)
+      values (user_a, item, tx_foreign);
+  exception when others then caught := sqlerrm;
+  end;
+  if caught is null then raise exception 'FAIL: eine fremde Buchung ließ sich an einen Review-Eintrag hängen'; end if;
+
+  -- ══ 26. REVIEW-ITEMS SCHLIESSEN UND WIEDER ÖFFNEN ════════════════════════
+  res := public.finance_resolve_review_item(item, 'resolved', 'Von Hand geklärt.');
+  if res->>'status' <> 'resolved' then raise exception 'FAIL: der Review-Eintrag ließ sich nicht schließen'; end if;
+  select count(*) into n from public.finance_import_review_items where id = item and resolved_at is not null;
+  if n <> 1 then raise exception 'FAIL: der geschlossene Review-Eintrag trägt keinen Zeitpunkt'; end if;
+
+  -- Ein geschlossener Eintrag blockiert denselben Konflikt später nicht mehr:
+  -- der Teil-Index gilt nur unter den offenen.
+  insert into public.finance_imports (user_id, account_id, source_type, source_hash)
+    values (user_a, acct, 'pdf', 'h-26') returning id into imp;
+  res := public.finance_apply_reconciliation_plan(imp, acct,
+    jsonb_build_array(jsonb_build_object('booking_date','2026-09-21','amount_minor',-1234,'currency','EUR',
+      'raw_description','Unklarer Fall','normalized_tokens',jsonb_build_array('UNKLAR'),
+      'source_variant','standard','source_metadata',jsonb_build_object())),
+    jsonb_build_array(jsonb_build_object('index',0,'outcome','unresolved','tier',3,
+      'existing_ids',jsonb_build_array(tx_prov),'reason','Wieder unklar.','evidence',jsonb_build_object())));
+  if (res->>'review_items_created')::int <> 1 then
+    raise exception 'FAIL: ein erneut auftretender Konflikt wird nicht mehr gemeldet';
+  end if;
+
+  res := public.finance_resolve_review_item(item, 'open');
+  select count(*) into n from public.finance_import_review_items where id = item and status = 'open' and resolved_at is null;
+  if n <> 1 then raise exception 'FAIL: ein Review-Eintrag ließ sich nicht wieder öffnen'; end if;
+
+  -- ══ 27. ISOLATION DER NEUEN TABELLEN ═════════════════════════════════════
+  perform set_config('request.jwt.claims', json_build_object('sub', user_b, 'role', 'authenticated')::text, true);
+  select count(*) into n from public.finance_transaction_observation_sightings;
+  if n <> 0 then raise exception 'FAIL: Nutzer B sieht % Sichtungen von A', n; end if;
+  select count(*) into n from public.finance_import_review_item_transactions;
+  if n <> 0 then raise exception 'FAIL: Nutzer B sieht % Review-Verknüpfungen von A', n; end if;
+
+  caught := null;
+  begin
+    perform public.finance_resolve_relation(rel2, 'rejected');
+  exception when others then caught := sqlerrm;
+  end;
+  if caught is null then raise exception 'FAIL: Nutzer B konnte eine Relation von A zurücknehmen'; end if;
+
+  caught := null;
+  begin
+    perform public.finance_resolve_review_item(item, 'dismissed', 'fremd');
+  exception when others then caught := sqlerrm;
+  end;
+  if caught is null then raise exception 'FAIL: Nutzer B konnte einen Review-Eintrag von A schließen'; end if;
+
+  execute 'set local role anon';
+  perform set_config('request.jwt.claims', json_build_object('role', 'anon')::text, true);
+  foreach caught in array array[
+    'public.finance_transaction_observation_sightings',
+    'public.finance_import_review_item_transactions'
+  ]
+  loop
+    n := -1;
+    begin
+      execute format('select count(*) from %s', caught) into n;
+    exception when others then n := -1;
+    end;
+    if n >= 0 then raise exception 'FAIL: anon kann % lesen', caught; end if;
+  end loop;
+
+  caught := null;
+  begin
+    perform public.finance_resolve_relation(rel2, 'rejected');
+  exception when others then caught := sqlerrm;
+  end;
+  if caught is null then raise exception 'FAIL: anon konnte eine Relation zurücknehmen'; end if;
+
+  caught := null;
+  begin
+    perform public.finance_resolve_review_item(item, 'dismissed');
+  exception when others then caught := sqlerrm;
+  end;
+  if caught is null then raise exception 'FAIL: anon konnte einen Review-Eintrag schließen'; end if;
+
+  execute 'reset role';
+end
+$$;
+
 select 'FINANCE-IMPORT: all assertions passed' as result;
 
 rollback;

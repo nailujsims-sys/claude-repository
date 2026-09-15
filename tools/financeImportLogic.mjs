@@ -25,6 +25,7 @@ import { reconcileImport } from './src/lib/finance/dkb/reconcile.js'
 import { buildApplyPayload } from './src/lib/finance/dkb/plan.js'
 import { referenceDocument, secondExportDocument } from './tools/fixtures/dkbUmsatzexport.mjs'
 import { financeRepository } from './src/data/financeRepository.js'
+import { pickWritableFinanceImport } from './src/data/financeDefaults.js'
 import { makeBackend } from './tools/supabaseStub.mjs'
 
 let pass = 0, fail = 0
@@ -180,6 +181,67 @@ const payload = buildApplyPayload({ importId: IMPORT, accountId: ACCOUNT, bookin
   let refused = null
   try { await financeRepository.applyReconciliationPlan(null, payload) } catch (e) { refused = e.message }
   ok('a signed-out app makes no request at all', refused !== null)
+}
+
+// ── 7. The period the database checks against has to be settable ───────────
+{
+  // finance_apply_reconciliation_plan refuses a booking outside the period the
+  // import declares. A column the client cannot write would make that check
+  // dead code, so the writable list has to carry both ends.
+  const patch = pickWritableFinanceImport({
+    account_id: ACCOUNT,
+    source_hash: 'h',
+    period_start: '2026-09-10',
+    period_end: '2026-09-14',
+    user_id: 'geschmuggelt',
+    apply_result: { nope: true },
+  })
+  ok('an import may declare its period', patch.period_start === '2026-09-10' && patch.period_end === '2026-09-14')
+  ok('…and still cannot set its own user', !('user_id' in patch))
+  ok('…nor the result of applying it', !('apply_result' in patch))
+}
+
+// ── 8. Standing by a relation, or taking it back ───────────────────────────
+{
+  const backend = makeBackend({
+    tasks: [], events: [],
+    rpc: {
+      finance_resolve_relation: () => new Response(
+        JSON.stringify({ relation_id: uuid(9), status: 'rejected', analytics_restored: [uuid(1)] }),
+        { status: 200, headers: { 'content-type': 'application/json' } }),
+      finance_resolve_review_item: () => new Response(
+        JSON.stringify({ id: uuid(8), status: 'resolved' }),
+        { status: 200, headers: { 'content-type': 'application/json' } }),
+    },
+  })
+  globalThis.fetch = (...args) => backend.fetch(...args)
+
+  const rejected = await financeRepository.resolveRelation(USER, uuid(9), 'rejected', 'Doch nicht.')
+  ok('rejecting a relation comes back with what it restored', rejected.analytics_restored.length === 1)
+  let call = backend.rpcCalls[backend.rpcCalls.length - 1]
+  ok('it calls the resolve function', call.name === 'finance_resolve_relation')
+  ok('with the RPC parameter names',
+     Object.keys(call.body).sort().join(',') === 'p_note,p_relation_id,p_status')
+  ok('and no user id — the function reads auth.uid() itself',
+     !JSON.stringify(call.body).includes(USER))
+
+  const closed = await financeRepository.resolveReviewItem(USER, uuid(8), 'resolved', 'Geklärt.')
+  ok('a review item can be closed', closed.status === 'resolved')
+  call = backend.rpcCalls[backend.rpcCalls.length - 1]
+  ok('it calls the review function', call.name === 'finance_resolve_review_item')
+  ok('with the RPC parameter names',
+     Object.keys(call.body).sort().join(',') === 'p_item_id,p_resolution,p_status')
+
+  for (const [name, fn] of [
+    ['resolveRelation', () => financeRepository.resolveRelation(null, uuid(9), 'rejected')],
+    ['resolveReviewItem', () => financeRepository.resolveReviewItem(null, uuid(8), 'resolved')],
+    ['listObservationSightings', () => financeRepository.listObservationSightings(null)],
+    ['listReviewItemTransactions', () => financeRepository.listReviewItemTransactions(null)],
+  ]) {
+    let refused = null
+    try { await fn() } catch (e) { refused = e.message }
+    ok(name + ' makes no request without a user', refused !== null)
+  }
 }
 
 console.log(\`finance import: \${pass} passed, \${fail} failed\`)
