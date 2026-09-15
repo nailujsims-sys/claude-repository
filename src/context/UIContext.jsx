@@ -24,6 +24,11 @@ export function UIProvider({ children }) {
   // entered at the till, so "Neue Ausgabe" has to be two taps from wherever
   // the app happens to be standing.
   const [expenseForm, setExpenseForm] = useState(null)
+  // financeImport: null | true
+  // Global like the forms above, for the same reason and one more: the import
+  // is reachable from the Finanzen screen today and from the Plus sheet the day
+  // it earns a slot there, without the sheet having to move.
+  const [financeImport, setFinanceImport] = useState(null)
 
   const value = useMemo(
     () => ({
@@ -50,8 +55,12 @@ export function UIProvider({ children }) {
       expenseForm,
       openExpenseForm: (opts = { mode: 'create' }) => setExpenseForm(opts),
       closeExpenseForm: () => setExpenseForm(null),
+
+      financeImport,
+      openFinanceImport: () => setFinanceImport(true),
+      closeFinanceImport: () => setFinanceImport(null),
     }),
-    [sidebarOpen, actionSheetOpen, taskForm, eventForm, listForm, expenseForm]
+    [sidebarOpen, actionSheetOpen, taskForm, eventForm, listForm, expenseForm, financeImport]
   )
 
   return <UIContext.Provider value={value}>{children}</UIContext.Provider>

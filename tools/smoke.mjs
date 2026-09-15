@@ -73,6 +73,10 @@ function makeDom(hash, seed = {}, options = {}) {
       lists: seed.lists ?? seedLists(),
       listItems: seed.listItems ?? seedListItems(),
       expenses: seed.expenses ?? seedExpenses(),
+      // The finance tables, keyed by table name. Empty unless a test seeds one —
+      // which is also the state a brand-new account is in.
+      finance: seed.finance ?? {},
+      rpc: seed.rpc ?? {},
       // The rate source answers 1 AUD = 0,60 € unless a test asks it not to;
       // `exchangeRate: null` is the "Kursabfrage fehlgeschlagen" case.
       exchangeRate: seed.exchangeRate === undefined ? 0.6 : seed.exchangeRate,
@@ -221,6 +225,7 @@ async function run() {
     ['Aufgaben (/aufgaben)', '#/aufgaben'],
     ['Listen (/listen)', '#/listen'],
     ['Ausgaben (/ausgaben)', '#/ausgaben'],
+    ['Finanzen (/finanzen)', '#/finanzen'],
     ['Mehr (/mehr)', '#/mehr'],
     ['Version (/version)', '#/version'],
     ['Kalender (/kalender)', '#/kalender'],
@@ -283,6 +288,7 @@ async function run() {
         'Aufgaben (/aufgaben)': 'Aufgaben',
         'Listen (/listen)': 'Listen',
         'Ausgaben (/ausgaben)': 'Ausgaben',
+        'Finanzen (/finanzen)': 'Finanzen',
         'Mehr (/mehr)': 'Mehr',
         'Version (/version)': 'Version',
         'Kalender (/kalender)': 'Kalender',
@@ -3007,6 +3013,139 @@ async function run() {
     console.log(`\n=== Ausgaben — zweites Gerät ===\n  ${text.slice(0, 200)}`)
     if (!text.includes('Bondi Beach Parkgebühr'))
       errors.push('[Ausgaben/Sync] the second device never saw the new expense')
+  }
+
+  // ── 16) Finanzen ───────────────────────────────────────────────────────
+  // The first productive path of the finance module: a way in, and the import.
+  //
+  // WHAT IS ASSERTED HERE AND WHAT IS NOT. Everything up to "a file was picked"
+  // is a real DOM assertion below. Everything after it needs a real PDF through
+  // pdfjs, which jsdom cannot run — and faking the parser to get a green DOM
+  // test would be exactly the "Finance-Logik als UI-Mock" the module is not
+  // allowed to have. Those states are asserted instead in
+  // tools/financeImportFlowLogic.mjs, against the real parser, the real matcher
+  // and the real payload builder.
+
+  const FIN_ACCOUNT = '11111111-2222-4333-8444-000000000002'
+  const financeSeed = {
+    finance_accounts: [{ id: FIN_ACCOUNT, user_id: TEST_USER_ID, name: 'DKB Girokonto', currency: 'EUR' }],
+    finance_transactions: [
+      { id: '11111111-2222-4333-8444-000000000101', user_id: TEST_USER_ID, account_id: FIN_ACCOUNT,
+        booking_date: '2026-09-14', amount_minor: -6065, currency: 'EUR',
+        raw_description: 'DB.Vertrieb.GmbH/508354771568', normalized_tokens: ['DB'],
+        include_in_analytics: true, manual_lock: false },
+      { id: '11111111-2222-4333-8444-000000000102', user_id: TEST_USER_ID, account_id: FIN_ACCOUNT,
+        booking_date: '2026-09-10', amount_minor: -1438, currency: 'EUR',
+        raw_description: 'REWE.Mohamed.Boufo/Frankfurt', normalized_tokens: ['REWE'],
+        include_in_analytics: true, manual_lock: false },
+    ],
+  }
+
+  // 16a) A brand-new account: no finance account, no bookings. The empty state
+  //      invites, and the import is one tap away.
+  {
+    const window = makeDom('#/finanzen', { finance: {} })
+    mount(window, code, 'Finanzen/Leer')
+    await wait(350)
+    window.__restoreConsole?.()
+    const text = nb(txt(window))
+    console.log(`\n=== Finanzen — leer ===\n  ${text.slice(0, 220)}`)
+
+    if (!text.includes('Noch keine Umsätze'))
+      errors.push('[Finanzen] the empty state is not shown')
+    if (!text.includes('DKB-Umsätze importieren'))
+      errors.push('[Finanzen] the import call to action is missing')
+    if (!text.includes('nur auf diesem Gerät gelesen'))
+      errors.push('[Finanzen] the empty state does not say the file stays on the device')
+    // No dashboard, no charts, no numbers to read: an empty account has nothing
+    // to summarise and must not pretend otherwise.
+    if (/\d+ importierte/.test(text))
+      errors.push('[Finanzen] an empty account shows a summary card')
+
+    if (!click(window, (el) => el.textContent.trim() === 'DKB-Umsätze importieren'))
+      errors.push('[Finanzen] the import button was not clickable')
+    await wait(320)
+    const sheet = nb(txt(window))
+    if (!sheet.includes('Umsätze importieren'))
+      errors.push('[Finanzen/Import] the sheet did not open')
+    if (!sheet.includes('PDF auswählen'))
+      errors.push('[Finanzen/Import] the file picker button is missing')
+    if (!sheet.includes('nie das PDF selbst'))
+      errors.push('[Finanzen/Import] the sheet does not promise the PDF is not stored')
+
+    // Only PDFs, and the picker is the native one.
+    const input = window.document.querySelector('input[type="file"]')
+    if (!input) errors.push('[Finanzen/Import] there is no file input')
+    else if (!(input.getAttribute('accept') || '').includes('pdf'))
+      errors.push('[Finanzen/Import] the file input accepts more than PDF')
+
+    // Nothing was written by opening the flow.
+    if (window.__backend.tables.finance_imports.length)
+      errors.push('[Finanzen/Import] opening the sheet created an import row')
+    if (window.__backend.tables.finance_accounts.length)
+      errors.push('[Finanzen/Import] opening the sheet created an account')
+
+    // And it can be abandoned.
+    if (!click(window, (el) => /schlie/i.test(el.getAttribute?.('aria-label') || '')))
+      errors.push('[Finanzen/Import] the sheet has no way out')
+    await wait(320)
+    if (nb(txt(window)).includes('PDF auswählen'))
+      errors.push('[Finanzen/Import] the sheet stayed open after closing it')
+  }
+
+  // 16b) An account that already holds bookings: orientation, not analysis.
+  {
+    const window = makeDom('#/finanzen', { finance: financeSeed })
+    mount(window, code, 'Finanzen/Bestand')
+    await wait(400)
+    window.__restoreConsole?.()
+    const text = nb(txt(window))
+    console.log(`=== Finanzen — mit Umsätzen ===\n  ${text.slice(0, 220)}`)
+
+    if (!text.includes('DKB Girokonto'))
+      errors.push('[Finanzen] the account is not named')
+    if (!text.includes('2 importierte Umsätze'))
+      errors.push(`[Finanzen] the booking count is missing: ${text.slice(0, 160)}`)
+    if (!text.includes('zuletzt 14.09.2026'))
+      errors.push('[Finanzen] the date of the newest booking is missing')
+    if (!text.includes('DKB-Umsätze importieren'))
+      errors.push('[Finanzen] the import stops being reachable once there is data')
+    if (text.includes('Noch keine Umsätze'))
+      errors.push('[Finanzen] the empty state is shown although there are bookings')
+    // Still not a transaction list — that is the next module, not this one.
+    if (text.includes('REWE.Mohamed'))
+      errors.push('[Finanzen] the screen lists individual bookings')
+  }
+
+  // 16c) The database is unreachable. "Nothing here" and "we could not look"
+  //      are different sentences, as everywhere else in the app.
+  {
+    const window = makeDom('#/finanzen', { finance: {}, failTable: 'finance_transactions' })
+    mount(window, code, 'Finanzen/Fehler', { expectErrors: true })
+    await wait(400)
+    window.__restoreConsole?.()
+    const text = nb(txt(window))
+    if (!text.includes('Keine Daten geladen'))
+      errors.push('[Finanzen] a failed load is reported as an empty account')
+  }
+
+  // 16d) Reachable the way every other module is: the sidebar and /mehr.
+  {
+    const window = makeDom('#/mehr')
+    mount(window, code, 'Finanzen/Mehr')
+    await wait(300)
+    window.__restoreConsole?.()
+    if (!nb(txt(window)).includes('Finanzen'))
+      errors.push('[Finanzen] the module has no card on /mehr')
+
+    const home = makeDom('#/')
+    mount(home, code, 'Finanzen/Sidebar')
+    await wait(300)
+    click(home, (el) => el.getAttribute?.('aria-label') === 'Menü öffnen')
+    await wait(320)
+    home.__restoreConsole?.()
+    if (!nb(txt(home)).includes('Finanzen'))
+      errors.push('[Finanzen] the module is missing from the sidebar')
   }
 
   console.log('\n--- result ---')

@@ -87,6 +87,29 @@ export const financeRepository = {
     return row
   },
 
+  /**
+   * The import row for a file that was already read once, or null.
+   *
+   * 0008 put a unique index on (user_id, source_hash) because "the same file
+   * twice is the most likely import accident there is". Looking it up before
+   * inserting turns that index from an error the user has to decipher into a
+   * sentence the import flow can say.
+   */
+  async findImportBySourceHash(userId, sourceHash) {
+    if (!sourceHash) return null
+    // A plain select with a limit rather than `.maybeSingle()`: the unique index
+    // already guarantees at most one row, and "no row" is the ordinary answer
+    // here — not something to express as a 406 that every caller has to decode.
+    const { data, error } = await requireSupabase()
+      .from('finance_imports')
+      .select('*')
+      .eq('user_id', requireUser(userId))
+      .eq('source_hash', sourceHash)
+      .limit(1)
+    if (error) throw error
+    return data?.[0] ?? null
+  },
+
   async createImport(userId, data) {
     const { data: row, error } = await requireSupabase()
       .from('finance_imports')
