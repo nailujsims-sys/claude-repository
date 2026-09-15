@@ -17,7 +17,7 @@
 import { build } from 'esbuild'
 import { writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabaseStub.mjs'
+import { SUPABASE_URL, SUPABASE_ANON_KEY, installRealtimeStub } from './supabaseStub.mjs'
 
 const TEST = `
 import { parseDkbUmsatzexport } from './src/lib/finance/dkb/parse.js'
@@ -266,6 +266,11 @@ const res = await build({
   write: false,
   logLevel: 'silent',
 })
+
+// See installRealtimeStub: this suite imports financeRepository, which builds a
+// Supabase client at module load. Without the stub it dies on the runner, which
+// pins Node 20, before its first assertion.
+installRealtimeStub()
 
 const out = `${process.env.SCRATCH || '/tmp'}/financeImportLogic.bundled.mjs`
 writeFileSync(out, res.outputFiles[0].text)

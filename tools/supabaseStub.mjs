@@ -34,6 +34,27 @@ export const FINANCE_TABLES = [
   'finance_transaction_overrides',
 ]
 
+// Creating a Supabase client also builds its realtime client, and that one
+// insists on a WebSocket implementation. Browsers have one, Node 22 has one,
+// Node 20 — which CI pins — does not. A suite that imports a repository at the
+// top level therefore passes on a developer machine and dies on the runner
+// before its first assertion.
+//
+// It lives here rather than in each suite because that is the mistake it
+// prevents: dataLogic learned it once, financeImportLogic repeated it, and a
+// copy in every runner is a copy the next one forgets. Any suite that reaches
+// for this stub is testing against Supabase and needs it.
+//
+// The app opens no realtime connection, so a stub that throws if anything ever
+// does is both enough and honest.
+export function installRealtimeStub() {
+  globalThis.WebSocket ??= class RealtimeIsNotUnderTest {
+    constructor() {
+      throw new Error('Diese Suite darf keine Realtime-Verbindung öffnen.')
+    }
+  }
+}
+
 export function taskRow(data = {}) {
   return {
     id: data.id ?? randomUUID(),
