@@ -573,19 +573,32 @@ begin
   if caught is null then raise exception 'FAIL: a plan named another user''s booking'; end if;
 
   -- ══ 16. OBSERVATIONS ARE APPEND-ONLY ═════════════════════════════════════
-  -- Two layers, and both are checked. As the signed-in user the UPDATE has no
-  -- policy to pass at all, so it changes nothing. As the owner of the table —
-  -- which is what a migration, a job or a hand-written statement runs as — RLS
-  -- is out of the way and the trigger is the only thing left; it has to refuse.
+  -- Two layers, and both are checked. As the signed-in user the UPDATE cannot
+  -- take effect; as the owner of the table — which is what a migration, a job or
+  -- a hand-written statement runs as — RLS is out of the way and the trigger is
+  -- the only thing left, so it has to refuse.
+  --
+  -- HOW the first layer refuses differs by environment, and the assertion has to
+  -- survive both. Supabase grants `authenticated` exactly the DML this migration
+  -- asks for, so the UPDATE is rejected outright for want of the privilege; the
+  -- throwaway cluster of tools/rlsTest.mjs hands out broader default privileges,
+  -- so the statement is allowed and then filtered to zero rows by the missing
+  -- policy. Both are the same statement — "a client cannot rewrite this" — so
+  -- what is asserted is the outcome, not the error code. Running this file
+  -- against production found the difference.
   select count(*) into n from public.finance_transaction_observations where user_id = user_a;
   if n <> 1 then raise exception 'FAIL: no observation to test append-only with (% found)', n; end if;
 
-  update public.finance_transaction_observations
-  set observed_description = 'umgeschrieben'
-  where user_id = user_a;
+  begin
+    update public.finance_transaction_observations
+    set observed_description = 'umgeschrieben'
+    where user_id = user_a;
+  exception when insufficient_privilege then
+    null;
+  end;
   select count(*) into n from public.finance_transaction_observations
    where user_id = user_a and observed_description = 'umgeschrieben';
-  if n <> 0 then raise exception 'FAIL: an observation could be rewritten through the policies'; end if;
+  if n <> 0 then raise exception 'FAIL: an observation could be rewritten as the signed-in user'; end if;
 
   execute 'reset role';
   caught := null;
