@@ -108,7 +108,10 @@ let markup = ''
 const page = `<!doctype html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>${css}</style>
-<style>html,body{margin:0}</style>
+<!-- The viewport, pinned. Chromium's --window-size does not reliably reach a
+     --dump-dom run, and a layout measured at whatever width the browser felt
+     like is not a measurement of the phone. -->
+<style>html,body{margin:0;width:${WIDTH}px}</style>
 </head><body class="bg-base">
 <div class="app-frame" id="frame"><div class="px-5 py-5 pb-10" id="sheet">${markup}</div></div>
 <script>
@@ -118,9 +121,19 @@ const frame = document.getElementById('frame')
 const sheet = document.getElementById('sheet')
 const frameRect = frame.getBoundingClientRect()
 
-add('the page does not scroll sideways at ' + window.innerWidth + 'px',
-    document.documentElement.scrollWidth <= window.innerWidth,
-    document.documentElement.scrollWidth + ' > ' + window.innerWidth)
+// Measured on the body and the frame, never on documentElement: for the root
+// element the DOM reports the VIEWPORT, not the element, so a page pinned to
+// 390 px would look 485 px wide and the assertion would be about the browser
+// window instead of the phone.
+const VIEWPORT = ${WIDTH}
+add('the page does not scroll sideways at ' + VIEWPORT + 'px',
+    document.body.scrollWidth <= VIEWPORT,
+    document.body.scrollWidth + ' > ' + VIEWPORT)
+add('…and the frame does not either',
+    frame.scrollWidth <= frame.clientWidth + 0.5,
+    frame.scrollWidth + ' > ' + frame.clientWidth)
+add('…and the frame really is that wide', Math.round(frameRect.width) === VIEWPORT,
+    Math.round(frameRect.width) + 'px')
 add('the sheet body does not scroll sideways either',
     sheet.scrollWidth <= sheet.clientWidth + 1,
     sheet.scrollWidth + ' > ' + sheet.clientWidth)

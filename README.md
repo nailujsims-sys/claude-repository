@@ -139,8 +139,8 @@ npm run test:logic   # pure-logic tests: drag/resize math, search, timezone-safe
                      # Google
 npm run test:rls     # the RLS policies and the import end-to-end against a
                      # throwaway Postgres
-npm run test:layout  # the import preview in a real Chromium at 390 px, with
-                     # hostile content (needs a build first)
+npm run test:layout  # the import preview and the Zuordnung screen in a real
+                     # Chromium at 390 px, with hostile content (build first)
 ```
 
 ---
@@ -579,8 +579,8 @@ in the headline.
 Categorisation deliberately does not happen at import: the apply function
 writes a booking's raw half and knows nothing of `merchant_id`, so assigning a
 merchant would need either a schema change or a second write path past the
-function's invariants. Bookings arrive unresolved and stay that way until the
-learning flow exists.
+function's invariants. Bookings arrive unresolved; the Zuordnung flow below is
+what decides what they mean.
 
 `tools/financeImportFlowLogic.mjs` covers the flow with 110 assertions — the
 real parser, the real matcher, the real payload builder and the repository's
@@ -598,9 +598,92 @@ Three suites close what a jsdom test structurally cannot:
 - `tools/financeImportE2E.mjs` (37) runs the flow against a real Postgres with
   the real apply function, **reloading between imports** exactly as the app
   does, so nothing can quietly survive in memory from one import to the next.
-- `tools/financeImportLayout.mjs` (13) renders the real preview in the
+- `tools/financeImportLayout.mjs` (15) renders the real preview in the
   installed Chromium at 390 px with five hundred hostile bookings and measures
   it — jsdom has no layout and cannot tell whether anything fits.
+
+### Zuordnung — teaching the app a merchant
+
+The screen where an unrecognised booking becomes a rule. The user marks the
+words that identify the merchant, names them, picks a category, and from then on
+the same text is recognised by itself.
+
+**It contains no matching logic at all.** Every question it asks was already
+answered by the engine 0008 ships: `matchMerchant` decides who a booking belongs
+to, `resolveCategory` what kind of spending it was, `backtestPattern` what the
+new pattern would do to the bookings that already exist, and
+`finance_learn_merchant_rule` writes merchant, pattern, rule and every affected
+booking in one transaction. What is new is a queue and a vocabulary:
+
+- `src/lib/finance/classificationQueue.js` — which bookings still need a human.
+  Asked of the ENGINE, never of the `merchant_id` column: a pattern the user
+  deactivates puts its bookings back in front of them, and a booking imported
+  before the rule existed disappears from the queue the moment the rule exists,
+  without anybody touching the row. That is what keeps the importer and the
+  classification two responsibilities instead of one.
+- `src/lib/finance/classificationFlow.js` — the words, and the one thing the
+  engine has no opinion about: how a raw description is cut into words a finger
+  can point at. A selection is a RANGE, never a set, because `exact_phrase`
+  means tokens next to each other in order.
+
+**Three kinds of decision, and the screen asks for the right one.** They are
+not variations of the same question, and treating them as one was the flow's
+first real bug:
+
+- `unresolved` — nothing recognises this text. Teach a merchant, and every other
+  booking the pattern explains follows.
+- `conflict` — two merchants' patterns already claim this text. A third, more
+  specific pattern removes **neither** claim: `matchMerchant` has no specificity
+  ranking, on purpose, so the booking would stay in conflict forever. The screen
+  therefore does not offer one. It names both claimants and lets the user decide
+  this one booking.
+- `review_required` — the merchant IS recognised, and the category was
+  deliberately not decided. Two different reasons end here and the screen says
+  which one it is: `merchant_always_review` is a standing instruction about the
+  merchant („PayPal wird jedes Mal geprüft"), while `merchant_conditional_default`
+  is about this booking alone — no amount rule covered it, so instead of falling
+  back to the default silently, the category is confirmed once. Calling the
+  second one „jedes Mal" would describe a merchant setting nobody made. In both
+  cases the category the rule WOULD have produced (`suggestedCategoryId`) starts
+  preselected: it is the rule's own answer, offered rather than applied.
+
+The last two are written to `finance_transaction_overrides`, which beats every
+rule and changes none of them. A merchant like PayPal gets its
+`review_mode = 'always_review'` through the one setting the flow offers, and
+only while a NEW merchant is being created — an existing merchant is never
+changed from this screen.
+
+Three rules the screen holds to, and the reasons:
+
+- **Hits and changes are different numbers**, and the preview counts changes
+  the way `finance_learn_merchant_rule` counts them, condition for condition.
+  The booking in hand is written whenever it is not locked and has no override —
+  an existing `merchant_id` does not stop that — while a booking merely swept up
+  alongside it is additionally protected by `merchant_id is null`. Getting that
+  asymmetry wrong promised one number and wrote another, exactly in the
+  supported case where a deactivated pattern puts a still-stamped booking back
+  in the queue.
+- **No stopword list, ever.** „MARKT" is not forbidden and not removed from
+  matching. What the user gets is the measured breadth of the pattern on their
+  own bookings — „trifft 20 von 30 Umsätzen" — and then they decide. The one
+  hard stop is a pattern that already belongs to a different merchant, because
+  the database refuses it too.
+- **A damaged word cannot become a rule.** The tokenizer splits a word at a
+  replacement character, so what would be saved is a fragment that keeps
+  matching forever. Those words are shown and struck through rather than hidden;
+  the intact words of the same booking stay usable.
+
+`tools/financeClassifyLogic.mjs` covers it with 166 assertions against the real
+engine; `tools/financeClassifyE2E.mjs` (107) runs the whole gesture against a
+real Postgres and the real `finance_learn_merchant_rule`, **reloading after
+every save** — including the assertion the screen exists for: the number the
+preview promised and the `applied_count` the database returns are the same
+number. `tools/financeClassifyLayout.mjs` (19) measures the screen in Chromium
+at 390 px with a booking whose longest word is 78 characters.
+
+The flow needed **no migration**: 0008 already holds the merchants, the
+patterns, the rules, the overrides and the atomic learning function, and 0009
+added nothing that stands in its way.
 
 `tools/financeImportLogic.mjs` covers the client half (44 assertions);
 `supabase/tests/finance_import.sql` covers the rest against a real Postgres

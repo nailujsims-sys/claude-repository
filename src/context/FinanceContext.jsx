@@ -14,10 +14,14 @@ const FinanceContext = createContext(null)
 // accepted the file, the matcher produced the plan, and the database applies it
 // atomically. There is no branch in here that could make a different booking.
 //
-// TWO WRITES, AND ONLY TWO: creating the account (once, on the first import) and
-// calling the apply function. Nothing in this module writes a booking directly —
-// `finance_apply_reconciliation_plan` is the single write path, so there is no
-// second route past its invariants.
+// FOUR WRITES, AND ONLY FOUR: creating the account (once, on the first import),
+// applying an import plan, learning one classification, and recording one
+// decision a user made about a single booking. The middle two are database
+// functions that do their whole job in one transaction; the last is a row in
+// the override table, which is where 0008 puts a decision that beats every
+// rule. Nothing in this module writes a booking directly — there is no second
+// route past those functions' invariants, and all of them reload from the
+// database afterwards rather than patching state from what was sent.
 export function FinanceProvider({ children }) {
   const { user } = useAuth()
   const repo = financeRepository
@@ -31,6 +35,14 @@ export function FinanceProvider({ children }) {
   // read back with the bookings.
   const [observations, setObservations] = useState([])
   const [overrides, setOverrides] = useState([])
+  // The rule engine's own rows. They are what decides which bookings still need
+  // a human — not the `merchant_id` column on the booking — so a screen that
+  // asks that question needs all four of them, and needs them again after every
+  // write (see learnRule).
+  const [categories, setCategories] = useState([])
+  const [merchants, setMerchants] = useState([])
+  const [patterns, setPatterns] = useState([])
+  const [categoryRules, setCategoryRules] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -39,16 +51,27 @@ export function FinanceProvider({ children }) {
       if (!user) return
       if (!silent) setLoading(true)
       try {
-        const [accountRows, transactionRows, observationRows, overrideRows] = await Promise.all([
+        const [
+          accountRows, transactionRows, observationRows, overrideRows,
+          categoryRows, merchantRows, patternRows, ruleRows,
+        ] = await Promise.all([
           repo.listAccounts(user.id),
           repo.listTransactions(user.id),
           repo.listObservations(user.id),
           repo.listOverrides(user.id),
+          repo.listCategories(user.id),
+          repo.listMerchants(user.id),
+          repo.listPatterns(user.id),
+          repo.listCategoryRules(user.id),
         ])
         setAccounts(accountRows)
         setTransactions(transactionRows)
         setObservations(observationRows)
         setOverrides(overrideRows)
+        setCategories(categoryRows)
+        setMerchants(merchantRows)
+        setPatterns(patternRows)
+        setCategoryRules(ruleRows)
         setError(null)
       } catch (err) {
         console.error(failureLog('laden', err))
@@ -126,12 +149,53 @@ export function FinanceProvider({ children }) {
     [user, repo, load]
   )
 
+  /**
+   * One classification, learned.
+   *
+   * Merchant, pattern, rule, this booking and every booking the pattern now
+   * explains — one database function, one transaction, or none of it. The
+   * request comes from buildLearnRequest, which is pure and checked; this only
+   * puts it on the wire and then reloads, because what the rule means for the
+   * queue is a question only the fresh rows can answer.
+   */
+  const learnRule = useCallback(
+    async (request) => {
+      const result = await repo.learnMerchantRule(user.id, request)
+      await load({ silent: true })
+      return result
+    },
+    [user, repo, load]
+  )
+
+  /**
+   * One booking, decided by hand.
+   *
+   * The narrow counterpart to learnRule: not every open booking is a merchant
+   * waiting to be taught. A booking two merchants' patterns both claim, and a
+   * booking of a merchant the user asked to see every time, are decisions about
+   * THIS booking — and the override table is what 0008 built for exactly that.
+   * The global patterns and rules are not touched, which is the whole point.
+   */
+  const saveOverride = useCallback(
+    async (transactionId, decision) => {
+      const row = await repo.saveOverride(user.id, transactionId, decision)
+      await load({ silent: true })
+      return row
+    },
+    [user, repo, load]
+  )
+
   const value = useMemo(
     () => ({
       accounts,
       account,
       transactions,
       observations,
+      categories,
+      merchants,
+      patterns,
+      categoryRules,
+      overrides,
       overrideTransactionIds: overrides.map((o) => o.transaction_id),
       loading,
       error,
@@ -140,8 +204,12 @@ export function FinanceProvider({ children }) {
       findImport,
       openImport,
       applyPlan,
+      learnRule,
+      saveOverride,
     }),
-    [accounts, account, transactions, observations, overrides, loading, error, load, createAccount, findImport, openImport, applyPlan]
+    [accounts, account, transactions, observations, categories, merchants, patterns, categoryRules,
+     overrides, loading, error, load, createAccount, findImport, openImport, applyPlan, learnRule,
+     saveOverride]
   )
 
   return <FinanceContext.Provider value={value}>{children}</FinanceContext.Provider>

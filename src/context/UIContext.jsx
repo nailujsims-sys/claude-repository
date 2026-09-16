@@ -29,6 +29,8 @@ export function UIProvider({ children }) {
   // is reachable from the Finanzen screen today and from the Plus sheet the day
   // it earns a slot there, without the sheet having to move.
   const [financeImport, setFinanceImport] = useState(null)
+  // financeClassify: null | true
+  const [financeClassify, setFinanceClassify] = useState(null)
 
   const value = useMemo(
     () => ({
@@ -59,8 +61,11 @@ export function UIProvider({ children }) {
       financeImport,
       openFinanceImport: () => setFinanceImport(true),
       closeFinanceImport: () => setFinanceImport(null),
+      financeClassify,
+      openFinanceClassify: () => setFinanceClassify(true),
+      closeFinanceClassify: () => setFinanceClassify(null),
     }),
-    [sidebarOpen, actionSheetOpen, taskForm, eventForm, listForm, expenseForm, financeImport]
+    [sidebarOpen, actionSheetOpen, taskForm, eventForm, listForm, expenseForm, financeImport, financeClassify]
   )
 
   return <UIContext.Provider value={value}>{children}</UIContext.Provider>
