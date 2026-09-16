@@ -3027,8 +3027,16 @@ async function run() {
   // and the real payload builder.
 
   const FIN_ACCOUNT = '11111111-2222-4333-8444-000000000002'
+  const FIN_CATEGORIES = [
+    ['lebensmittel', 'Lebensmittel', 10], ['restaurant', 'Restaurant', 20],
+    ['klamotten', 'Klamotten', 30], ['drogerie', 'Drogerie', 40], ['sonstige', 'Sonstige', 50],
+  ].map(([slug, label, sort_order], i) => ({
+    id: `11111111-2222-4333-8444-00000000090${i}`, user_id: TEST_USER_ID,
+    slug, label, sort_order, is_system: true,
+  }))
   const financeSeed = {
     finance_accounts: [{ id: FIN_ACCOUNT, user_id: TEST_USER_ID, name: 'DKB Girokonto', currency: 'EUR' }],
+    finance_categories: FIN_CATEGORIES,
     finance_transactions: [
       { id: '11111111-2222-4333-8444-000000000101', user_id: TEST_USER_ID, account_id: FIN_ACCOUNT,
         booking_date: '2026-09-14', amount_minor: -6065, currency: 'EUR',
@@ -3115,6 +3123,79 @@ async function run() {
     // Still not a transaction list — that is the next module, not this one.
     if (text.includes('REWE.Mohamed'))
       errors.push('[Finanzen] the screen lists individual bookings')
+
+    // The second thing the screen owes: how much is unsorted, in one tap.
+    if (!text.includes('Zuordnung'))
+      errors.push('[Finanzen] the Zuordnung card is missing')
+    if (!text.includes('2 Umsätze warten'))
+      errors.push(`[Finanzen] the open count is missing: ${text.slice(0, 200)}`)
+    if (!text.includes('Jetzt zuordnen'))
+      errors.push('[Finanzen] the Zuordnung call to action is missing')
+  }
+
+  // 16b2) The Zuordnung sheet: the gesture, and what it is allowed to touch.
+  {
+    const window = makeDom('#/finanzen', { finance: financeSeed })
+    mount(window, code, 'Finanzen/Zuordnung')
+    await wait(400)
+    window.__restoreConsole?.()
+    const backend = window.__backend
+
+    const writesBefore = backend.calls.filter((c) => c.method !== 'GET').length
+    if (!click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen'))
+      errors.push('[Finanzen/Zuordnung] the call to action was not clickable')
+    await wait(320)
+
+    const sheet = nb(txt(window))
+    console.log(`=== Finanzen — Zuordnung ===\n  ${sheet.slice(0, 240)}`)
+    if (!sheet.includes('Zuordnung'))
+      errors.push('[Finanzen/Zuordnung] the sheet did not open')
+    if (!sheet.includes('Wörter markieren'))
+      errors.push('[Finanzen/Zuordnung] the word picker is missing')
+    // The booking itself: what it cost and when.
+    if (!sheet.includes('60,65 €'))
+      errors.push(`[Finanzen/Zuordnung] the amount is missing: ${sheet.slice(0, 200)}`)
+    if (!sheet.includes('14.09.2026'))
+      errors.push('[Finanzen/Zuordnung] the booking date is missing')
+    // The words of the ORIGINAL text, as printed — not a normalised version.
+    if (!sheet.includes('Vertrieb'))
+      errors.push('[Finanzen/Zuordnung] the booking text is not offered as words')
+
+    // The category list comes from the database, never from a copy in the UI:
+    // it only appears once something is marked, so nothing is shown yet.
+    if (sheet.includes('Lebensmittel'))
+      errors.push('[Finanzen/Zuordnung] categories are offered before anything is marked')
+
+    const word = [...window.document.querySelectorAll('button')].find(
+      (b) => b.textContent.trim() === 'Vertrieb')
+    if (!word) errors.push('[Finanzen/Zuordnung] the words are not buttons')
+    else {
+      if (word.getAttribute('aria-pressed') !== 'false')
+        errors.push('[Finanzen/Zuordnung] a word does not announce its selection state')
+      word.click()
+      await wait(80)
+      if (word.getAttribute('aria-pressed') !== 'true')
+        errors.push('[Finanzen/Zuordnung] marking a word does not select it')
+      const marked = nb(txt(window))
+      if (!marked.includes('Händler'))
+        errors.push('[Finanzen/Zuordnung] the merchant section does not appear after marking')
+      if (!marked.includes('Lebensmittel') || !marked.includes('Drogerie'))
+        errors.push('[Finanzen/Zuordnung] the categories from the database are not offered')
+    }
+
+    // Opening the sheet and marking a word writes nothing. The one write of
+    // this flow is the learn function, and it happens on the button.
+    const writesAfter = backend.calls.filter((c) => c.method !== 'GET').length
+    if (writesAfter !== writesBefore)
+      errors.push('[Finanzen/Zuordnung] the sheet wrote something before anything was confirmed')
+    if (backend.rpcCalls.length !== 0)
+      errors.push('[Finanzen/Zuordnung] a rule was learned without the user confirming it')
+
+    if (!click(window, (el) => el.getAttribute?.('aria-label') === 'Schließen'))
+      errors.push('[Finanzen/Zuordnung] the sheet has no way out')
+    await wait(320)
+    if (nb(txt(window)).includes('Wörter markieren'))
+      errors.push('[Finanzen/Zuordnung] the sheet stayed open after closing it')
   }
 
   // 16c) The database is unreachable. "Nothing here" and "we could not look"

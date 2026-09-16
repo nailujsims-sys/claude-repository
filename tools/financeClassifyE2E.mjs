@@ -1,0 +1,484 @@
+// The classification, end to end, against a real database.
+//
+// The logic suite proves what the sheet computes. This proves what SURVIVES:
+// the rule is written by the real finance_learn_merchant_rule inside a real
+// transaction, and every assertion afterwards reads the account back out of SQL
+// — no JavaScript value from before the save is used to answer a question about
+// after it. That is what „Save + Reload → weiterhin korrekt" means.
+//
+// It is also the only place the promise the sheet makes can be checked against
+// what actually happened: the number in „5 Umsätze werden REWE · Lebensmittel"
+// and the `applied_count` the database returns have to be the same number.
+//
+// Skips (exit 0) when no Postgres is on the machine, like tools/rlsTest.mjs.
+import { build } from 'esbuild'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { chownSync, mkdtempSync, readdirSync, rmSync, existsSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+const BIN_CANDIDATES = ['/usr/lib/postgresql/16/bin', '/usr/lib/postgresql/15/bin', '/usr/lib/postgresql/14/bin', '']
+const findBin = () => {
+  for (const dir of BIN_CANDIDATES) {
+    const probe = spawnSync(dir ? join(dir, 'initdb') : 'initdb', ['--version'], { encoding: 'utf8' })
+    if (probe.status === 0) return dir
+  }
+  return null
+}
+const bin = findBin()
+if (!bin && !process.env.RLS_TEST_REQUIRED) {
+  console.log('finance classify e2e: kein lokales Postgres gefunden — übersprungen.')
+  process.exit(0)
+}
+
+const asRoot = typeof process.getuid === 'function' && process.getuid() === 0
+const sudoUser = asRoot
+  ? (() => {
+      for (const name of ['postgres', 'ubuntu', 'runner', 'node']) {
+        const probe = spawnSync('id', ['-u', name], { encoding: 'utf8' })
+        if (probe.status === 0) return { name, uid: Number(probe.stdout.trim()) }
+      }
+      return null
+    })()
+  : null
+if (asRoot && !sudoUser) {
+  console.log('finance classify e2e: läuft als root ohne unprivilegiertes Konto — übersprungen.')
+  process.exit(0)
+}
+
+const exe = (n) => (bin ? join(bin, n) : n)
+const run = (cmd, args, opts = {}) =>
+  execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts })
+const pg = (cmd, args, opts = {}) =>
+  sudoUser
+    ? run('setpriv', ['--reuid', String(sudoUser.uid), '--regid', String(sudoUser.uid), '--clear-groups', cmd, ...args], opts)
+    : run(cmd, args, opts)
+
+// ── the finance modules, bundled once ───────────────────────────────────────
+const bundled = await build({
+  stdin: {
+    contents: `
+      export { buildClassificationQueue } from './src/lib/finance/classificationQueue.js'
+      export { backtestNumbers, confirmationLines, descriptionSegments, patternLabelOf,
+               patternTypeFor, rangeTokens } from './src/lib/finance/classificationFlow.js'
+      export { buildLearnRequest } from './src/lib/finance/learning.js'
+      export { tokenize } from './src/lib/finance/normalize.js'
+    `,
+    resolveDir: process.cwd(),
+    sourcefile: 'classifyE2E.mjs',
+    loader: 'js',
+  },
+  bundle: true,
+  format: 'esm',
+  platform: 'node',
+  external: ['node:*', 'pdfjs-dist', 'pdfjs-dist/build/pdf.worker.min.mjs?url'],
+  define: { 'import.meta.env': JSON.stringify({ MODE: 'test', DEV: false, PROD: true }) },
+  write: false,
+  logLevel: 'silent',
+})
+const modulePath = `${process.env.SCRATCH || '/tmp'}/financeClassifyE2E.bundled.mjs`
+writeFileSync(modulePath, bundled.outputFiles[0].text)
+const {
+  buildClassificationQueue, backtestNumbers, confirmationLines, descriptionSegments,
+  patternLabelOf, patternTypeFor, rangeTokens, buildLearnRequest, tokenize,
+} = await import(pathToFileURL(modulePath).href)
+
+let pass = 0
+let fail = 0
+const ok = (name, cond) => {
+  if (cond) pass++
+  else {
+    fail++
+    console.log('  ✗ ' + name)
+  }
+}
+
+const dir = mkdtempSync(join(tmpdir(), 'mw-cls-'))
+const data = join(dir, 'data')
+let started = false
+const sqlFile = join(dir, 'q.sql')
+
+try {
+  if (sudoUser) chownSync(dir, sudoUser.uid, sudoUser.uid)
+  pg(exe('initdb'), ['-D', data, '-U', 'postgres', '--auth=trust', '-E', 'UTF8'])
+  pg(exe('pg_ctl'), ['-D', data, '-o', `-k ${dir} -h '' -c fsync=off`, '-w', '-l', join(dir, 'log'), 'start'])
+  started = true
+
+  const psql = (args) =>
+    pg(exe('psql'), ['-h', dir, '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', ...args], {
+      cwd: process.cwd(),
+    })
+
+  psql(['-f', 'tools/pgtest/supabase-stub.sql'])
+  for (const file of readdirSync('supabase/migrations').filter((f) => f.endsWith('.sql')).sort()) {
+    psql(['-f', join('supabase/migrations', file)])
+  }
+
+  const asUser = (userId, sql) => {
+    const script = `set role authenticated;
+select set_config('request.jwt.claims', json_build_object('sub', '${userId}', 'role', 'authenticated')::text, false);
+${sql}`
+    writeFileSync(sqlFile, script)
+    if (sudoUser) chownSync(sqlFile, sudoUser.uid, sudoUser.uid)
+    return psql(['-t', '-A', '-f', sqlFile])
+  }
+  const jsonAsUser = (userId, sql) => {
+    const writes = /^\s*(insert|update|delete)\b/i.test(sql)
+    const wrapped = writes
+      ? `with t as (${sql}) select coalesce(jsonb_agg(t), '[]'::jsonb)::text from t;`
+      : `select coalesce(jsonb_agg(t), '[]'::jsonb)::text from (${sql}) t;`
+    const out = asUser(userId, wrapped)
+    const line = out.trim().split('\n').filter(Boolean).pop()
+    try {
+      return JSON.parse(line)
+    } catch {
+      throw new Error(`psql gab nichts Lesbares zurueck:\n${out}`)
+    }
+  }
+
+  const userId = '11111111-2222-4333-8444-666666666666'
+  psql(['-c', `insert into auth.users (id, email) values ('${userId}', 'classify@mindwhiteboard.test')`])
+  const accountId = jsonAsUser(
+    userId,
+    `insert into public.finance_accounts (user_id, name, provider, currency)
+     values ('${userId}', 'DKB Girokonto', 'DKB', 'EUR') returning id`
+  )[0].id
+
+  const lit = (value) => `$json$${JSON.stringify(value)}$json$`
+
+  // Bookings are inserted the way an import writes them: the text and the
+  // tokens together, tokenised by the very module the app uses.
+  let day = 0
+  const insertBooking = (raw, { lock = false } = {}) => {
+    day += 1
+    return jsonAsUser(
+      userId,
+      `insert into public.finance_transactions
+         (user_id, account_id, booking_date, amount_minor, currency, raw_description,
+          normalized_tokens, manual_lock)
+       values ('${userId}', '${accountId}', '2026-09-${String((day % 28) + 1).padStart(2, '0')}',
+               -1234, 'EUR', ${lit(raw)}::jsonb #>> '{}',
+               (select array_agg(x) from jsonb_array_elements_text(${lit(tokenize(raw))}::jsonb) as t(x)),
+               ${lock})
+       returning id`
+    )[0].id
+  }
+
+  // ── EXACTLY what FinanceContext loads, and nothing else ──────────────────
+  // Every assertion after a save goes through this. If the queue needs
+  // something these five reads do not return, it shows up here and nowhere
+  // else.
+  const reload = () => ({
+    transactions: jsonAsUser(
+      userId,
+      `select id, account_id, booking_date, amount_minor, currency, raw_description,
+              normalized_tokens, merchant_id, category_id, manual_lock, include_in_analytics
+       from public.finance_transactions where user_id = '${userId}'
+       order by booking_date desc, created_at desc`
+    ),
+    merchants: jsonAsUser(userId,
+      `select id, canonical_name, review_mode from public.finance_merchants
+       where user_id = '${userId}' order by canonical_name`),
+    patterns: jsonAsUser(userId,
+      `select id, merchant_id, pattern_type, tokens, active from public.finance_merchant_patterns
+       where user_id = '${userId}' and active`),
+    categoryRules: jsonAsUser(userId,
+      `select id, merchant_id, category_id, min_amount_minor, max_amount_minor,
+              min_inclusive, max_inclusive, currency, active
+       from public.finance_category_rules where user_id = '${userId}' and active`),
+    categories: jsonAsUser(userId,
+      `select id, slug, label, sort_order from public.finance_categories
+       where user_id = '${userId}' order by sort_order`),
+    overrides: jsonAsUser(userId,
+      `select transaction_id, merchant_id, category_id from public.finance_transaction_overrides
+       where user_id = '${userId}'`),
+  })
+
+  const learn = (request) => {
+    const args = [
+      `'${request.p_transaction_id}'`,
+      `${lit(request.p_category_slug)}::jsonb #>> '{}'`,
+      `${lit(request.p_pattern_type)}::jsonb #>> '{}'`,
+      `(select array_agg(x) from jsonb_array_elements_text(${lit(request.p_tokens)}::jsonb) as t(x))`,
+      request.p_merchant_id ? `'${request.p_merchant_id}'` : 'null',
+      request.p_merchant_name ? `${lit(request.p_merchant_name)}::jsonb #>> '{}'` : 'null',
+      request.p_review_mode ? `'${request.p_review_mode}'` : 'null',
+      request.p_min_amount_minor ?? 'null',
+      request.p_min_inclusive,
+      request.p_max_amount_minor ?? 'null',
+      request.p_max_inclusive,
+      request.p_rule_currency ? `'${request.p_rule_currency}'` : 'null',
+      `(select coalesce(array_agg(x::uuid), '{}'::uuid[]) from jsonb_array_elements_text(${lit(request.p_apply_transaction_ids)}::jsonb) as t(x))`,
+    ]
+    return jsonAsUser(userId, `select public.finance_learn_merchant_rule(${args.join(', ')}) as r`)[0].r
+  }
+
+  // The gesture, exactly as the sheet performs it: mark a range of words in the
+  // booking in front of the user, then hand buildLearnRequest the state a
+  // reload just returned.
+  const gesture = (state, transactionId, range, { categorySlug, merchantId = null, merchantName = '' }) => {
+    const transaction = state.transactions.find((t) => t.id === transactionId)
+    const { segments } = descriptionSegments(transaction)
+    const tokens = rangeTokens(segments, range)
+    const built = buildLearnRequest({
+      transaction,
+      selection: tokens,
+      patternType: patternTypeFor(tokens),
+      categorySlug,
+      categories: state.categories,
+      merchantId,
+      merchantName,
+      transactions: state.transactions,
+      patterns: state.patterns,
+      overrides: state.overrides,
+    })
+    return { built, tokens, transaction }
+  }
+
+  // ══ 1. REWE: mark one word, and every open REWE booking follows ══════════
+  const rewe = [
+    insertBooking('REWE TROISDORF SAGT DANKE 8407'),
+    insertBooking('REWE.Mohamed.Boufo/Frankfurt'),
+    insertBooking('REWE SAGT DANKE 1122'),
+    insertBooking('REWE Markt GmbH Troisdorf'),
+    insertBooking('REWE CITY 4455'),
+  ]
+  insertBooking('ALDI SUED Esslingen')
+  insertBooking('Scalable Capital Verrechnungskonto')
+
+  const before = reload()
+  ok('a fresh account has the five seeded categories', before.categories.length === 5)
+  ok('nothing is classified yet', buildClassificationQueue({
+    transactions: before.transactions, patterns: before.patterns, merchants: before.merchants,
+    rules: before.categoryRules, overrides: before.overrides,
+  }).open.length === 7)
+
+  const g1 = gesture(before, rewe[0], { from: 0, to: 0 }, {
+    categorySlug: 'lebensmittel', merchantName: 'REWE',
+  })
+  ok('marking the first word yields REWE', g1.tokens.join(' ') === 'REWE')
+  ok('the gesture is valid against the stored rows', g1.built.valid === true)
+
+  const promised = backtestNumbers({ backtest: g1.built.backtest, transaction: g1.transaction })
+  const sentence = confirmationLines({
+    numbers: promised, patternLabel: patternLabelOf(g1.tokens),
+    merchantName: 'REWE', categoryName: 'Lebensmittel',
+  })
+  ok('the sheet promises four further bookings',
+     sentence[0] === '„REWE" erkennt 4 weitere offene Umsätze.')
+
+  const r1 = learn(g1.built.request)
+  ok('the merchant was created', r1.merchant_created === true)
+  ok('the pattern was created', r1.pattern_created === true)
+  ok('the rule was created', r1.rule_created === true)
+  ok('the booking in hand was assigned', r1.transaction_updated === true)
+  // THE assertion this file exists for: what the user was promised is what
+  // happened, measured by the database rather than by the preview.
+  ok('the database applied exactly what the preview promised',
+     r1.applied_count + 1 === promised.gesamt)
+  ok('…and did not touch more than it was asked for',
+     r1.applied_count === r1.requested_count)
+
+  // ── RELOAD. Every value above is now history. ──
+  const afterRewe = reload()
+  const q1 = buildClassificationQueue({
+    transactions: afterRewe.transactions, patterns: afterRewe.patterns,
+    merchants: afterRewe.merchants, rules: afterRewe.categoryRules, overrides: afterRewe.overrides,
+  })
+  ok('after a reload the rule is there', afterRewe.patterns.length === 1)
+  ok('…and no REWE booking is open any more',
+     !q1.open.some((e) => e.transaction.raw_description.toUpperCase().includes('REWE')))
+  ok('…every one of them resolved', q1.entries.filter(
+     (e) => e.transaction.raw_description.toUpperCase().includes('REWE')
+   ).length === 5)
+  const lebensmittel = afterRewe.categories.find((c) => c.slug === 'lebensmittel').id
+  ok('…to Lebensmittel', q1.entries.filter(
+     (e) => e.transaction.raw_description.toUpperCase().includes('REWE')
+   ).every((e) => e.categoryId === lebensmittel))
+  ok('the two other bookings are still open', q1.open.length === 2)
+
+  // A booking that arrives LATER is recognised without anybody classifying it.
+  const late = insertBooking('REWE TROISDORF SAGT DANKE 9999')
+  const afterLate = reload()
+  const q2 = buildClassificationQueue({
+    transactions: afterLate.transactions, patterns: afterLate.patterns,
+    merchants: afterLate.merchants, rules: afterLate.categoryRules, overrides: afterLate.overrides,
+  })
+  ok('a booking imported after the rule is recognised by the engine',
+     !q2.open.some((e) => e.transaction.id === late))
+  // …and that recognition does not depend on the column having been written.
+  const lateRow = afterLate.transactions.find((t) => t.id === late)
+  ok('…although the import wrote no merchant into its row', lateRow.merchant_id === null)
+
+  // ══ 2. An alias: a second pattern, never a second merchant ═══════════════
+  const aldiId = insertBooking('ALDI SUED SAGT DANKE / ESSLINGEN AM NECKAR')
+  {
+    const state = reload()
+    const first = gesture(state, state.transactions.find((t) => t.raw_description === 'ALDI SUED Esslingen').id,
+      { from: 0, to: 1 }, { categorySlug: 'lebensmittel', merchantName: 'ALDI Süd' })
+    ok('the plain spelling becomes a phrase', first.built.request.p_pattern_type === 'exact_phrase')
+    learn(first.built.request)
+
+    const withAldi = reload()
+    const aldi = withAldi.merchants.find((m) => m.canonical_name === 'ALDI Süd')
+    ok('ALDI Süd exists once', withAldi.merchants.filter((m) => m.canonical_name === 'ALDI Süd').length === 1)
+
+    const second = gesture(withAldi, aldiId, { from: 0, to: 0 }, {
+      categorySlug: 'lebensmittel', merchantId: aldi.id,
+    })
+    ok('a second spelling is taught to the merchant that exists',
+       second.built.request.p_merchant_id === aldi.id && second.built.request.p_merchant_name === null)
+    const r = learn(second.built.request)
+    ok('…as a new pattern', r.pattern_created === true)
+    ok('…without creating a merchant', r.merchant_created === false)
+
+    const after = reload()
+    ok('there is still exactly one ALDI Süd',
+       after.merchants.filter((m) => m.canonical_name === 'ALDI Süd').length === 1)
+    ok('…now with two patterns',
+       after.patterns.filter((p) => p.merchant_id === aldi.id).length === 2)
+    const q = buildClassificationQueue({
+      transactions: after.transactions, patterns: after.patterns, merchants: after.merchants,
+      rules: after.categoryRules, overrides: after.overrides,
+    })
+    ok('two patterns of one merchant are not a conflict',
+       after.transactions.filter((t) => t.raw_description.startsWith('ALDI')).every(
+         (t) => q.entries.find((e) => e.transaction.id === t.id).merchantId === aldi.id))
+  }
+
+  // ══ 3. The identical pattern under another merchant is refused ═══════════
+  {
+    const state = reload()
+    const tx = state.transactions.find((t) => t.raw_description === 'REWE CITY 4455')
+    const { segments } = descriptionSegments(tx)
+    const tokens = rangeTokens(segments, { from: 0, to: 0 })
+    const built = buildLearnRequest({
+      transaction: tx, selection: tokens, patternType: 'exact_token',
+      categorySlug: 'restaurant', categories: state.categories, merchantName: 'Ein anderer Laden',
+      transactions: state.transactions, patterns: state.patterns, overrides: state.overrides,
+    })
+    let refused = null
+    try { learn(built.request) } catch (err) { refused = String(err.stderr || err.message) }
+    ok('a pattern that belongs to another merchant is refused', refused !== null)
+    ok('…with a sentence, not a constraint name',
+       refused !== null && refused.includes('gehört bereits zu einem anderen Händler'))
+
+    const after = reload()
+    ok('…and nothing was written', after.merchants.every((m) => m.canonical_name !== 'Ein anderer Laden'))
+    ok('…not even the merchant', after.patterns.filter((p) => p.tokens.join(' ') === 'REWE').length === 1)
+  }
+
+  // ══ 4. A decision made by hand is never overwritten ══════════════════════
+  {
+    const locked = insertBooking('EDEKA Musterstadt gesperrt', { lock: true })
+    const overridden = insertBooking('EDEKA Musterstadt override')
+    const open1 = insertBooking('EDEKA Musterstadt frei 1')
+    const open2 = insertBooking('EDEKA Musterstadt frei 2')
+    const sonstige = jsonAsUser(userId,
+      `select id from public.finance_categories where user_id = '${userId}' and slug = 'sonstige'`)[0].id
+    jsonAsUser(userId,
+      `insert into public.finance_transaction_overrides (user_id, transaction_id, category_id)
+       values ('${userId}', '${overridden}', '${sonstige}') returning transaction_id`)
+
+    const state = reload()
+    const g = gesture(state, open1, { from: 0, to: 0 }, {
+      categorySlug: 'lebensmittel', merchantName: 'EDEKA',
+    })
+    const numbers = backtestNumbers({ backtest: g.built.backtest, transaction: g.transaction })
+    ok('the preview counts all four bookings as hits', numbers.treffer === 4)
+    ok('…but promises only the two free ones', numbers.gesamt === 2)
+
+    const r = learn(g.built.request)
+    ok('the database changed exactly two', r.applied_count + 1 === 2)
+    ok('…the promise and the outcome are the same number', r.applied_count + 1 === numbers.gesamt)
+
+    const after = reload()
+    const row = (id) => after.transactions.find((t) => t.id === id)
+    ok('the locked booking still has no merchant', row(locked).merchant_id === null)
+    ok('the overridden booking still has no merchant', row(overridden).merchant_id === null)
+    ok('the two free ones were assigned',
+       row(open1).merchant_id !== null && row(open2).merchant_id !== null)
+
+    const q = buildClassificationQueue({
+      transactions: after.transactions, patterns: after.patterns, merchants: after.merchants,
+      rules: after.categoryRules, overrides: after.overrides,
+    })
+    ok('the locked booking is not asked about again',
+       !q.open.some((e) => e.transaction.id === locked))
+    ok('…nor is the overridden one', !q.open.some((e) => e.transaction.id === overridden))
+    ok('…and the free ones are done', !q.open.some((e) => e.transaction.id === open1 || e.transaction.id === open2))
+  }
+
+  // ══ 5. A damaged word cannot be learned, even by hand ════════════════════
+  {
+    const RC = String.fromCharCode(0xfffd)
+    const broken = insertBooking(`Lo${RC}e's Coffee Stu${RC}gart`)
+    const state = reload()
+    const tx = state.transactions.find((t) => t.id === broken)
+    const built = buildLearnRequest({
+      transaction: tx, selection: ['LO'], patternType: 'exact_token',
+      categorySlug: 'restaurant', categories: state.categories, merchantName: 'Lotte',
+      transactions: state.transactions, patterns: state.patterns, overrides: state.overrides,
+    })
+    ok('a fragment never reaches the database', built.valid === false && built.request === null)
+
+    const good = buildLearnRequest({
+      transaction: tx, selection: ['COFFEE'], patternType: 'exact_token',
+      categorySlug: 'restaurant', categories: state.categories, merchantName: 'Coffee',
+      transactions: state.transactions, patterns: state.patterns, overrides: state.overrides,
+    })
+    ok('the intact word of the same booking can be learned', good.valid === true)
+    const r = learn(good.request)
+    ok('…and the database accepts it', r.pattern_created === true)
+  }
+
+  // ══ 6. A pattern that was never in the booking is refused by the DB ══════
+  {
+    const state = reload()
+    const tx = state.transactions.find((t) => t.raw_description === 'Scalable Capital Verrechnungskonto')
+    let refused = null
+    try {
+      learn({
+        p_transaction_id: tx.id, p_category_slug: 'sonstige', p_pattern_type: 'exact_token',
+        p_tokens: ['REWE'], p_merchant_id: null, p_merchant_name: 'Erfunden', p_review_mode: null,
+        p_min_amount_minor: null, p_min_inclusive: true, p_max_amount_minor: null,
+        p_max_inclusive: true, p_rule_currency: null, p_apply_transaction_ids: [],
+      })
+    } catch (err) { refused = String(err.stderr || err.message) }
+    ok('a pattern the booking does not contain is refused by the database', refused !== null)
+    ok('…and the client would never have sent it either',
+       buildLearnRequest({
+         transaction: tx, selection: ['REWE'], patternType: 'exact_token',
+         categorySlug: 'sonstige', categories: state.categories, merchantName: 'Erfunden',
+         transactions: state.transactions, patterns: state.patterns, overrides: state.overrides,
+       }).valid === false)
+  }
+
+  // ══ 7. Nothing left anybody else's account ══════════════════════════════
+  {
+    const other = '11111111-2222-4333-8444-777777777777'
+    psql(['-c', `insert into auth.users (id, email) values ('${other}', 'fremd@mindwhiteboard.test')`])
+    const seen = jsonAsUser(other,
+      `select count(*)::int as n from public.finance_merchant_patterns`)[0].n
+    ok('another user sees none of these patterns', seen === 0)
+    const merchants = jsonAsUser(other, `select count(*)::int as n from public.finance_merchants`)[0].n
+    ok('…and none of these merchants', merchants === 0)
+  }
+
+  console.log(`finance classify e2e: ${pass} passed, ${fail} failed`)
+  if (fail) process.exitCode = 1
+} catch (err) {
+  console.error('finance classify e2e: FEHLGESCHLAGEN\n')
+  console.error(err.stdout || '')
+  console.error(err.stderr || err.message)
+  process.exitCode = 1
+} finally {
+  if (started) {
+    const stop = [exe('pg_ctl'), ['-D', data, '-m', 'immediate', 'stop']]
+    if (sudoUser)
+      spawnSync('setpriv', ['--reuid', String(sudoUser.uid), '--regid', String(sudoUser.uid), '--clear-groups', stop[0], ...stop[1]], { stdio: 'ignore' })
+    else spawnSync(stop[0], stop[1], { stdio: 'ignore' })
+  }
+  if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+}

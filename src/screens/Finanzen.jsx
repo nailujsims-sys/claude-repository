@@ -1,9 +1,10 @@
 import { useMemo } from 'react'
-import { Upload } from 'lucide-react'
+import { Check, Tag, Upload } from 'lucide-react'
 import TopBar from '../components/TopBar'
 import { SkeletonExpenseList } from '../components/Skeleton'
 import { useFinance } from '../context/FinanceContext'
 import { useUI } from '../context/UIContext'
+import { buildClassificationQueue } from '../lib/finance/classificationQueue'
 import { formatBookingDate, plural } from '../lib/finance/importFlow'
 
 // Finanzen, at its first stage: a way in, and the one action that fills it.
@@ -14,8 +15,19 @@ import { formatBookingDate, plural } from '../lib/finance/importFlow'
 // the user is that importing a statement is never more than one tap away, which
 // is why the button sits directly under the only number on the page.
 export default function Finanzen() {
-  const { transactions, account, loading, error } = useFinance()
-  const { openFinanceImport } = useUI()
+  const { transactions, account, patterns, merchants, categoryRules, overrides, loading, error } =
+    useFinance()
+  const { openFinanceImport, openFinanceClassify } = useUI()
+
+  // Which bookings still need a human is the engine's answer, asked fresh on
+  // every render from rows the user can see — never a counter somebody wrote
+  // into a column at import time.
+  const { summary } = useMemo(
+    () => buildClassificationQueue({
+      transactions, patterns, merchants, rules: categoryRules, overrides,
+    }),
+    [transactions, patterns, merchants, categoryRules, overrides]
+  )
 
   const latest = useMemo(() => {
     let newest = null
@@ -56,6 +68,8 @@ export default function Finanzen() {
           </button>
         )}
 
+        {!loading && !isEmpty && <ClassifyCard summary={summary} onOpen={openFinanceClassify} />}
+
         {loading ? (
           <div className="pt-4">
             <SkeletonExpenseList />
@@ -65,6 +79,47 @@ export default function Finanzen() {
         ) : null}
       </div>
     </div>
+  )
+}
+
+// The second thing this screen owes the user, after importing: knowing how much
+// is still unsorted, and getting at it in one tap. Deliberately a small card
+// with one number — an unsorted booking is a task, not a statistic, and a
+// finished queue should feel finished rather than leave an empty block behind.
+function ClassifyCard({ summary, onOpen }) {
+  if (summary.offen === 0) {
+    return (
+      <div className="mt-3 flex items-center gap-2 px-1 py-2">
+        <Check size={16} className="shrink-0 text-success" />
+        <p className="text-caption text-text-secondary">Alle Umsätze sind zugeordnet.</p>
+      </div>
+    )
+  }
+
+  const detail = [
+    summary.konflikt > 0 ? `${summary.konflikt} mit zwei Händlern` : null,
+    summary.pruefung > 0 ? `${summary.pruefung} zur Prüfung` : null,
+  ].filter(Boolean)
+
+  return (
+    <section className="mt-3 rounded-card border border-subtle bg-bg-card px-4 py-4">
+      <div className="flex items-start gap-3">
+        <Tag size={18} className="mt-0.5 shrink-0 text-text-secondary" />
+        <div className="min-w-0 flex-1">
+          <h2 className="text-body font-semibold text-text-primary">Zuordnung</h2>
+          <p className="mt-1 text-caption text-text-secondary">
+            {plural(summary.offen, 'Umsatz wartet', 'Umsätze warten')} auf Händler und Kategorie
+            {detail.length > 0 ? ` · ${detail.join(' · ')}` : ''}
+          </p>
+        </div>
+      </div>
+      <button
+        onClick={onOpen}
+        className="press-tint mt-4 w-full rounded-btn bg-bg-input py-3.5 text-body font-semibold text-text-primary"
+      >
+        Jetzt zuordnen
+      </button>
+    </section>
   )
 }
 
