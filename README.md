@@ -626,12 +626,37 @@ booking in one transaction. What is new is a queue and a vocabulary:
   can point at. A selection is a RANGE, never a set, because `exact_phrase`
   means tokens next to each other in order.
 
+**Three kinds of decision, and the screen asks for the right one.** They are
+not variations of the same question, and treating them as one was the flow's
+first real bug:
+
+- `unresolved` — nothing recognises this text. Teach a merchant, and every other
+  booking the pattern explains follows.
+- `conflict` — two merchants' patterns already claim this text. A third, more
+  specific pattern removes **neither** claim: `matchMerchant` has no specificity
+  ranking, on purpose, so the booking would stay in conflict forever. The screen
+  therefore does not offer one. It names both claimants and lets the user decide
+  this one booking.
+- `review_required` — the merchant IS recognised and the user asked to see every
+  booking of it. Another default rule would settle nothing; the category for this
+  one booking would.
+
+The last two are written to `finance_transaction_overrides`, which beats every
+rule and changes none of them. A merchant like PayPal gets its
+`review_mode = 'always_review'` through the one setting the flow offers, and
+only while a NEW merchant is being created — an existing merchant is never
+changed from this screen.
+
 Three rules the screen holds to, and the reasons:
 
-- **Hits and changes are different numbers.** „5 Umsätze werden REWE ·
-  Lebensmittel" counts only what the database will actually touch; a booking
-  somebody locked, overrode or already assigned is hit and stays exactly as it
-  is. Promising otherwise is a lie the user finds out about afterwards.
+- **Hits and changes are different numbers**, and the preview counts changes
+  the way `finance_learn_merchant_rule` counts them, condition for condition.
+  The booking in hand is written whenever it is not locked and has no override —
+  an existing `merchant_id` does not stop that — while a booking merely swept up
+  alongside it is additionally protected by `merchant_id is null`. Getting that
+  asymmetry wrong promised one number and wrote another, exactly in the
+  supported case where a deactivated pattern puts a still-stamped booking back
+  in the queue.
 - **No stopword list, ever.** „MARKT" is not forbidden and not removed from
   matching. What the user gets is the measured breadth of the pattern on their
   own bookings — „trifft 20 von 30 Umsätzen" — and then they decide. The one
@@ -642,8 +667,8 @@ Three rules the screen holds to, and the reasons:
   matching forever. Those words are shown and struck through rather than hidden;
   the intact words of the same booking stay usable.
 
-`tools/financeClassifyLogic.mjs` covers it with 106 assertions against the real
-engine; `tools/financeClassifyE2E.mjs` (47) runs the whole gesture against a
+`tools/financeClassifyLogic.mjs` covers it with 143 assertions against the real
+engine; `tools/financeClassifyE2E.mjs` (89) runs the whole gesture against a
 real Postgres and the real `finance_learn_merchant_rule`, **reloading after
 every save** — including the assertion the screen exists for: the number the
 preview promised and the `applied_count` the database returns are the same

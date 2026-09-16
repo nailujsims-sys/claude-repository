@@ -17,7 +17,9 @@ import {
   buildClassificationQueue, classifyTransaction, needsDecision, summarizeQueue,
 } from './src/lib/finance/classificationQueue.js'
 import {
-  backtestNumbers, blockingConflict, categoryLabelOf, confirmationLines,
+  DECISION, backtestNumbers, blockingConflict, buildOverride, categoryLabelOf,
+  claimingMerchants, confirmationLines, decisionExplanation, decisionKindOf,
+  describeOverrideResult,
   describeLearnFailure, describeLearnResult, descriptionSegments, learnErrorLines,
   patternLabelOf, patternTypeFor, patternWarnings, rangeIsLearnable, rangeText,
   rangeTokens, selectionRange,
@@ -520,6 +522,200 @@ const rule = (id, merchantId, categoryId, over = {}) => ({
   ok('needsDecision is the one definition of "open"',
      classifyTransaction({ transaction: transactions[2], patterns, merchants, rules }).status === FINANCE_STATUS.UNRESOLVED &&
      needsDecision(classifyTransaction({ transaction: transactions[2], patterns, merchants, rules })) === true)
+}
+
+// ── 14. The preview counts exactly what the RPC writes ─────────────────────
+//
+// REGRESSION. The booking in front of the user is updated by
+// finance_learn_merchant_rule whenever it is not locked and has no override —
+// an existing merchant_id does NOT stop that write. Counting it as unchanged
+// promised one number and wrote another, and it did so precisely in the case
+// this module is built for: a booking whose pattern was later deactivated is
+// put back in front of the user with its old ids still in the row.
+{
+  const M = uuid(97)
+  // Classified once, then the pattern was deactivated: the columns still hold
+  // the old ids, and the engine has put the booking back in the queue.
+  const stamped = booking('DM DROGERIEMARKT Troisdorf', {
+    merchant_id: M, category_id: cat('sonstige'),
+  })
+  const free = booking('DM DROGERIEMARKT Frankfurt')
+  const transactions = [stamped, free]
+
+  const queue = buildClassificationQueue({
+    transactions, patterns: [], merchants: [merchant(M, 'dm')], rules: [],
+  })
+  ok('a stamped booking without an active pattern is open again', queue.open.length === 2)
+
+  const built = buildLearnRequest({
+    transaction: stamped, selection: ['DM'], patternType: 'exact_token',
+    categorySlug: 'drogerie', categories: CATEGORIES, merchantName: 'dm',
+    transactions, patterns: [], overrides: [],
+  })
+  const numbers = backtestNumbers({ backtest: built.backtest, transaction: stamped })
+
+  ok('the stamped booking counts as changing, because the RPC changes it',
+     numbers.aktuelleAendertSich === true)
+  // The other booking is swept up only when it has no merchant — that condition
+  // the RPC does apply, and the backtest already mirrors it.
+  ok('the free one is swept up too', built.request.p_apply_transaction_ids.length === 1)
+  ok('the preview promises both', numbers.gesamt === 2)
+  ok('…and nothing is claimed to stay unchanged', numbers.unveraendert === 0)
+  // What the database will report back: applied_count for the others plus
+  // transaction_updated for this one.
+  ok('preview == applied_count + transaction_updated',
+     numbers.gesamt === built.request.p_apply_transaction_ids.length + 1)
+
+  // A second stamped booking IS protected from the sweep — the RPC requires
+  // merchant_id is null there — so it must not be promised.
+  const otherStamped = booking('DM DROGERIEMARKT Bonn', { merchant_id: M })
+  const withOther = buildLearnRequest({
+    transaction: stamped, selection: ['DM'], patternType: 'exact_token',
+    categorySlug: 'drogerie', categories: CATEGORIES, merchantName: 'dm',
+    transactions: [...transactions, otherStamped], patterns: [], overrides: [],
+  })
+  const otherNumbers = backtestNumbers({ backtest: withOther.backtest, transaction: stamped })
+  ok('another stamped booking is a hit but not a change', otherNumbers.treffer === 3 && otherNumbers.gesamt === 2)
+  ok('…and is named as staying unchanged', otherNumbers.unveraendert === 1)
+
+  // Locked or overridden, the booking in hand does NOT change — the two
+  // conditions the RPC really applies.
+  const lockedOne = booking('DM DROGERIEMARKT Köln', { manual_lock: true })
+  ok('a locked booking in hand does not change',
+     backtestNumbers({
+       backtest: built.backtest, transaction: lockedOne,
+     }).aktuelleAendertSich === false)
+  ok('an overridden booking in hand does not change either',
+     backtestNumbers({
+       backtest: built.backtest, transaction: stamped, override: { transaction_id: stamped.id },
+     }).aktuelleAendertSich === false)
+}
+
+// ── 15. A conflict is decided, not out-patterned ────────────────────────────
+//
+// REGRESSION. The screen used to claim a more specific pattern would resolve a
+// conflict. It would not: matchMerchant has no specificity ranking, so both
+// claims survive and the booking stays in conflict forever.
+{
+  const A = uuid(71), B = uuid(72)
+  const merchants = [merchant(A, 'Edeka'), merchant(B, 'Nahkauf')]
+  const patterns = [
+    pattern(uuid(370), A, 'exact_token', ['EDEKA']),
+    pattern(uuid(371), B, 'exact_token', ['MARKT']),
+  ]
+  const tx = booking('EDEKA MARKT Troisdorf')
+
+  const queue = buildClassificationQueue({ transactions: [tx], patterns, merchants, rules: [] })
+  const entry = queue.open[0]
+  ok('the decision is recognised as a conflict', decisionKindOf(entry) === DECISION.RESOLVE_CONFLICT)
+
+  const explanation = decisionExplanation(entry, merchants)
+  ok('…both claimants are named',
+     explanation.lines.join(' ').includes('Edeka') && explanation.lines.join(' ').includes('Nahkauf'))
+  ok('…and nothing claims a more specific pattern would help',
+     !explanation.lines.join(' ').includes('genaueres Muster') &&
+     !explanation.headline.includes('genaueres Muster'))
+  ok('…it says only this booking is being decided',
+     explanation.lines.join(' ').includes('nur diese eine Buchung'))
+  ok('the claimants come out in a readable form',
+     JSON.stringify(claimingMerchants(entry, merchants)) === JSON.stringify(['Edeka', 'Nahkauf']))
+
+  // Proof that a third, more specific pattern really would NOT help.
+  const specific = [...patterns, pattern(uuid(372), A, 'exact_phrase', ['EDEKA', 'MARKT'])]
+  ok('a more specific pattern leaves the conflict exactly as it was',
+     buildClassificationQueue({ transactions: [tx], patterns: specific, merchants, rules: [] })
+       .open[0].status === FINANCE_STATUS.CONFLICT)
+
+  // What does help: one decision about this one booking.
+  const override = { transaction_id: tx.id, ...buildOverride({ merchantId: A, categoryId: cat('lebensmittel') }) }
+  const after = buildClassificationQueue({
+    transactions: [tx], patterns, merchants, rules: [], overrides: [override],
+  })
+  ok('after the decision the booking is settled', after.open.length === 0)
+  ok('…as the merchant the user picked', after.entries[0].merchantId === A)
+  ok('…in the category they picked', after.entries[0].categoryId === cat('lebensmittel'))
+  ok('…and it is marked as decided by hand', after.entries[0].locked === true)
+  ok('the two global patterns are untouched', patterns.length === 2 && patterns.every((p) => p.active))
+
+  const said = describeOverrideResult({
+    kind: DECISION.RESOLVE_CONFLICT, merchantName: 'Edeka', categoryName: 'Lebensmittel',
+  })
+  ok('the result says the rules were not changed',
+     said.lines.some((l) => l.includes('an den gespeicherten Mustern hat sich nichts geändert')))
+}
+
+// ── 16. always_review is answered per booking, and stays always_review ──────
+{
+  const M = uuid(98)
+  const merchants = [merchant(M, 'PayPal', { review_mode: 'always_review' })]
+  const patterns = [pattern(uuid(380), M, 'exact_token', ['PAYPAL'])]
+  const rules = [rule(uuid(460), M, cat('sonstige'))]
+  const first = booking('PayPal Europe S.a.r.l. et Cie S.C.A 1052906804694')
+
+  const queue = buildClassificationQueue({ transactions: [first], patterns, merchants, rules })
+  const entry = queue.open[0]
+  ok('a PayPal booking asks for a review', decisionKindOf(entry) === DECISION.REVIEW)
+  const explanation = decisionExplanation(entry, merchants)
+  ok('…the merchant is named as already recognised', explanation.headline.includes('PayPal'))
+  ok('…and no new merchant is asked for',
+     explanation.lines.join(' ').includes('nie automatisch gesetzt'))
+
+  const override = { transaction_id: first.id, ...buildOverride({ merchantId: M, categoryId: cat('restaurant') }) }
+  const after = buildClassificationQueue({
+    transactions: [first], patterns, merchants, rules, overrides: [override],
+  })
+  ok('the decided booking leaves the queue', after.open.length === 0)
+  ok('…with the chosen category', after.entries[0].categoryId === cat('restaurant'))
+
+  // THE point of always_review: the next one is asked about again.
+  const second = booking('PayPal Europe S.a.r.l. et Cie S.C.A 9999999999999')
+  const next = buildClassificationQueue({
+    transactions: [first, second], patterns, merchants, rules, overrides: [override],
+  })
+  ok('a new PayPal booking is asked about again', next.open.length === 1)
+  ok('…and it is the new one', next.open[0].transaction.id === second.id)
+  ok('…again as a review, not as unknown', next.open[0].status === FINANCE_STATUS.REVIEW_REQUIRED)
+  ok('the merchant is still always_review',
+     merchants[0].review_mode === 'always_review')
+}
+
+// ── 17. „Immer prüfen" reaches the database through the existing request ────
+{
+  const tx = booking('PayPal Europe S.a.r.l. et Cie S.C.A')
+  const withMode = buildLearnRequest({
+    transaction: tx, selection: ['PAYPAL'], patternType: 'exact_token',
+    categorySlug: 'sonstige', categories: CATEGORIES, merchantName: 'PayPal',
+    reviewMode: 'always_review', transactions: [tx], patterns: [], overrides: [],
+  })
+  ok('a new merchant can be created as always_review', withMode.valid === true)
+  ok('…through the existing learn request, atomically',
+     withMode.request.p_review_mode === 'always_review')
+  ok('…with no second write of any kind',
+     Object.keys(withMode.request).every((k) => k.startsWith('p_')))
+
+  const withoutMode = buildLearnRequest({
+    transaction: tx, selection: ['PAYPAL'], patternType: 'exact_token',
+    categorySlug: 'sonstige', categories: CATEGORIES, merchantName: 'PayPal',
+    transactions: [tx], patterns: [], overrides: [],
+  })
+  ok('switched off, no mode is sent at all', withoutMode.request.p_review_mode === null)
+
+  // An EXISTING merchant is never changed from this screen: the request carries
+  // no mode when one was picked by id.
+  const M = uuid(99)
+  const existing = buildLearnRequest({
+    transaction: tx, selection: ['PAYPAL'], patternType: 'exact_token',
+    categorySlug: 'sonstige', categories: CATEGORIES, merchantId: M,
+    transactions: [tx], patterns: [], overrides: [],
+  })
+  ok('choosing an existing merchant sends no review mode',
+     existing.request.p_merchant_id === M && existing.request.p_review_mode === null)
+  ok('an unknown mode is refused rather than sent',
+     buildLearnRequest({
+       transaction: tx, selection: ['PAYPAL'], patternType: 'exact_token',
+       categorySlug: 'sonstige', categories: CATEGORIES, merchantName: 'PayPal',
+       reviewMode: 'irgendwas', transactions: [tx], patterns: [], overrides: [],
+     }).valid === false)
 }
 
 console.log(\`finance classify: \${pass} passed, \${fail} failed\`)

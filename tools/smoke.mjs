@@ -3198,6 +3198,59 @@ async function run() {
       errors.push('[Finanzen/Zuordnung] the sheet stayed open after closing it')
   }
 
+  // 16b3) A conflict is a different question, and the screen has to ask it
+  //       differently: two merchants already claim this text, and a third,
+  //       more specific pattern would remove neither claim.
+  {
+    const M_A = '11111111-2222-4333-8444-000000000201'
+    const M_B = '11111111-2222-4333-8444-000000000202'
+    const conflictSeed = {
+      ...financeSeed,
+      // One booking, so the conflicted one is the one the queue shows first.
+      finance_transactions: [
+        { id: '11111111-2222-4333-8444-000000000103', user_id: TEST_USER_ID, account_id: FIN_ACCOUNT,
+          booking_date: '2026-09-14', amount_minor: -1438, currency: 'EUR',
+          raw_description: 'REWE Frankfurt Hauptwache',
+          normalized_tokens: ['REWE', 'FRANKFURT', 'HAUPTWACHE'],
+          include_in_analytics: true, manual_lock: false },
+      ],
+      finance_merchants: [
+        { id: M_A, user_id: TEST_USER_ID, canonical_name: 'Edeka', review_mode: 'auto' },
+        { id: M_B, user_id: TEST_USER_ID, canonical_name: 'Nahkauf', review_mode: 'auto' },
+      ],
+      finance_merchant_patterns: [
+        { id: '11111111-2222-4333-8444-000000000211', user_id: TEST_USER_ID, merchant_id: M_A,
+          pattern_type: 'exact_token', tokens: ['REWE'], active: true },
+        { id: '11111111-2222-4333-8444-000000000212', user_id: TEST_USER_ID, merchant_id: M_B,
+          pattern_type: 'exact_token', tokens: ['FRANKFURT'], active: true },
+      ],
+    }
+    const window = makeDom('#/finanzen', { finance: conflictSeed })
+    mount(window, code, 'Finanzen/Konflikt')
+    await wait(400)
+    window.__restoreConsole?.()
+
+    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    await wait(320)
+    const text = nb(txt(window))
+    console.log(`=== Finanzen — Konflikt ===\n  ${text.slice(-360)}`)
+
+    if (!text.includes('Zwei Händler beanspruchen diese Buchung'))
+      errors.push('[Finanzen/Konflikt] the conflict is not explained')
+    if (!text.includes('Edeka') || !text.includes('Nahkauf'))
+      errors.push('[Finanzen/Konflikt] the claiming merchants are not named')
+    // The claim that was wrong and had to go.
+    if (text.includes('genaueres Muster löst'))
+      errors.push('[Finanzen/Konflikt] the screen still claims a more specific pattern resolves it')
+    // A conflict is not a lesson: no words to mark, no new merchant to name.
+    if (text.includes('Wörter markieren'))
+      errors.push('[Finanzen/Konflikt] a conflict offers the pattern gesture')
+    if (!text.includes('Nur diese Buchung entscheiden'))
+      errors.push('[Finanzen/Konflikt] there is no way to decide the single booking')
+    if (!text.includes('Kategorie für diese Buchung'))
+      errors.push('[Finanzen/Konflikt] no category can be chosen for this booking')
+  }
+
   // 16c) The database is unreachable. "Nothing here" and "we could not look"
   //      are different sentences, as everywhere else in the app.
   {

@@ -149,9 +149,18 @@ export function backtestNumbers({ backtest, transaction, override = null } = {})
   const currentId = transaction?.id ?? null
   const weitere = applicable.filter((id) => id !== currentId).length
   // The booking in front of the user changes unless they themselves protected
-  // it — the same three conditions finance_learn_merchant_rule checks.
-  const aktuelleAendertSich =
-    transaction?.manual_lock !== true && !override && !transaction?.merchant_id
+  // it — and "protected" means EXACTLY what finance_learn_merchant_rule means by
+  // it: not locked, and no override. Nothing else.
+  //
+  // In particular NOT "has no merchant_id yet". The function requires that of
+  // the OTHER bookings it sweeps up, and of those only; for the booking the user
+  // is actually looking at it writes merchant and category regardless. The
+  // difference is not academic — it is the case this module exists to support: a
+  // booking that was classified once, whose pattern was later deactivated, is
+  // put back in front of the user by the engine while its columns still hold the
+  // old ids. Counting it as unchanged would promise one number and write
+  // another.
+  const aktuelleAendertSich = transaction?.manual_lock !== true && !override
   const treffer = backtest?.matchCount ?? 0
   const gesamt = weitere + (aktuelleAendertSich ? 1 : 0)
   return {
@@ -226,7 +235,8 @@ export function patternWarnings({ backtest, numbers, total = 0, merchantId = nul
       tone: 'attention',
       text:
         `Nach dem Speichern ${plural(backtest.merchantConflicts.length, 'Umsatz wäre', 'Umsätze wären')} ` +
-        'von zwei Händlern beansprucht und bliebe offen, bis du ein genaueres Muster wählst.',
+        'von zwei Händlern beansprucht. Solche Buchungen bleiben offen und werden einzeln ' +
+        'entschieden — ein weiteres, genaueres Muster hebt einen bestehenden Anspruch nicht auf.',
     })
   }
 
@@ -305,3 +315,106 @@ export function describeLearnResult(result, { merchantName, categoryName }) {
 
 /** A pattern as one readable line, for the confirmation and the warnings. */
 export const patternLabelOf = (tokens) => patternText(tokens)
+
+// ── The two decisions that are not a rule ───────────────────────────────────
+//
+// Not every open booking is a merchant waiting to be taught. Two of the three
+// states the engine can report are about THIS booking and no other, and
+// offering a new pattern for them would be wrong in one case and pointless in
+// the other:
+//
+//   conflict         — two merchants' patterns already claim this text. Adding
+//                      a third, more specific pattern removes neither claim:
+//                      matchMerchant has no specificity ranking, on purpose, so
+//                      the booking would stay in conflict forever. What is
+//                      actually needed is a decision about this one booking.
+//   review_required  — the merchant IS recognised. The user asked to look at
+//                      every booking of it (review_mode = 'always_review'), so
+//                      learning another default rule would not settle anything;
+//                      resolveCategory would put the next one up again, which is
+//                      exactly what was asked for.
+//
+// Both are answered by the override table: one decision, one booking, and the
+// global rules untouched.
+
+/** Which decision this booking is actually asking for. */
+export const DECISION = Object.freeze({
+  LEARN: 'learn',
+  RESOLVE_CONFLICT: 'resolve_conflict',
+  REVIEW: 'review',
+})
+
+export function decisionKindOf(entry) {
+  if (entry?.status === 'conflict') return DECISION.RESOLVE_CONFLICT
+  if (entry?.status === 'review_required') return DECISION.REVIEW
+  return DECISION.LEARN
+}
+
+/**
+ * The merchants that already claim a booking, by name.
+ *
+ * Read off the match rather than off the booking: a conflict has no
+ * `merchant_id`, and the whole point is to show the user the claims the engine
+ * found instead of a single name it refused to pick.
+ */
+export const claimingMerchants = (entry, merchants = []) =>
+  (entry?.merchantMatch?.merchantIds ?? []).map(
+    (id) => merchants.find((m) => m.id === id)?.canonical_name ?? 'Unbekannter Händler'
+  )
+
+/**
+ * What the screen says about a decision that is not a rule.
+ *
+ * The sentence about a conflict deliberately does NOT promise that a more
+ * specific pattern would help. It would not.
+ */
+export function decisionExplanation(entry, merchants = []) {
+  const kind = decisionKindOf(entry)
+  if (kind === DECISION.RESOLVE_CONFLICT) {
+    const names = claimingMerchants(entry, merchants)
+    return {
+      kind,
+      headline: 'Zwei Händler beanspruchen diese Buchung.',
+      lines: [
+        names.length > 0 ? `Gemerkt sind: ${names.join(' und ')}.` : '',
+        'Du entscheidest hier nur diese eine Buchung. Die gespeicherten Muster bleiben, wie sie sind — solange beide bestehen, wird die nächste solche Buchung wieder gefragt.',
+      ].filter(Boolean),
+    }
+  }
+  if (kind === DECISION.REVIEW) {
+    const name = entry?.merchantMatch?.merchant?.canonical_name ?? 'Dieser Händler'
+    return {
+      kind,
+      headline: `${name} wird jedes Mal geprüft.`,
+      lines: [
+        'Der Händler ist erkannt, die Kategorie wird bei diesem Händler absichtlich nie automatisch gesetzt.',
+        'Du wählst sie für diese eine Buchung.',
+      ],
+    }
+  }
+  return { kind, headline: '', lines: [] }
+}
+
+/**
+ * The override one of those decisions writes.
+ *
+ * `merchant_id` travels along wherever it is known — for a conflict because the
+ * user just picked one of the claimants, for a review because the engine
+ * already knows it. A category alone would leave the booking's merchant
+ * permanently ambiguous.
+ */
+export const buildOverride = ({ merchantId = null, categoryId }) => ({
+  merchant_id: merchantId ?? null,
+  category_id: categoryId,
+})
+
+/** What was decided, once it is written. */
+export function describeOverrideResult({ kind, merchantName, categoryName }) {
+  const lines = [`Diese Buchung ist ${merchantName ? `${merchantName} · ` : ''}${categoryName}.`]
+  lines.push(
+    kind === DECISION.RESOLVE_CONFLICT
+      ? 'Nur diese Buchung wurde entschieden — an den gespeicherten Mustern hat sich nichts geändert.'
+      : 'Nur diese Buchung wurde entschieden — der Händler wird weiterhin jedes Mal geprüft.'
+  )
+  return { lines }
+}

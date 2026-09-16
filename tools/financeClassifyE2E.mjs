@@ -60,8 +60,9 @@ const bundled = await build({
   stdin: {
     contents: `
       export { buildClassificationQueue } from './src/lib/finance/classificationQueue.js'
-      export { backtestNumbers, confirmationLines, descriptionSegments, patternLabelOf,
-               patternTypeFor, rangeTokens } from './src/lib/finance/classificationFlow.js'
+      export { DECISION, backtestNumbers, buildOverride, confirmationLines, decisionExplanation,
+               decisionKindOf, descriptionSegments, patternLabelOf, patternTypeFor,
+               rangeTokens } from './src/lib/finance/classificationFlow.js'
       export { buildLearnRequest } from './src/lib/finance/learning.js'
       export { tokenize } from './src/lib/finance/normalize.js'
     `,
@@ -80,8 +81,9 @@ const bundled = await build({
 const modulePath = `${process.env.SCRATCH || '/tmp'}/financeClassifyE2E.bundled.mjs`
 writeFileSync(modulePath, bundled.outputFiles[0].text)
 const {
-  buildClassificationQueue, backtestNumbers, confirmationLines, descriptionSegments,
-  patternLabelOf, patternTypeFor, rangeTokens, buildLearnRequest, tokenize,
+  buildClassificationQueue, DECISION, backtestNumbers, buildOverride, confirmationLines,
+  decisionExplanation, decisionKindOf, descriptionSegments, patternLabelOf, patternTypeFor,
+  rangeTokens, buildLearnRequest, tokenize,
 } = await import(pathToFileURL(modulePath).href)
 
 let pass = 0
@@ -213,6 +215,27 @@ ${sql}`
     ]
     return jsonAsUser(userId, `select public.finance_learn_merchant_rule(${args.join(', ')}) as r`)[0].r
   }
+
+  // One booking decided by hand — the same upsert financeRepository.saveOverride
+  // performs, on the same unique index.
+  const writeOverride = (transactionId, decision) =>
+    jsonAsUser(
+      userId,
+      `insert into public.finance_transaction_overrides
+         (user_id, transaction_id, merchant_id, category_id)
+       values ('${userId}', '${transactionId}',
+               ${decision.merchant_id ? `'${decision.merchant_id}'` : 'null'},
+               ${decision.category_id ? `'${decision.category_id}'` : 'null'})
+       on conflict (transaction_id) do update
+         set merchant_id = excluded.merchant_id, category_id = excluded.category_id,
+             updated_at = now()
+       returning transaction_id`
+    )[0].transaction_id
+
+  const queueOf = (state) => buildClassificationQueue({
+    transactions: state.transactions, patterns: state.patterns, merchants: state.merchants,
+    rules: state.categoryRules, overrides: state.overrides,
+  })
 
   // The gesture, exactly as the sheet performs it: mark a range of words in the
   // booking in front of the user, then hand buildLearnRequest the state a
@@ -464,6 +487,212 @@ ${sql}`
     ok('another user sees none of these patterns', seen === 0)
     const merchants = jsonAsUser(other, `select count(*)::int as n from public.finance_merchants`)[0].n
     ok('…and none of these merchants', merchants === 0)
+  }
+
+  // ══ 8. REGRESSION: a booking whose columns are stamped but unexplained ═══
+  //
+  // The preview counted the booking in front of the user as unchanged whenever
+  // it already had a merchant_id. finance_learn_merchant_rule does not: for THAT
+  // booking it requires only "not locked, no override". The gap is exactly the
+  // supported case — a booking classified once, whose pattern was later
+  // deactivated, is put back in front of the user with its old ids still in the
+  // row. Here the promise and the write are compared against the real function.
+  {
+    const dm1 = insertBooking('DM DROGERIEMARKT Troisdorf 111')
+    const dm2 = insertBooking('DM DROGERIEMARKT Frankfurt 222')
+
+    // Classify once, so the rows really are stamped by the real function.
+    const before = reload()
+    const g = gesture(before, dm1, { from: 0, to: 0 }, {
+      categorySlug: 'drogerie', merchantName: 'dm',
+    })
+    learn(g.built.request)
+
+    // Now deactivate the pattern, exactly as a later rule-management screen
+    // would. Nothing else changes; the rows keep their ids.
+    const stamped = reload()
+    const dmPattern = stamped.patterns.find((p) => p.tokens.join(' ') === 'DM')
+    jsonAsUser(userId,
+      `update public.finance_merchant_patterns set active = false
+       where id = '${dmPattern.id}' and user_id = '${userId}' returning id`)
+
+    const reopened = reload()
+    const row1 = reopened.transactions.find((t) => t.id === dm1)
+    ok('the deactivated pattern is gone from the active set',
+       !reopened.patterns.some((p) => p.id === dmPattern.id))
+    ok('…while the booking still carries its old ids',
+       row1.merchant_id !== null && row1.category_id !== null)
+    const q = queueOf(reopened)
+    ok('…and the engine has put both bookings back in the queue',
+       q.open.some((e) => e.transaction.id === dm1) && q.open.some((e) => e.transaction.id === dm2))
+
+    // Learn it again, under a different category, and compare promise to write.
+    const again = gesture(reopened, dm1, { from: 0, to: 0 }, {
+      categorySlug: 'sonstige', merchantName: 'dm Drogerie',
+    })
+    const promised = backtestNumbers({ backtest: again.built.backtest, transaction: again.transaction })
+    ok('the stamped booking is promised as changing', promised.aktuelleAendertSich === true)
+    // Exactly one, and the asymmetry is the function's, not a rounding of it:
+    // the booking in hand is written whatever its columns hold, while a stamped
+    // booking that is merely swept up is protected by `merchant_id is null`.
+    ok('…and only that one, because the other is stamped too', promised.gesamt === 1)
+    ok('…the other is a hit that stays unchanged',
+       promised.treffer === 2 && promised.unveraendert === 1)
+    ok('…so nothing else is even requested', again.built.request.p_apply_transaction_ids.length === 0)
+
+    const r = learn(again.built.request)
+    ok('the database updated the stamped booking', r.transaction_updated === true)
+    ok('the promise equals applied_count + transaction_updated',
+       promised.gesamt === r.applied_count + (r.transaction_updated ? 1 : 0))
+
+    const after = reload()
+    const updated = after.transactions.find((t) => t.id === dm1)
+    const sonstige = after.categories.find((c) => c.slug === 'sonstige').id
+    ok('…the row really carries the new category now', updated.category_id === sonstige)
+    ok('…and the stamped one it was not allowed to touch still holds the old one',
+       after.transactions.find((t) => t.id === dm2).category_id !== sonstige)
+    const qAfter = queueOf(after)
+    ok('…and after the reload the engine calls it resolved',
+       !qAfter.open.some((e) => e.transaction.id === dm1))
+    ok('…as it does the second one, through the new pattern rather than its column',
+       !qAfter.open.some((e) => e.transaction.id === dm2))
+  }
+
+  // ══ 9. REGRESSION: a conflict is decided, not out-patterned ══════════════
+  {
+    const tx = insertBooking('KAUFHOF GALERIA Musterstadt Filiale')
+    const state0 = reload()
+
+    // Two merchants, each taught from this very booking — the honest way to
+    // create a conflict, since a pattern must occur in the booking it is
+    // learned from.
+    const first = gesture(state0, tx, { from: 0, to: 0 }, {
+      categorySlug: 'klamotten', merchantName: 'Kaufhof',
+    })
+    learn(first.built.request)
+    const state1 = reload()
+    const second = gesture(state1, tx, { from: 1, to: 1 }, {
+      categorySlug: 'sonstige', merchantName: 'Galeria',
+    })
+    learn(second.built.request)
+
+    const conflicted = reload()
+    const q = queueOf(conflicted)
+    const entry = q.entries.find((e) => e.transaction.id === tx)
+    ok('two merchants claiming one booking is a conflict', entry.status === 'conflict')
+    ok('…and it is back in the queue', q.open.some((e) => e.transaction.id === tx))
+    ok('…recognised as a decision, not as a lesson',
+       decisionKindOf(entry) === DECISION.RESOLVE_CONFLICT)
+    const explanation = decisionExplanation(entry, conflicted.merchants)
+    ok('…naming both claimants',
+       explanation.lines.join(' ').includes('Kaufhof') && explanation.lines.join(' ').includes('Galeria'))
+    ok('…and promising nothing about a more specific pattern',
+       !explanation.lines.join(' ').includes('genaueres Muster'))
+
+    // Proof against the real engine: a third, more specific pattern does NOT
+    // resolve it. Learned from the same booking, so the database accepts it.
+    const third = gesture(conflicted, tx, { from: 0, to: 1 }, {
+      categorySlug: 'klamotten',
+      merchantId: conflicted.merchants.find((m) => m.canonical_name === 'Kaufhof').id,
+    })
+    learn(third.built.request)
+    const stillConflicted = reload()
+    ok('a more specific pattern leaves the conflict exactly as it was',
+       queueOf(stillConflicted).entries.find((e) => e.transaction.id === tx).status === 'conflict')
+
+    // What does settle it: one decision about this one booking.
+    const patternsBefore = stillConflicted.patterns.map((p) => p.id).sort().join(',')
+    const rowBefore = stillConflicted.transactions.find((t) => t.id === tx)
+    const kaufhof = stillConflicted.merchants.find((m) => m.canonical_name === 'Kaufhof')
+    const klamotten = stillConflicted.categories.find((c) => c.slug === 'klamotten').id
+    writeOverride(tx, buildOverride({ merchantId: kaufhof.id, categoryId: klamotten }))
+
+    const decided = reload()
+    const entryAfter = queueOf(decided).entries.find((e) => e.transaction.id === tx)
+    ok('after the decision the booking is settled', entryAfter.status === 'resolved')
+    ok('…as the merchant the user picked', entryAfter.merchantId === kaufhof.id)
+    ok('…in the category they picked', entryAfter.categoryId === klamotten)
+    ok('…marked as decided by hand', entryAfter.locked === true)
+    ok('…and out of the queue', !queueOf(decided).open.some((e) => e.transaction.id === tx))
+    ok('every global pattern is exactly as it was',
+       decided.patterns.map((p) => p.id).sort().join(',') === patternsBefore)
+    ok('…and none was deactivated', decided.patterns.every((p) => p.active === true))
+    // The decision lives in the override table, not in the booking: the row is
+    // byte for byte what it was, and the answer changed all the same.
+    const rowAfter = decided.transactions.find((t) => t.id === tx)
+    ok('the booking row itself was not touched',
+       rowAfter.merchant_id === rowBefore.merchant_id &&
+       rowAfter.category_id === rowBefore.category_id)
+    ok('…so what settled it is the override, nothing else',
+       decided.overrides.filter((o) => o.transaction_id === tx).length === 1)
+  }
+
+  // ══ 10. REGRESSION: always_review is answered per booking ════════════════
+  {
+    const first = insertBooking('PayPal Europe Sarl et Cie SCA 1052906804694')
+    const state = reload()
+
+    // A new merchant, created as always_review through the existing request —
+    // one call, no second write.
+    const g = gesture(state, first, { from: 0, to: 0 }, {
+      categorySlug: 'sonstige', merchantName: 'PayPal',
+    })
+    g.built.request.p_review_mode = 'always_review'
+    const r = learn(g.built.request)
+    ok('the merchant was created in the same call', r.merchant_created === true)
+
+    const withPaypal = reload()
+    const paypal = withPaypal.merchants.find((m) => m.canonical_name === 'PayPal')
+    ok('…and it really is always_review', paypal.review_mode === 'always_review')
+
+    const q = queueOf(withPaypal)
+    const entry = q.entries.find((e) => e.transaction.id === first)
+    ok('the booking is put up for review, not filed away', entry.status === 'review_required')
+    ok('…the merchant is recognised all the same', entry.merchantMatch.merchantId === paypal.id)
+    ok('…and no category was applied', entry.categoryId === null)
+    ok('…so the flow asks for a decision, not for a merchant',
+       decisionKindOf(entry) === DECISION.REVIEW)
+
+    const restaurant = withPaypal.categories.find((c) => c.slug === 'restaurant').id
+    writeOverride(first, buildOverride({ merchantId: paypal.id, categoryId: restaurant }))
+
+    const decided = reload()
+    ok('the decided booking leaves the queue',
+       !queueOf(decided).open.some((e) => e.transaction.id === first))
+    ok('…with the chosen category',
+       queueOf(decided).entries.find((e) => e.transaction.id === first).categoryId === restaurant)
+
+    // THE point of always_review: the next one is asked about again.
+    const second = insertBooking('PayPal Europe Sarl et Cie SCA 9999999999999')
+    const next = reload()
+    ok('a new PayPal booking is put up for review again',
+       queueOf(next).open.some((e) => e.transaction.id === second))
+    ok('…as a review, not as unknown',
+       queueOf(next).entries.find((e) => e.transaction.id === second).status === 'review_required')
+    ok('the merchant is still always_review',
+       next.merchants.find((m) => m.id === paypal.id).review_mode === 'always_review')
+  }
+
+  // ══ 11. An existing merchant's review mode is never changed in passing ═══
+  {
+    const state = reload()
+    const paypal = state.merchants.find((m) => m.canonical_name === 'PayPal')
+    const tx = insertBooking('PayPal Europe Sarl et Cie SCA 4711 Zahlung')
+    const fresh = reload()
+
+    // The sheet sends no mode when an existing merchant was chosen. Learning
+    // another pattern for PayPal must therefore leave it always_review.
+    const g = gesture(fresh, tx, { from: 4, to: 5 }, {
+      categorySlug: 'sonstige', merchantId: paypal.id,
+    })
+    ok('no review mode is sent for an existing merchant', g.built.request.p_review_mode === null)
+    learn(g.built.request)
+
+    const after = reload()
+    ok('PayPal is still always_review',
+       after.merchants.find((m) => m.id === paypal.id).review_mode === 'always_review')
+    ok('…and its bookings are still put up for review',
+       queueOf(after).entries.find((e) => e.transaction.id === tx).status === 'review_required')
   }
 
   console.log(`finance classify e2e: ${pass} passed, ${fail} failed`)

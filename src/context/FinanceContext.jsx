@@ -14,12 +14,14 @@ const FinanceContext = createContext(null)
 // accepted the file, the matcher produced the plan, and the database applies it
 // atomically. There is no branch in here that could make a different booking.
 //
-// THREE WRITES, AND ONLY THREE: creating the account (once, on the first
-// import), applying an import plan, and learning one classification. The last
-// two are database functions that do their whole job in one transaction.
-// Nothing in this module writes a booking directly — there is no second route
-// past those functions' invariants, and both reload from the database
-// afterwards rather than patching state from what was sent.
+// FOUR WRITES, AND ONLY FOUR: creating the account (once, on the first import),
+// applying an import plan, learning one classification, and recording one
+// decision a user made about a single booking. The middle two are database
+// functions that do their whole job in one transaction; the last is a row in
+// the override table, which is where 0008 puts a decision that beats every
+// rule. Nothing in this module writes a booking directly — there is no second
+// route past those functions' invariants, and all of them reload from the
+// database afterwards rather than patching state from what was sent.
 export function FinanceProvider({ children }) {
   const { user } = useAuth()
   const repo = financeRepository
@@ -165,6 +167,24 @@ export function FinanceProvider({ children }) {
     [user, repo, load]
   )
 
+  /**
+   * One booking, decided by hand.
+   *
+   * The narrow counterpart to learnRule: not every open booking is a merchant
+   * waiting to be taught. A booking two merchants' patterns both claim, and a
+   * booking of a merchant the user asked to see every time, are decisions about
+   * THIS booking — and the override table is what 0008 built for exactly that.
+   * The global patterns and rules are not touched, which is the whole point.
+   */
+  const saveOverride = useCallback(
+    async (transactionId, decision) => {
+      const row = await repo.saveOverride(user.id, transactionId, decision)
+      await load({ silent: true })
+      return row
+    },
+    [user, repo, load]
+  )
+
   const value = useMemo(
     () => ({
       accounts,
@@ -185,9 +205,11 @@ export function FinanceProvider({ children }) {
       openImport,
       applyPlan,
       learnRule,
+      saveOverride,
     }),
     [accounts, account, transactions, observations, categories, merchants, patterns, categoryRules,
-     overrides, loading, error, load, createAccount, findImport, openImport, applyPlan, learnRule]
+     overrides, loading, error, load, createAccount, findImport, openImport, applyPlan, learnRule,
+     saveOverride]
   )
 
   return <FinanceContext.Provider value={value}>{children}</FinanceContext.Provider>

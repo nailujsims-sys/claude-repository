@@ -7,8 +7,14 @@ import { buildClassificationQueue } from '../lib/finance/classificationQueue'
 import { buildLearnRequest } from '../lib/finance/learning'
 import { failureLog } from '../lib/finance/importFlow'
 import {
+  DECISION,
   backtestNumbers,
   blockingConflict,
+  buildOverride,
+  claimingMerchants,
+  decisionExplanation,
+  decisionKindOf,
+  describeOverrideResult,
   bookingHeadline,
   categoryLabelOf,
   confirmationLines,
@@ -45,7 +51,8 @@ export default function FinanceClassifySheet() {
 
 function Sheet({ onClose }) {
   const {
-    transactions, patterns, merchants, categories, categoryRules, overrides, learnRule,
+    transactions, patterns, merchants, categories, categoryRules, overrides,
+    learnRule, saveOverride,
   } = useFinance()
 
   // Pushed back with „Später": a session-only list. It changes no data, which is
@@ -90,6 +97,25 @@ function Sheet({ onClose }) {
     [learnRule]
   )
 
+  // The other kind of save: one booking, decided by hand, global rules
+  // untouched.
+  const onDecide = useCallback(
+    async (transactionId, decision, labels) => {
+      setSaving(true)
+      setFailure(null)
+      try {
+        await saveOverride(transactionId, decision)
+        setDone(describeOverrideResult(labels))
+      } catch (err) {
+        console.error(failureLog('entscheiden', err))
+        setFailure(describeLearnFailure(err))
+      } finally {
+        setSaving(false)
+      }
+    },
+    [saveOverride]
+  )
+
   // The success note belongs to the booking that produced it. Once the reload
   // has moved the queue on, it is stale — so it clears itself the moment a
   // different booking is in front of the user.
@@ -118,6 +144,7 @@ function Sheet({ onClose }) {
             failure={failure}
             done={done}
             onSave={onSave}
+            onDecide={onDecide}
             onSkip={onSkip}
           />
         ) : (
@@ -131,8 +158,26 @@ function Sheet({ onClose }) {
     </BottomSheet>
   )
 }
-
 // ── One booking ──────────────────────────────────────────────────────────────
+
+// THREE KINDS OF DECISION, and the screen has to be honest about which one it
+// is asking for — they are not variations of the same question:
+//
+//   unresolved       nothing recognises this text yet. Teach a merchant: mark
+//                    the words, name them, pick a category, and every other
+//                    booking the pattern explains follows.
+//   conflict         two merchants' patterns already claim this text. A third,
+//                    more specific pattern would remove neither claim —
+//                    matchMerchant has no specificity ranking, on purpose — so
+//                    offering one here would be a promise the engine cannot
+//                    keep. What is offered instead is a decision about this one
+//                    booking.
+//   review_required  the merchant IS recognised, and the user asked to see
+//                    every booking of it. A new default rule would settle
+//                    nothing; the category for this one booking would.
+//
+// The last two are written to the override table, which beats every rule and
+// leaves every rule alone.
 
 // Exported so a real browser can measure it. This is the screen that has to
 // survive a bank's imagination — a description of two hundred words, an amount
@@ -141,9 +186,81 @@ function Sheet({ onClose }) {
 // tools/financeClassifyLayout.mjs.
 export function BookingStep({
   entry, transactions, patterns, merchants, categories, overrides,
-  remaining, saving, failure, done, onSave, onSkip,
+  remaining, saving, failure, done, onSave, onDecide, onSkip,
 }) {
   const transaction = entry.transaction
+  const head = bookingHeadline(transaction)
+  const kind = decisionKindOf(entry)
+  const explanation = decisionExplanation(entry, merchants)
+
+  if (done) return <SavedStep done={done} remaining={remaining - 1} />
+
+  return (
+    <div>
+      <p className="text-caption text-text-muted">
+        {remaining === 1 ? 'Letzte offene Buchung' : `Noch ${remaining} offene Buchungen`}
+      </p>
+
+      <section className="mt-2 rounded-card border border-subtle bg-bg-card px-4 py-4">
+        <p className="text-page font-bold tabular-nums leading-tight text-text-primary">
+          {head.amount}
+        </p>
+        <p className="mt-1 text-caption text-text-secondary">{head.date}</p>
+        {explanation.headline && (
+          <>
+            <p className="mt-3 text-body font-semibold text-text-primary">{explanation.headline}</p>
+            {explanation.lines.map((line) => (
+              <p key={line} className="mt-1 text-ui text-text-secondary">
+                {line}
+              </p>
+            ))}
+          </>
+        )}
+      </section>
+
+      {kind === DECISION.LEARN ? (
+        <LearnDecision
+          transaction={transaction}
+          transactions={transactions}
+          patterns={patterns}
+          merchants={merchants}
+          categories={categories}
+          overrides={overrides}
+          saving={saving}
+          failure={failure}
+          onSave={onSave}
+        />
+      ) : (
+        <OverrideDecision
+          kind={kind}
+          entry={entry}
+          merchants={merchants}
+          categories={categories}
+          saving={saving}
+          failure={failure}
+          onDecide={onDecide}
+        />
+      )}
+
+      {/* „Später" changes nothing — not the booking, not a rule, not a row. It
+          is the way past a booking like Scalable Capital that does not belong in
+          a spending category at all, without forcing one on it. */}
+      <button
+        onClick={onSkip}
+        disabled={saving}
+        className="press-tint mt-3 w-full rounded-btn bg-bg-input py-3.5 text-body font-semibold text-text-primary disabled:opacity-40"
+      >
+        Später
+      </button>
+    </div>
+  )
+}
+
+// ── A) Nothing recognises this booking: teach a merchant ────────────────────
+
+function LearnDecision({
+  transaction, transactions, patterns, merchants, categories, overrides, saving, failure, onSave,
+}) {
   const { lines, segments, aligned } = useMemo(() => descriptionSegments(transaction), [transaction])
   const override = useMemo(
     () => overrides.find((o) => o.transaction_id === transaction.id) ?? null,
@@ -155,6 +272,7 @@ export function BookingStep({
   const [merchantId, setMerchantId] = useState(null)
   const [merchantName, setMerchantName] = useState('')
   const [nameTouched, setNameTouched] = useState(false)
+  const [alwaysReview, setAlwaysReview] = useState(false)
   const [categorySlug, setCategorySlug] = useState(null)
 
   // Tapping a word starts a range; tapping a second one completes it. The
@@ -190,6 +308,11 @@ export function BookingStep({
     if (!nameTouched && !merchantId) setMerchantName(visible)
   }, [visible, nameTouched, merchantId])
 
+  // An existing merchant's review mode is never changed from here: the request
+  // carries a mode only while a NEW merchant is being created. Changing an
+  // existing one is merchant administration, and this screen is not that.
+  const reviewMode = !merchantId && alwaysReview ? 'always_review' : null
+
   const built = useMemo(() => {
     if (tokens.length === 0 || !categorySlug) return null
     return buildLearnRequest({
@@ -200,12 +323,13 @@ export function BookingStep({
       categories,
       merchantId,
       merchantName,
+      reviewMode,
       transactions,
       patterns,
       overrides,
     })
   }, [transaction, tokens, patternType, categorySlug, categories, merchantId, merchantName,
-      transactions, patterns, overrides])
+      reviewMode, transactions, patterns, overrides])
 
   const numbers = built?.backtest
     ? backtestNumbers({ backtest: built.backtest, transaction, override })
@@ -220,37 +344,10 @@ export function BookingStep({
   const chosenMerchantName =
     merchants.find((m) => m.id === merchantId)?.canonical_name ?? merchantName.trim()
   const chosenCategoryName = categoryLabelOf(categories, categorySlug)
-
-  const head = bookingHeadline(transaction)
-  const canSave = !!built?.valid && !blocking && !saving && !done
-
-  if (done) {
-    return <SavedStep done={done} remaining={remaining - 1} />
-  }
+  const canSave = !!built?.valid && !blocking && !saving
 
   return (
     <div>
-      <p className="text-caption text-text-muted">
-        {remaining === 1 ? 'Letzte offene Buchung' : `Noch ${remaining} offene Buchungen`}
-      </p>
-
-      <section className="mt-2 rounded-card border border-subtle bg-bg-card px-4 py-4">
-        <p className="text-page font-bold tabular-nums leading-tight text-text-primary">
-          {head.amount}
-        </p>
-        <p className="mt-1 text-caption text-text-secondary">{head.date}</p>
-        {entry.status === 'conflict' && (
-          <p className="mt-3 text-ui text-text-secondary">
-            Diese Buchung wird von zwei Händlern beansprucht. Ein genaueres Muster löst das auf.
-          </p>
-        )}
-        {entry.status === 'review_required' && (
-          <p className="mt-3 text-ui text-text-secondary">
-            Dieser Händler wird jedes Mal geprüft — die Kategorie wird nie automatisch gesetzt.
-          </p>
-        )}
-      </section>
-
       <p className="px-1 pb-2 pt-6 text-meta font-semibold uppercase tracking-[0.08em] text-section-label">
         Wörter markieren
       </p>
@@ -279,6 +376,8 @@ export function BookingStep({
             merchants={merchants}
             merchantId={merchantId}
             name={merchantName}
+            alwaysReview={alwaysReview}
+            onAlwaysReview={setAlwaysReview}
             onName={(value) => {
               setNameTouched(true)
               setMerchantName(value)
@@ -286,6 +385,9 @@ export function BookingStep({
             onPick={(id) => {
               setMerchantId(id)
               setNameTouched(false)
+              // A mode belongs to a merchant being created, not to one being
+              // chosen — so choosing one drops it rather than carrying it over.
+              setAlwaysReview(false)
               if (id === null) setMerchantName(visible)
             }}
           />
@@ -327,6 +429,11 @@ export function BookingStep({
               </li>
             ))}
           </ul>
+          {reviewMode === 'always_review' && (
+            <p className="mt-3 text-ui text-text-secondary">
+              {chosenMerchantName} wird danach bei jeder Buchung erneut gefragt.
+            </p>
+          )}
           {warnings.map((warning) => (
             <p key={warning.text} className="mt-3 text-caption text-text-muted">
               {warning.text}
@@ -351,20 +458,107 @@ export function BookingStep({
       >
         {saving ? 'Wird gespeichert …' : 'Zuordnung speichern'}
       </button>
+    </div>
+  )
+}
 
-      {/* „Später" changes nothing — not the booking, not a rule, not a row. It
-          is the way past a booking like Scalable Capital that does not belong in
-          a spending category at all, without forcing one on it. */}
+// ── B) One booking, decided by hand ─────────────────────────────────────────
+//
+// For a conflict and for an always_review merchant alike. No pattern is
+// created, none is deactivated, and no merchant's review mode is touched: what
+// is written is one row in the override table, which is the mechanism 0008
+// built for a decision that beats every rule and changes none of them.
+function OverrideDecision({ kind, entry, merchants, categories, saving, failure, onDecide }) {
+  const claimants = entry.merchantMatch?.merchantIds ?? []
+  const recognised = entry.merchantMatch?.merchant ?? null
+
+  const [merchantId, setMerchantId] = useState(recognised?.id ?? (claimants.length === 1 ? claimants[0] : null))
+  const [categorySlug, setCategorySlug] = useState(null)
+
+  const category = categories.find((c) => c.slug === categorySlug) ?? null
+  const merchantName =
+    merchants.find((m) => m.id === merchantId)?.canonical_name ?? recognised?.canonical_name ?? ''
+  const canSave = !!category && !!merchantId && !saving
+
+  return (
+    <div>
+      {kind === DECISION.RESOLVE_CONFLICT ? (
+        <>
+          <p className="px-1 pb-2 pt-6 text-meta font-semibold uppercase tracking-[0.08em] text-section-label">
+            Händler für diese Buchung
+          </p>
+          <div className="overflow-hidden rounded-card border border-subtle bg-bg-card">
+            {claimants.map((id, i) => {
+              const name = claimingMerchants(entry, merchants)[i]
+              return (
+                <button
+                  key={id}
+                  onClick={() => setMerchantId(id)}
+                  aria-pressed={merchantId === id}
+                  className={`press-tint flex min-h-[44px] w-full items-center justify-between px-4 py-3 text-left ${
+                    i < claimants.length - 1 ? 'border-b border-subtle' : ''
+                  }`}
+                >
+                  <span className={`text-body ${merchantId === id ? 'font-semibold text-text-primary' : 'text-text-secondary'}`}>
+                    {name}
+                  </span>
+                  {merchantId === id && <Check size={18} className="shrink-0 text-accent" />}
+                </button>
+              )
+            })}
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="px-1 pb-2 pt-6 text-meta font-semibold uppercase tracking-[0.08em] text-section-label">
+            Händler
+          </p>
+          <div className="rounded-card border border-subtle bg-bg-card px-4 py-4">
+            <p className="text-body font-semibold text-text-primary">
+              {recognised?.canonical_name ?? 'Erkannt'}
+            </p>
+            <p className="mt-1 text-caption text-text-secondary">
+              Bereits erkannt — hier ist nichts zu lernen.
+            </p>
+          </div>
+        </>
+      )}
+
+      <p className="px-1 pb-2 pt-6 text-meta font-semibold uppercase tracking-[0.08em] text-section-label">
+        Kategorie für diese Buchung
+      </p>
+      <CategoryPicker categories={categories} value={categorySlug} onPick={setCategorySlug} />
+
+      {failure && (
+        <p className="mt-6 text-ui text-text-primary" role="alert">
+          {failure}
+        </p>
+      )}
+
+      {canSave && (
+        <p className="mt-6 text-ui text-text-secondary">
+          {`Diese Buchung wird ${merchantName} · ${category.label}. Es wird kein Muster gespeichert.`}
+        </p>
+      )}
+
       <button
-        onClick={onSkip}
-        disabled={saving}
-        className="press-tint mt-3 w-full rounded-btn bg-bg-input py-3.5 text-body font-semibold text-text-primary disabled:opacity-40"
+        onClick={() =>
+          onDecide(
+            entry.transaction.id,
+            buildOverride({ merchantId, categoryId: category.id }),
+            { kind, merchantName, categoryName: category.label }
+          )
+        }
+        disabled={!canSave}
+        aria-busy={saving}
+        className="press-tint mt-2 w-full rounded-btn bg-accent py-3.5 text-body font-semibold text-white disabled:opacity-40"
       >
-        Später
+        {saving ? 'Wird gespeichert …' : 'Nur diese Buchung entscheiden'}
       </button>
     </div>
   )
 }
+
 
 // ── The gesture ──────────────────────────────────────────────────────────────
 
@@ -409,7 +603,9 @@ function WordPicker({ lines, range, onWord }) {
 
 // ── Merchant ─────────────────────────────────────────────────────────────────
 
-function MerchantPicker({ merchants, merchantId, name, onName, onPick }) {
+function MerchantPicker({
+  merchants, merchantId, name, alwaysReview, onAlwaysReview, onName, onPick,
+}) {
   const [query, setQuery] = useState('')
   const found = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -445,6 +641,27 @@ function MerchantPicker({ merchants, merchantId, name, onName, onPick }) {
           onChange={(e) => onName(e.target.value)}
           placeholder="Wie heißt dieser Händler?"
           className="w-full rounded-input bg-bg-input px-4 py-3.5 text-field text-text-primary placeholder:text-text-muted outline-none ring-1 ring-transparent focus:ring-accent"
+        />
+      </label>
+
+      {/* The only merchant setting this screen offers, and only while one is
+          being created: a merchant like PayPal, whose bookings are really
+          somebody else's, should be looked at every time rather than filed
+          automatically. An EXISTING merchant is never changed from here — that
+          is merchant administration, and it does not belong in a flow whose
+          subject is one booking. */}
+      <label className="press-tint mt-4 flex min-h-[44px] items-center justify-between gap-3 rounded-btn bg-bg-input px-4 py-3">
+        <span className="min-w-0 flex-1">
+          <span className="block text-ui text-text-primary">Diesen Händler künftig immer prüfen</span>
+          <span className="mt-0.5 block text-caption text-text-muted">
+            Für Zahlungsdienste wie PayPal, hinter denen der eigentliche Händler steckt.
+          </span>
+        </span>
+        <input
+          type="checkbox"
+          checked={alwaysReview}
+          onChange={(e) => onAlwaysReview(e.target.checked)}
+          className="h-6 w-6 shrink-0 accent-accent"
         />
       </label>
 
