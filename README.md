@@ -673,13 +673,48 @@ Three rules the screen holds to, and the reasons:
   matching forever. Those words are shown and struck through rather than hidden;
   the intact words of the same booking stay usable.
 
-`tools/financeClassifyLogic.mjs` covers it with 166 assertions against the real
-engine; `tools/financeClassifyE2E.mjs` (107) runs the whole gesture against a
+### Zählt diese Buchung? — effective analytics inclusion
+
+Three things can have an opinion about whether a booking belongs in a spending
+total, and `src/lib/finance/analytics.js` asks them in one order:
+
+1. an explicit decision about THIS booking (`finance_transaction_overrides.include_in_analytics`)
+2. the default of the merchant, **if it is unambiguous** (`finance_merchants.default_include_in_analytics`, added by 0010)
+3. what the import wrote on the booking
+4. `true`
+
+Step 2 deliberately does not read `finance_transactions.merchant_id`. The
+pattern engine is the authority on which merchant a booking belongs to, so a
+Scalable Capital booking imported tomorrow — carrying no merchant id at all —
+follows the merchant's default the moment a pattern recognises it. A booking two
+merchants claim has no unambiguous default and falls through to its own column.
+
+„Nicht berücksichtigen" is an interpretation, never a deletion: no booking is
+rewritten, nothing is removed, and every step is reversible.
+
+The same rule exists twice — in JavaScript for the screen, and in SQL for
+`finance_analytics_transactions`, which a future chart will read. Two
+implementations of one rule is one of them waiting to be wrong, so
+`tools/financeAnalyticsE2E.mjs` (50) does not test them separately: it builds a
+database full of awkward cases and asserts, row by row, that the view and the
+function select exactly the same bookings.
+
+A note lives in the same override row (`note`, 500 characters, trimmed, empty
+means null). `financeRepository.saveOverride` therefore takes the override as
+last read and sends the merged row: a save that only decides a note cannot drop
+the merchant somebody picked last week, whatever the server would have done with
+a partial payload. `tools/financeAnalyticsLogic.mjs` covers all of it with 72
+assertions.
+
+`tools/financeClassifyLogic.mjs` covers the flow with 166 assertions against the
+real engine; `tools/financeClassifyE2E.mjs` (107) runs the whole gesture against a
 real Postgres and the real `finance_learn_merchant_rule`, **reloading after
 every save** — including the assertion the screen exists for: the number the
 preview promised and the `applied_count` the database returns are the same
-number. `tools/financeClassifyLayout.mjs` (19) measures the screen in Chromium
-at 390 px with a booking whose longest word is 78 characters.
+number. `tools/financeClassifyLayout.mjs` (112) measures the screen in Chromium on two
+phone heights — 390×844 and 390×667 — and on three kinds of content. The
+assertion v1.22 exists for is that the ordinary case FITS: header to footer, no
+scrolling, with 269 px of room to spare on an iPhone and 92 px on an SE.
 
 The flow needed **no migration**: 0008 already holds the merchants, the
 patterns, the rules, the overrides and the atomic learning function, and 0009

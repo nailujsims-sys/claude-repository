@@ -177,8 +177,30 @@ export function FinanceProvider({ children }) {
    * The global patterns and rules are not touched, which is the whole point.
    */
   const saveOverride = useCallback(
-    async (transactionId, decision) => {
-      const row = await repo.saveOverride(user.id, transactionId, decision)
+    async (transactionId, patch) => {
+      // The override as last read travels with the patch, so a save that only
+      // decides a note cannot drop the merchant somebody picked last week. See
+      // financeRepository.saveOverride for why the merge is done here rather
+      // than left to the server.
+      const current = overrides.find((o) => o.transaction_id === transactionId) ?? null
+      const row = await repo.saveOverride(user.id, transactionId, patch, current)
+      await load({ silent: true })
+      return row
+    },
+    [user, repo, load, overrides]
+  )
+
+  /**
+   * „Buchungen dieses Händlers zählen nicht." — or count again.
+   *
+   * One column on the merchant, and deliberately reversible: this is an
+   * interpretation of the data, never a change to it. No booking is rewritten;
+   * what changes is the answer resolveAnalyticsInclusion gives for every
+   * booking the pattern engine recognises as this merchant's, past and future.
+   */
+  const setMerchantAnalytics = useCallback(
+    async (merchantId, include) => {
+      const row = await repo.setMerchantAnalyticsDefault(user.id, merchantId, include)
       await load({ silent: true })
       return row
     },
@@ -206,10 +228,11 @@ export function FinanceProvider({ children }) {
       applyPlan,
       learnRule,
       saveOverride,
+      setMerchantAnalytics,
     }),
     [accounts, account, transactions, observations, categories, merchants, patterns, categoryRules,
      overrides, loading, error, load, createAccount, findImport, openImport, applyPlan, learnRule,
-     saveOverride]
+     saveOverride, setMerchantAnalytics]
   )
 
   return <FinanceContext.Provider value={value}>{children}</FinanceContext.Provider>

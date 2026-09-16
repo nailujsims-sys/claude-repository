@@ -335,7 +335,14 @@ export function makeBackend({
     const url = new URL(typeof input === 'string' ? input : input.url)
     const method = (init.method || (typeof input !== 'string' && input.method) || 'GET').toUpperCase()
     const headers = new Headers(init.headers || (typeof input !== 'string' ? input.headers : undefined))
-    calls.push({ method, path: url.pathname, search: url.search })
+    // The body travels with the call, so a test can assert on what was SENT and
+    // not only on what the stub stored. A repository that merges a patch before
+    // writing it is only provable that way.
+    let recorded
+    if (typeof init.body === 'string') {
+      try { recorded = JSON.parse(init.body) } catch { recorded = init.body }
+    }
+    calls.push({ method, path: url.pathname, search: url.search, body: recorded })
 
     // ── The exchange-rate source ──────────────────────────────────────────
     // Everything that is not this project's Supabase host is the rate API: the
@@ -478,14 +485,41 @@ export function makeBackend({
           expenses: expenseRow,
           ...Object.fromEntries(FINANCE_TABLES.map((name) => [name, financeRow])),
         }[table] ?? taskRow
-      const created = incoming.map((data) => {
+      // An UPSERT is a POST with `Prefer: resolution=merge-duplicates` and the
+      // conflict target in `on_conflict`. Without this the stub inserted a
+      // second row where Postgres would have updated the first — so a test
+      // could pass here and the app lose data in production, which is the one
+      // thing this stub exists to prevent.
+      // Read off the URL rather than the parsed filters: `on_conflict` is not a
+      // filter, it is the conflict target, and it never appears as `col=eq.x`.
+      const prefer = headers.get('prefer') ?? ''
+      const conflict = prefer.includes('resolution=merge-duplicates')
+        ? (url.searchParams.get('on_conflict') ?? '').split(',').filter(Boolean)
+        : []
+
+      const created = []
+      const updated = []
+      for (const data of incoming) {
         // The database rejects a row without an owner, and so does this.
         if (!data.user_id) throw new Error('supabaseStub: insert without user_id')
-        return build(data)
-      })
-      rows.push(...created)
+        const existing =
+          conflict.length > 0
+            ? rows.find((r) => conflict.every((column) => r[column] === data[column]))
+            : null
+        if (existing) {
+          // ON CONFLICT DO UPDATE writes the columns the payload names and
+          // leaves every other one alone.
+          Object.assign(existing, data)
+          updated.push(existing)
+        } else {
+          const row = build(data)
+          rows.push(row)
+          created.push(row)
+        }
+      }
       for (const row of created) onChange?.({ table, type: 'INSERT', record: { ...row } })
-      return respond(created)
+      for (const row of updated) onChange?.({ table, type: 'UPDATE', record: { ...row } })
+      return respond([...created, ...updated])
     }
 
     if (method === 'PATCH') {

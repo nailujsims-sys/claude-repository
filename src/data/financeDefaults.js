@@ -34,7 +34,16 @@ export const WRITABLE_FINANCE_ACCOUNT_FIELDS = ['name', 'provider', 'currency', 
 
 export const WRITABLE_FINANCE_CATEGORY_FIELDS = ['slug', 'label', 'sort_order', 'updated_at']
 
-export const WRITABLE_FINANCE_MERCHANT_FIELDS = ['canonical_name', 'review_mode', 'updated_at']
+export const WRITABLE_FINANCE_MERCHANT_FIELDS = [
+  'canonical_name',
+  'review_mode',
+  // Whether this merchant's bookings count in a spending total. A default for
+  // every booking that says nothing itself; an override on the booking wins.
+  // Written through financeRepository.setMerchantAnalyticsDefault, which
+  // touches this column and no other.
+  'default_include_in_analytics',
+  'updated_at',
+]
 
 export const WRITABLE_FINANCE_PATTERN_FIELDS = [
   'merchant_id',

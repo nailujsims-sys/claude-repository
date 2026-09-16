@@ -1,27 +1,30 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Search } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Check, ChevronRight, Search } from 'lucide-react'
 import BottomSheet from './BottomSheet'
+import Toggle from './Toggle'
 import { useFinance } from '../context/FinanceContext'
 import { useUI } from '../context/UIContext'
 import { buildClassificationQueue } from '../lib/finance/classificationQueue'
 import { buildLearnRequest } from '../lib/finance/learning'
+import { analyticsInclusion } from '../lib/finance/analytics'
 import { failureLog } from '../lib/finance/importFlow'
 import {
   DECISION,
+  MAX_NOTE_LENGTH,
   backtestNumbers,
   blockingConflict,
+  bookingHeadline,
   buildOverride,
+  categoryLabelOf,
   claimingMerchants,
+  compactPreview,
   decisionExplanation,
   decisionKindOf,
-  describeOverrideResult,
-  bookingHeadline,
-  categoryLabelOf,
-  confirmationLines,
   describeLearnFailure,
-  describeLearnResult,
+  describeSaveOutcome,
   descriptionSegments,
   learnErrorLines,
+  normalizeNote,
   patternLabelOf,
   patternTypeFor,
   patternWarnings,
@@ -29,21 +32,22 @@ import {
   rangeText,
   rangeTokens,
   selectionRange,
+  shortDescription,
 } from '../lib/finance/classificationFlow'
 
-// Zuordnung: one booking, one gesture, one rule.
+// Zuordnung: one booking, one screen, one tap per decision.
 //
-// The gesture is the whole feature — mark the words that identify the merchant,
-// name them, pick a category. Everything the screen then says about what that
-// will do comes from the engine that 0008 already contains: matchMerchant
-// decides who a booking belongs to, resolveCategory what kind of spending it
-// was, backtestPattern what the new pattern would do to the bookings that exist,
-// and finance_learn_merchant_rule writes all of it in one transaction.
+// v1.21 built the flow; production then said it was too tall — every decision
+// was a card with a heading, and the save button lived below the fold. The
+// answer is not tighter padding, it is PROGRESSIVE DISCLOSURE: the screen shows
+// what was decided, one compact row per decision, and the pickers themselves
+// open as their own small sheets. What stays visible at all times is the
+// booking, the gesture, and the two buttons.
 //
-// NOTHING HERE MATCHES ANYTHING. There is no second, simpler matcher in this
-// file, no ranking between two merchants, no list of words to ignore. When the
-// engine says a booking is claimed by two merchants, the screen says so and the
-// user decides.
+// NOTHING HERE DECIDES ANYTHING, unchanged from v1.21: matchMerchant decides
+// who a booking belongs to, resolveCategory what kind of spending it was,
+// backtestPattern what a new pattern would do, resolveAnalyticsInclusion
+// whether a booking counts, and the database writes.
 export default function FinanceClassifySheet() {
   const { financeClassify, closeFinanceClassify } = useUI()
   return financeClassify ? <Sheet onClose={closeFinanceClassify} /> : null
@@ -52,12 +56,9 @@ export default function FinanceClassifySheet() {
 function Sheet({ onClose }) {
   const {
     transactions, patterns, merchants, categories, categoryRules, overrides,
-    learnRule, saveOverride,
+    learnRule, saveOverride, setMerchantAnalytics,
   } = useFinance()
 
-  // Pushed back with „Später": a session-only list. It changes no data, which is
-  // exactly why it may not be persisted — a booking postponed on the phone is
-  // still open everywhere else.
   const [skipped, setSkipped] = useState(() => new Set())
   const [saving, setSaving] = useState(false)
   const [failure, setFailure] = useState(null)
@@ -78,58 +79,58 @@ function Sheet({ onClose }) {
     setFailure(null)
   }, [entry])
 
+  /**
+   * Everything this screen decided, saved.
+   *
+   * Sequenced rather than wrapped in a new database function, and deliberately:
+   * the rule path IS finance_learn_merchant_rule and must stay that way, an
+   * override is a single row, and a merchant default is a single column — each
+   * step is idempotent on its own, so a repeat after a failure re-does no harm.
+   * What a sequence cannot give is all-or-nothing, so the screen does the other
+   * honest thing: it reports exactly which steps happened. It never says
+   * „gespeichert" over a half-written decision.
+   */
   const onSave = useCallback(
-    async (request, labels) => {
+    async ({ learnRequest, transactionId, override, merchantScope }) => {
       setSaving(true)
       setFailure(null)
+      const steps = { rule: null, override: null, merchant: null }
       try {
-        const result = await learnRule(request)
-        // Read from the database's answer, not from the preview: the two agree,
-        // and where they would not, the database is the one that is right.
-        setDone(describeLearnResult(result, labels))
+        let merchantId = merchantScope?.merchantId ?? null
+        if (learnRequest) {
+          const result = await learnRule(learnRequest)
+          steps.rule = result
+          merchantId = result?.merchant_id ?? merchantId
+        }
+        if (override) {
+          await saveOverride(transactionId, override)
+          steps.override = true
+        }
+        if (merchantScope && merchantId) {
+          await setMerchantAnalytics(merchantId, merchantScope.include)
+          steps.merchant = true
+        }
+        setDone(describeSaveOutcome({ steps, ...merchantScope, labels: merchantScope?.labels }))
       } catch (err) {
         console.error(failureLog('zuordnen', err))
-        setFailure(describeLearnFailure(err))
+        setFailure(describeSaveOutcome({ steps, error: err }).failure ?? describeLearnFailure(err))
       } finally {
         setSaving(false)
       }
     },
-    [learnRule]
+    [learnRule, saveOverride, setMerchantAnalytics]
   )
-
-  // The other kind of save: one booking, decided by hand, global rules
-  // untouched.
-  const onDecide = useCallback(
-    async (transactionId, decision, labels) => {
-      setSaving(true)
-      setFailure(null)
-      try {
-        await saveOverride(transactionId, decision)
-        setDone(describeOverrideResult(labels))
-      } catch (err) {
-        console.error(failureLog('entscheiden', err))
-        setFailure(describeLearnFailure(err))
-      } finally {
-        setSaving(false)
-      }
-    },
-    [saveOverride]
-  )
-
-  // The success note belongs to the booking that produced it. Once the reload
-  // has moved the queue on, it is stale — so it clears itself the moment a
-  // different booking is in front of the user.
-  const doneFor = useRef(null)
-  useEffect(() => {
-    if (done && doneFor.current !== entry?.transaction?.id) setDone(null)
-    if (!done) doneFor.current = entry?.transaction?.id ?? null
-  }, [entry, done])
 
   return (
     <BottomSheet open onClose={onClose} full title="Zuordnung">
-      <div className="px-5 py-5 pb-10">
+      {/* One scroll container — BottomSheet's own — and a footer that sticks to
+          its bottom edge. The actions are therefore reachable without scrolling
+          whatever the booking text does, which was the whole complaint. */}
+      <div className="flex min-h-full flex-col px-5 pt-3">
         {open.length === 0 ? (
           <FinishedStep onClose={onClose} />
+        ) : done ? (
+          <SavedStep done={done} remaining={queue.length - 1} onClose={onClose} />
         ) : entry ? (
           <BookingStep
             key={entry.transaction.id}
@@ -142,143 +143,61 @@ function Sheet({ onClose }) {
             remaining={queue.length}
             saving={saving}
             failure={failure}
-            done={done}
             onSave={onSave}
-            onDecide={onDecide}
             onSkip={onSkip}
           />
         ) : (
-          <PostponedStep
-            count={open.length}
-            onAgain={() => setSkipped(new Set())}
-            onClose={onClose}
-          />
+          <PostponedStep count={open.length} onAgain={() => setSkipped(new Set())} onClose={onClose} />
         )}
       </div>
     </BottomSheet>
   )
 }
+
 // ── One booking ──────────────────────────────────────────────────────────────
 
-// THREE KINDS OF DECISION, and the screen has to be honest about which one it
-// is asking for — they are not variations of the same question:
-//
-//   unresolved       nothing recognises this text yet. Teach a merchant: mark
-//                    the words, name them, pick a category, and every other
-//                    booking the pattern explains follows.
-//   conflict         two merchants' patterns already claim this text. A third,
-//                    more specific pattern would remove neither claim —
-//                    matchMerchant has no specificity ranking, on purpose — so
-//                    offering one here would be a promise the engine cannot
-//                    keep. What is offered instead is a decision about this one
-//                    booking.
-//   review_required  the merchant IS recognised, and the user asked to see
-//                    every booking of it. A new default rule would settle
-//                    nothing; the category for this one booking would.
-//
-// The last two are written to the override table, which beats every rule and
-// leaves every rule alone.
-
-// Exported so a real browser can measure it. This is the screen that has to
-// survive a bank's imagination — a description of two hundred words, an amount
-// with two thousands separators, a merchant list that does not end — and none
-// of that can be checked in a DOM without layout. See
-// tools/financeClassifyLayout.mjs.
+// THREE KINDS OF DECISION, and the screen asks for the right one — unchanged
+// from v1.21 (see classificationFlow.js). What changed is how much room each
+// one takes: a pattern gesture only where a pattern is what is missing.
 export function BookingStep({
   entry, transactions, patterns, merchants, categories, overrides,
-  remaining, saving, failure, done, onSave, onDecide, onSkip,
+  remaining, saving, failure, onSave, onSkip,
 }) {
   const transaction = entry.transaction
   const head = bookingHeadline(transaction)
   const kind = decisionKindOf(entry)
   const explanation = decisionExplanation(entry, merchants)
-
-  if (done) return <SavedStep done={done} remaining={remaining - 1} />
-
-  return (
-    <div>
-      <p className="text-caption text-text-muted">
-        {remaining === 1 ? 'Letzte offene Buchung' : `Noch ${remaining} offene Buchungen`}
-      </p>
-
-      <section className="mt-2 rounded-card border border-subtle bg-bg-card px-4 py-4">
-        <p className="text-page font-bold tabular-nums leading-tight text-text-primary">
-          {head.amount}
-        </p>
-        <p className="mt-1 text-caption text-text-secondary">{head.date}</p>
-        {explanation.headline && (
-          <>
-            <p className="mt-3 text-body font-semibold text-text-primary">{explanation.headline}</p>
-            {explanation.lines.map((line) => (
-              <p key={line} className="mt-1 text-ui text-text-secondary">
-                {line}
-              </p>
-            ))}
-          </>
-        )}
-      </section>
-
-      {kind === DECISION.LEARN ? (
-        <LearnDecision
-          transaction={transaction}
-          transactions={transactions}
-          patterns={patterns}
-          merchants={merchants}
-          categories={categories}
-          overrides={overrides}
-          saving={saving}
-          failure={failure}
-          onSave={onSave}
-        />
-      ) : (
-        <OverrideDecision
-          kind={kind}
-          entry={entry}
-          merchants={merchants}
-          categories={categories}
-          saving={saving}
-          failure={failure}
-          onDecide={onDecide}
-        />
-      )}
-
-      {/* „Später" changes nothing — not the booking, not a rule, not a row. It
-          is the way past a booking like Scalable Capital that does not belong in
-          a spending category at all, without forcing one on it. */}
-      <button
-        onClick={onSkip}
-        disabled={saving}
-        className="press-tint mt-3 w-full rounded-btn bg-bg-input py-3.5 text-body font-semibold text-text-primary disabled:opacity-40"
-      >
-        Später
-      </button>
-    </div>
-  )
-}
-
-// ── A) Nothing recognises this booking: teach a merchant ────────────────────
-
-function LearnDecision({
-  transaction, transactions, patterns, merchants, categories, overrides, saving, failure, onSave,
-}) {
-  const { lines, segments, aligned } = useMemo(() => descriptionSegments(transaction), [transaction])
   const override = useMemo(
     () => overrides.find((o) => o.transaction_id === transaction.id) ?? null,
     [overrides, transaction]
   )
 
+  const { lines, segments, aligned } = useMemo(() => descriptionSegments(transaction), [transaction])
+
+  // ── what the user decides here ──
   const [anchor, setAnchor] = useState(null)
   const [range, setRange] = useState(null)
-  const [merchantId, setMerchantId] = useState(null)
+  const [merchantId, setMerchantId] = useState(
+    () => entry.merchantMatch?.merchant?.id ??
+      (entry.merchantMatch?.merchantIds?.length === 1 ? entry.merchantMatch.merchantIds[0] : null)
+  )
   const [merchantName, setMerchantName] = useState('')
   const [nameTouched, setNameTouched] = useState(false)
   const [alwaysReview, setAlwaysReview] = useState(false)
-  const [categorySlug, setCategorySlug] = useState(null)
+  const [categorySlug, setCategorySlug] = useState(
+    () => categories.find((c) => c.id === entry.category?.suggestedCategoryId)?.slug ?? null
+  )
+  const [note, setNote] = useState(override?.note ?? '')
+  const [picker, setPicker] = useState(null) // 'merchant' | 'category' | null
 
-  // Tapping a word starts a range; tapping a second one completes it. The
-  // second tap may be to the left of the first — a range has no direction.
-  // Tapping the only selected word again clears it, which is the way back out
-  // of a selection without a separate button.
+  // Whether this booking counts — started from the answer that is true today,
+  // so the switch shows the state rather than a guess about it.
+  const current = analyticsInclusion({
+    transaction, override, merchantMatch: entry.merchantMatch, merchants,
+  })
+  const [include, setInclude] = useState(current.included)
+  const [scope, setScope] = useState('transaction') // 'transaction' | 'merchant'
+
   const onWord = useCallback(
     (segment) => {
       if (!segment.learnable) return
@@ -299,26 +218,20 @@ function LearnDecision({
 
   const tokens = useMemo(() => rangeTokens(segments, range), [segments, range])
   const visible = useMemo(() => rangeText(segments, range), [segments, range])
-  const patternType = patternTypeFor(tokens)
 
-  // The merchant name follows the marked words until the user types their own.
-  // „ALDI.SUED/Esslingen.am" and „ALDI SUED" can both become patterns of one
-  // „ALDI Süd" that way, because the name is a suggestion and never a key.
   useEffect(() => {
     if (!nameTouched && !merchantId) setMerchantName(visible)
   }, [visible, nameTouched, merchantId])
 
-  // An existing merchant's review mode is never changed from here: the request
-  // carries a mode only while a NEW merchant is being created. Changing an
-  // existing one is merchant administration, and this screen is not that.
   const reviewMode = !merchantId && alwaysReview ? 'always_review' : null
+  const learning = kind === DECISION.LEARN
 
   const built = useMemo(() => {
-    if (tokens.length === 0 || !categorySlug) return null
+    if (!learning || tokens.length === 0 || !categorySlug) return null
     return buildLearnRequest({
       transaction,
       selection: tokens,
-      patternType,
+      patternType: patternTypeFor(tokens),
       categorySlug,
       categories,
       merchantId,
@@ -328,7 +241,7 @@ function LearnDecision({
       patterns,
       overrides,
     })
-  }, [transaction, tokens, patternType, categorySlug, categories, merchantId, merchantName,
+  }, [learning, transaction, tokens, categorySlug, categories, merchantId, merchantName,
       reviewMode, transactions, patterns, overrides])
 
   const numbers = built?.backtest
@@ -336,270 +249,331 @@ function LearnDecision({
     : null
   const blocking = built?.backtest ? blockingConflict({ backtest: built.backtest, merchants }) : null
   const warnings = built?.backtest && numbers
-    ? patternWarnings({
-        backtest: built.backtest, numbers, total: transactions.length, merchantId,
-      })
+    ? patternWarnings({ backtest: built.backtest, numbers, total: transactions.length, merchantId })
     : []
 
-  const chosenMerchantName =
-    merchants.find((m) => m.id === merchantId)?.canonical_name ?? merchantName.trim()
-  const chosenCategoryName = categoryLabelOf(categories, categorySlug)
-  const canSave = !!built?.valid && !blocking && !saving
+  const chosenMerchant = merchants.find((m) => m.id === merchantId) ?? null
+  const chosenMerchantName = chosenMerchant?.canonical_name ?? merchantName.trim()
+  const chosenCategory = categories.find((c) => c.slug === categorySlug) ?? null
+  const categoryName = categoryLabelOf(categories, categorySlug)
+
+  // A merchant-wide analytics decision needs a merchant that already exists —
+  // for a brand-new one the id arrives with the learn call, which is why the
+  // scope row only appears once one is picked or recognised.
+  const merchantKnown = Boolean(chosenMerchant) || Boolean(built?.request && merchantName.trim())
+  const scopeOffered = !include && merchantKnown
+
+  const noteValue = normalizeNote(note)
+  const noteChanged = noteValue !== (override?.note ?? null)
+  const includeChanged = include !== current.included || scope === 'merchant'
+
+  const canSave = learning
+    ? Boolean(built?.valid) && !blocking && !saving
+    : Boolean(chosenCategory) && Boolean(merchantId) && !saving
+
+  const submit = () => {
+    const labels = { merchantName: chosenMerchantName, categoryName }
+    // For a conflict or a review the override IS the decision, so it always
+    // carries merchant and category. For a learned rule the rule carries them,
+    // and an override is written only when the user decided something the rule
+    // cannot hold: a note, or that this booking does not count.
+    const overridePatch = learning
+      ? (noteChanged || (includeChanged && scope === 'transaction')
+          ? {
+              ...(noteChanged ? { note: noteValue } : {}),
+              ...(includeChanged && scope === 'transaction' ? { include_in_analytics: include } : {}),
+            }
+          : null)
+      : {
+          ...buildOverride({ merchantId, categoryId: chosenCategory.id }),
+          note: noteValue,
+          ...(scope === 'transaction' ? { include_in_analytics: include } : {}),
+        }
+
+    onSave({
+      learnRequest: learning ? built.request : null,
+      transactionId: transaction.id,
+      override: overridePatch,
+      merchantScope:
+        scope === 'merchant' && merchantKnown
+          ? { merchantId, include, labels, kind, reason: entry.category?.reason ?? null }
+          : { merchantId: null, include, labels, kind, reason: entry.category?.reason ?? null },
+    })
+  }
 
   return (
-    <div>
-      <p className="px-1 pb-2 pt-6 text-meta font-semibold uppercase tracking-[0.08em] text-section-label">
-        Wörter markieren
+    <>
+      {/* ── the booking, in three lines ── */}
+      <p className="text-caption text-text-muted">
+        {remaining === 1 ? 'Letzte offene Buchung' : `Noch ${remaining} offene Buchungen`}
       </p>
-      <section className="rounded-card border border-subtle bg-bg-card px-4 py-4">
-        <WordPicker lines={lines} range={range} onWord={onWord} />
-        {!aligned && (
-          <p className="mt-3 text-caption text-text-muted">
-            Der gespeicherte Text dieser Buchung weicht vom angezeigten ab — eine Markierung kann
-            hier abgelehnt werden.
-          </p>
-        )}
-        {range && !rangeIsLearnable(segments, range) && (
-          <p className="mt-3 text-caption text-text-muted" role="alert">
-            Dieses Wort stammt aus einem Teil, den die importierte Datei nicht vollständig kodiert
-            hat. Bitte einen anderen Teil markieren.
-          </p>
-        )}
-      </section>
+      <div className="mt-1 flex items-baseline justify-between gap-3">
+        <p className="text-section font-bold tabular-nums text-text-primary">
+          {head.amount}
+        </p>
+        <p className="shrink-0 text-caption text-text-secondary">{head.date}</p>
+      </div>
+      <p className="mt-0.5 truncate text-caption text-text-muted" title={transaction.raw_description}>
+        {shortDescription(transaction)}
+      </p>
 
-      {tokens.length > 0 && (
+      {explanation.headline && (
+        <div className="mt-3 rounded-btn bg-bg-card px-3 py-2">
+          <p className="text-ui font-medium text-text-primary">{explanation.headline}</p>
+          {explanation.lines.map((line) => (
+            <p key={line} className="mt-0.5 text-caption text-text-secondary">
+              {line}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {/* ── the gesture, only where a pattern is what is missing ── */}
+      {learning && (
         <>
-          <p className="px-1 pb-2 pt-6 text-meta font-semibold uppercase tracking-[0.08em] text-section-label">
-            Händler
+          <p className="pb-1.5 pt-4 text-meta font-semibold uppercase tracking-[0.08em] text-section-label">
+            Wörter markieren
           </p>
-          <MerchantPicker
-            merchants={merchants}
-            merchantId={merchantId}
-            name={merchantName}
-            alwaysReview={alwaysReview}
-            onAlwaysReview={setAlwaysReview}
-            onName={(value) => {
-              setNameTouched(true)
-              setMerchantName(value)
-            }}
-            onPick={(id) => {
-              setMerchantId(id)
-              setNameTouched(false)
-              // A mode belongs to a merchant being created, not to one being
-              // chosen — so choosing one drops it rather than carrying it over.
-              setAlwaysReview(false)
-              if (id === null) setMerchantName(visible)
-            }}
-          />
-
-          <p className="px-1 pb-2 pt-6 text-meta font-semibold uppercase tracking-[0.08em] text-section-label">
-            Kategorie
-          </p>
-          <CategoryPicker categories={categories} value={categorySlug} onPick={setCategorySlug} />
+          {/* Capped and scrollable on its own: a five-line booking text may not
+              push the buttons off the screen. */}
+          <div className="max-h-[132px] overflow-y-auto overscroll-contain rounded-btn bg-bg-card px-3 py-2">
+            <WordPicker lines={lines} range={range} onWord={onWord} />
+          </div>
+          {!aligned && (
+            <p className="mt-1.5 text-caption text-text-muted">
+              Der gespeicherte Text weicht vom angezeigten ab — eine Markierung kann abgelehnt werden.
+            </p>
+          )}
+          {range && !rangeIsLearnable(segments, range) && (
+            <p className="mt-1.5 text-caption text-text-muted" role="alert">
+              Dieses Wort ist nicht vollständig lesbar und kann kein Muster werden.
+            </p>
+          )}
         </>
       )}
 
+      {/* ── the decisions, one compact row each ── */}
+      <div className="mt-4 overflow-hidden rounded-card bg-bg-card">
+        {kind === DECISION.RESOLVE_CONFLICT ? (
+          <PickerRow
+            label="Händler"
+            value={chosenMerchantName || 'Wählen'}
+            onClick={() => setPicker('merchant')}
+          />
+        ) : learning ? (
+          <PickerRow
+            label="Händler"
+            value={chosenMerchantName || 'Wählen'}
+            disabled={tokens.length === 0}
+            hint={tokens.length === 0 ? 'Erst Wörter markieren' : undefined}
+            onClick={() => setPicker('merchant')}
+          />
+        ) : (
+          <StaticRow label="Händler" value={chosenMerchantName || '—'} />
+        )}
+        <PickerRow label="Kategorie" value={chosenCategory?.label ?? 'Wählen'} onClick={() => setPicker('category')} />
+        <div className="flex min-h-[44px] items-center justify-between gap-3 border-t border-subtle px-4 py-2">
+          <span className="min-w-0 flex-1 text-body text-text-primary">
+            In Auswertung berücksichtigen
+          </span>
+          <Toggle
+            checked={include}
+            onChange={(next) => {
+              setInclude(next)
+              if (next) setScope('transaction')
+            }}
+            label="In Auswertung berücksichtigen"
+          />
+        </div>
+        {scopeOffered && (
+          <div className="border-t border-subtle px-4 py-2">
+            <p className="text-caption text-text-muted">Gilt für</p>
+            <ScopeOption
+              checked={scope === 'transaction'}
+              onPick={() => setScope('transaction')}
+              label="Nur diese Buchung"
+            />
+            <ScopeOption
+              checked={scope === 'merchant'}
+              onPick={() => setScope('merchant')}
+              label={`Alle Buchungen von ${chosenMerchantName}`}
+            />
+          </div>
+        )}
+        <div className="border-t border-subtle px-4 py-2">
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value.slice(0, MAX_NOTE_LENGTH))}
+            rows={1}
+            placeholder="Notiz hinzufügen …"
+            aria-label="Notiz"
+            className="max-h-[72px] min-h-[40px] w-full resize-none bg-transparent py-1 text-body text-text-primary placeholder:text-text-muted outline-none"
+          />
+          {note.length > MAX_NOTE_LENGTH - 60 && (
+            <p className="text-caption text-text-muted">
+              {MAX_NOTE_LENGTH - note.length} Zeichen übrig
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* ── what saving will do, in one line ── */}
       {built && !built.valid && (
-        <ul className="mt-6 space-y-2 rounded-card border border-subtle bg-bg-card px-4 py-3">
+        <ul className="mt-3 space-y-1">
           {learnErrorLines(built.errors).map((line) => (
-            <li key={line} className="text-ui text-text-secondary" role="alert">
+            <li key={line} className="text-caption text-text-secondary" role="alert">
               {line}
             </li>
           ))}
         </ul>
       )}
-
       {blocking && (
-        <p className="mt-6 rounded-card border border-subtle bg-bg-card px-4 py-3 text-ui text-text-secondary" role="alert">
+        <p className="mt-3 text-caption text-text-secondary" role="alert">
           {blocking}
         </p>
       )}
-
       {built?.valid && numbers && !blocking && (
-        <section className="mt-6 rounded-card border border-subtle bg-bg-card px-4 py-4">
-          <ul className="space-y-1">
-            {confirmationLines({
-              numbers,
-              patternLabel: patternLabelOf(tokens),
-              merchantName: chosenMerchantName,
-              categoryName: chosenCategoryName,
-            }).map((line) => (
-              <li key={line} className="text-ui text-text-secondary">
-                {line}
-              </li>
-            ))}
-          </ul>
-          {reviewMode === 'always_review' && (
-            <p className="mt-3 text-ui text-text-secondary">
-              {chosenMerchantName} wird danach bei jeder Buchung erneut gefragt.
-            </p>
-          )}
-          {warnings.map((warning) => (
-            <p key={warning.text} className="mt-3 text-caption text-text-muted">
-              {warning.text}
-            </p>
-          ))}
-        </section>
+        <p className="mt-3 text-ui text-text-secondary">
+          {compactPreview({
+            numbers, patternLabel: patternLabelOf(tokens),
+            merchantName: chosenMerchantName, categoryName,
+          })}
+        </p>
       )}
-
+      {warnings.map((warning) => (
+        <p key={warning.text} className="mt-1.5 text-caption text-text-muted">
+          {warning.text}
+        </p>
+      ))}
       {failure && (
-        <p className="mt-6 text-ui text-text-primary" role="alert">
+        <p className="mt-3 text-ui text-text-primary" role="alert">
           {failure}
         </p>
       )}
 
-      <button
-        onClick={() => built?.request && onSave(built.request, {
-          merchantName: chosenMerchantName, categoryName: chosenCategoryName,
-        })}
-        disabled={!canSave}
-        aria-busy={saving}
-        className="press-tint mt-6 w-full rounded-btn bg-accent py-3.5 text-body font-semibold text-white disabled:opacity-40"
-      >
-        {saving ? 'Wird gespeichert …' : 'Zuordnung speichern'}
-      </button>
-    </div>
+      {/* ── the two actions, always reachable ── */}
+      <div className="sticky bottom-0 -mx-5 mt-auto flex gap-2 border-t border-subtle bg-bg-elevated px-5 pb-5 pt-3">
+        <button
+          onClick={onSkip}
+          disabled={saving}
+          className="press-tint min-h-[44px] flex-1 rounded-btn bg-bg-input py-3 text-body font-semibold text-text-primary disabled:opacity-40"
+        >
+          Später
+        </button>
+        <button
+          onClick={submit}
+          disabled={!canSave}
+          aria-busy={saving}
+          className="press-tint min-h-[44px] flex-[2] rounded-btn bg-accent py-3 text-body font-semibold text-white disabled:opacity-40"
+        >
+          {saving ? 'Wird gespeichert …' : 'Speichern'}
+        </button>
+      </div>
+
+      {picker === 'merchant' && (
+        <MerchantPicker
+          merchants={merchants}
+          merchantId={merchantId}
+          suggestion={visible}
+          name={merchantName}
+          alwaysReview={alwaysReview}
+          allowNew={learning}
+          only={kind === DECISION.RESOLVE_CONFLICT ? (entry.merchantMatch?.merchantIds ?? []) : null}
+          onAlwaysReview={setAlwaysReview}
+          onClose={() => setPicker(null)}
+          onPick={(id) => {
+            setMerchantId(id)
+            setNameTouched(false)
+            setAlwaysReview(false)
+            if (id === null) setMerchantName(visible)
+            setPicker(null)
+          }}
+          onName={(value) => {
+            setNameTouched(true)
+            setMerchantId(null)
+            setMerchantName(value)
+          }}
+        />
+      )}
+      {picker === 'category' && (
+        <CategoryPicker
+          categories={categories}
+          value={categorySlug}
+          onClose={() => setPicker(null)}
+          onPick={(slug) => {
+            setCategorySlug(slug)
+            setPicker(null)
+          }}
+        />
+      )}
+    </>
   )
 }
 
-// ── B) One booking, decided by hand ─────────────────────────────────────────
-//
-// For a conflict and for an always_review merchant alike. No pattern is
-// created, none is deactivated, and no merchant's review mode is touched: what
-// is written is one row in the override table, which is the mechanism 0008
-// built for a decision that beats every rule and changes none of them.
-function OverrideDecision({ kind, entry, merchants, categories, saving, failure, onDecide }) {
-  const claimants = entry.merchantMatch?.merchantIds ?? []
-  const recognised = entry.merchantMatch?.merchant ?? null
+// ── Compact rows ─────────────────────────────────────────────────────────────
 
-  const [merchantId, setMerchantId] = useState(recognised?.id ?? (claimants.length === 1 ? claimants[0] : null))
-
-  // resolveCategory already worked out which category the merchant's rules
-  // WOULD have produced — it just refused to apply it, which is the whole
-  // meaning of review_required. Offering that answer preselected turns the
-  // common case into one tap, and it is a suggestion in the honest sense: it is
-  // the rule's own result, and changing it is one tap too.
-  //
-  // A conflict gets no preselection unless the engine produced an unambiguous
-  // one: there the whole problem is that nothing could be decided.
-  const suggested = entry.category?.suggestedCategoryId ?? null
-  const [categorySlug, setCategorySlug] = useState(
-    () => categories.find((c) => c.id === suggested)?.slug ?? null
-  )
-
-  const category = categories.find((c) => c.slug === categorySlug) ?? null
-  const merchantName =
-    merchants.find((m) => m.id === merchantId)?.canonical_name ?? recognised?.canonical_name ?? ''
-  const canSave = !!category && !!merchantId && !saving
-
+function PickerRow({ label, value, onClick, disabled = false, hint }) {
   return (
-    <div>
-      {kind === DECISION.RESOLVE_CONFLICT ? (
-        <>
-          <p className="px-1 pb-2 pt-6 text-meta font-semibold uppercase tracking-[0.08em] text-section-label">
-            Händler für diese Buchung
-          </p>
-          <div className="overflow-hidden rounded-card border border-subtle bg-bg-card">
-            {claimants.map((id, i) => {
-              const name = claimingMerchants(entry, merchants)[i]
-              return (
-                <button
-                  key={id}
-                  onClick={() => setMerchantId(id)}
-                  aria-pressed={merchantId === id}
-                  className={`press-tint flex min-h-[44px] w-full items-center justify-between px-4 py-3 text-left ${
-                    i < claimants.length - 1 ? 'border-b border-subtle' : ''
-                  }`}
-                >
-                  <span className={`text-body ${merchantId === id ? 'font-semibold text-text-primary' : 'text-text-secondary'}`}>
-                    {name}
-                  </span>
-                  {merchantId === id && <Check size={18} className="shrink-0 text-accent" />}
-                </button>
-              )
-            })}
-          </div>
-        </>
-      ) : (
-        <>
-          <p className="px-1 pb-2 pt-6 text-meta font-semibold uppercase tracking-[0.08em] text-section-label">
-            Händler
-          </p>
-          <div className="rounded-card border border-subtle bg-bg-card px-4 py-4">
-            <p className="text-body font-semibold text-text-primary">
-              {recognised?.canonical_name ?? 'Erkannt'}
-            </p>
-            <p className="mt-1 text-caption text-text-secondary">
-              Bereits erkannt — hier ist nichts zu lernen.
-            </p>
-          </div>
-        </>
-      )}
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="press-tint flex min-h-[44px] w-full items-center gap-3 border-b border-subtle px-4 py-2 text-left disabled:opacity-50 last:border-b-0"
+    >
+      <span className="shrink-0 text-body text-text-primary">{label}</span>
+      <span className="min-w-0 flex-1 truncate text-right text-body text-text-secondary">
+        {hint ?? value}
+      </span>
+      <ChevronRight size={18} className="shrink-0 text-text-muted" />
+    </button>
+  )
+}
 
-      <p className="px-1 pb-2 pt-6 text-meta font-semibold uppercase tracking-[0.08em] text-section-label">
-        Kategorie für diese Buchung
-      </p>
-      <CategoryPicker categories={categories} value={categorySlug} onPick={setCategorySlug} />
-
-      {failure && (
-        <p className="mt-6 text-ui text-text-primary" role="alert">
-          {failure}
-        </p>
-      )}
-
-      {canSave && (
-        <p className="mt-6 text-ui text-text-secondary">
-          {`Diese Buchung wird ${merchantName} · ${category.label}. Es wird kein Muster gespeichert.`}
-        </p>
-      )}
-
-      <button
-        onClick={() =>
-          onDecide(
-            entry.transaction.id,
-            buildOverride({ merchantId, categoryId: category.id }),
-            // The reason travels with the decision: what stayed unchanged is
-            // different for an always_review merchant than for a booking no
-            // amount rule covered, and the sentence afterwards has to be true
-            // for the case at hand.
-            { kind, reason: entry.category?.reason ?? null, merchantName, categoryName: category.label }
-          )
-        }
-        disabled={!canSave}
-        aria-busy={saving}
-        className="press-tint mt-2 w-full rounded-btn bg-accent py-3.5 text-body font-semibold text-white disabled:opacity-40"
-      >
-        {saving ? 'Wird gespeichert …' : 'Nur diese Buchung entscheiden'}
-      </button>
+function StaticRow({ label, value }) {
+  return (
+    <div className="flex min-h-[44px] items-center gap-3 border-b border-subtle px-4 py-2 last:border-b-0">
+      <span className="shrink-0 text-body text-text-primary">{label}</span>
+      <span className="min-w-0 flex-1 truncate text-right text-body text-text-secondary">{value}</span>
     </div>
   )
 }
 
+function ScopeOption({ checked, onPick, label }) {
+  return (
+    <button
+      onClick={onPick}
+      aria-pressed={checked}
+      className="press-tint flex min-h-[44px] w-full items-center gap-2.5 py-1 text-left"
+    >
+      <span
+        className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
+          checked ? 'border-accent' : 'border-text-muted'
+        }`}
+      >
+        {checked && <span className="h-2.5 w-2.5 rounded-full bg-accent" />}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-ui text-text-primary">{label}</span>
+    </button>
+  )
+}
 
 // ── The gesture ──────────────────────────────────────────────────────────────
 
-// The booking text as words a finger can point at. Feedback on press, commit on
-// release, and the whole word is the target — a chip is 44 px tall whatever the
-// word is short enough to be.
 function WordPicker({ lines, range, onWord }) {
   const selected = (index) => !!range && index >= range.from && index <= range.to
   return (
-    <div className="space-y-2">
+    <div className="space-y-1">
       {lines.map((line, i) => (
-        <div key={i} className="flex flex-wrap gap-x-1.5 gap-y-1.5">
+        <div key={i} className="flex flex-wrap gap-1">
           {line.map((segment) => (
             <button
               key={segment.index}
               onClick={() => onWord(segment)}
               disabled={!segment.learnable}
               aria-pressed={selected(segment.index)}
-              // A word that cannot become a pattern is shown, not hidden: the
-              // booking text has to stay readable. It is just not offered.
               title={segment.learnable ? undefined : 'Nicht vollständig lesbar — nicht lernbar'}
               // max-w-full + break-words: a bank prints words longer than a
-              // phone is wide (measured at 390 px — one 78-character token ran
-              // 180 px past the frame). The chip wraps inside itself rather
-              // than pushing the screen sideways.
+              // phone is wide. The chip wraps inside itself rather than pushing
+              // the screen sideways.
               className={`press-tint min-h-[44px] max-w-full break-words rounded-chip px-2 py-2 text-left text-ui transition-colors motion-reduce:transition-none ${
                 selected(segment.index)
                   ? 'bg-accent font-semibold text-white'
@@ -617,146 +591,135 @@ function WordPicker({ lines, range, onWord }) {
   )
 }
 
-// ── Merchant ─────────────────────────────────────────────────────────────────
+// ── The pickers, as their own small sheets ───────────────────────────────────
+//
+// The same BottomSheet the rest of the app uses, one layer up. A picker is a
+// detour, not a step: it opens over the decision it belongs to, and closing it
+// returns to exactly the screen that was there.
 
 function MerchantPicker({
-  merchants, merchantId, name, alwaysReview, onAlwaysReview, onName, onPick,
+  merchants, merchantId, name, suggestion, alwaysReview, allowNew, only,
+  onAlwaysReview, onName, onPick, onClose,
 }) {
   const [query, setQuery] = useState('')
+  const pool = only ? merchants.filter((m) => only.includes(m.id)) : merchants
   const found = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    if (needle === '') return merchants.slice(0, 6)
-    return merchants.filter((m) => m.canonical_name.toLowerCase().includes(needle)).slice(0, 6)
-  }, [merchants, query])
-
-  const chosen = merchants.find((m) => m.id === merchantId) ?? null
-
-  if (chosen) {
-    return (
-      <div className="rounded-card border border-subtle bg-bg-card px-4 py-4">
-        <p className="text-body font-semibold text-text-primary">{chosen.canonical_name}</p>
-        <p className="mt-1 text-caption text-text-secondary">
-          Die Markierung wird ein weiteres Muster dieses Händlers.
-        </p>
-        <button
-          onClick={() => onPick(null)}
-          className="press-tint mt-3 min-h-[44px] w-full rounded-btn bg-bg-input py-3 text-ui font-semibold text-text-primary"
-        >
-          Anderen Händler wählen
-        </button>
-      </div>
-    )
-  }
+    if (needle === '') return pool.slice(0, 20)
+    return pool.filter((m) => m.canonical_name.toLowerCase().includes(needle)).slice(0, 20)
+  }, [pool, query])
 
   return (
-    <div className="rounded-card border border-subtle bg-bg-card px-4 py-4">
-      <label className="block">
-        <span className="mb-2 block text-label font-medium text-text-secondary">Name</span>
-        <input
-          value={name}
-          onChange={(e) => onName(e.target.value)}
-          placeholder="Wie heißt dieser Händler?"
-          className="w-full rounded-input bg-bg-input px-4 py-3.5 text-field text-text-primary placeholder:text-text-muted outline-none ring-1 ring-transparent focus:ring-accent"
-        />
-      </label>
+    <BottomSheet open onClose={onClose} title="Händler" z="z-[60]">
+      <div className="px-5 pb-6">
+        {allowNew && (
+          <label className="block pt-1">
+            <span className="mb-1.5 block text-label font-medium text-text-secondary">Neuer Händler</span>
+            <input
+              value={name}
+              onChange={(e) => onName(e.target.value)}
+              placeholder={suggestion || 'Name'}
+              className="w-full rounded-input bg-bg-input px-4 py-3 text-field text-text-primary placeholder:text-text-muted outline-none ring-1 ring-transparent focus:ring-accent"
+            />
+          </label>
+        )}
 
-      {/* The only merchant setting this screen offers, and only while one is
-          being created: a merchant like PayPal, whose bookings are really
-          somebody else's, should be looked at every time rather than filed
-          automatically. An EXISTING merchant is never changed from here — that
-          is merchant administration, and it does not belong in a flow whose
-          subject is one booking. */}
-      <label className="press-tint mt-4 flex min-h-[44px] items-center justify-between gap-3 rounded-btn bg-bg-input px-4 py-3">
-        <span className="min-w-0 flex-1">
-          <span className="block text-ui text-text-primary">Diesen Händler künftig immer prüfen</span>
-          <span className="mt-0.5 block text-caption text-text-muted">
-            Für Zahlungsdienste wie PayPal, hinter denen der eigentliche Händler steckt.
-          </span>
-        </span>
-        <input
-          type="checkbox"
-          checked={alwaysReview}
-          onChange={(e) => onAlwaysReview(e.target.checked)}
-          className="h-6 w-6 shrink-0 accent-accent"
-        />
-      </label>
-
-      {merchants.length > 0 && (
-        <>
-          <label className="mt-4 block">
-            <span className="mb-2 block text-label font-medium text-text-secondary">
-              Oder einen bestehenden Händler wählen
+        {allowNew && (
+          <label className="press-tint mt-3 flex min-h-[44px] items-center justify-between gap-3 rounded-btn bg-bg-input px-4 py-2">
+            <span className="min-w-0 flex-1 text-ui text-text-primary">
+              Diesen Händler künftig immer prüfen
+              <span className="mt-0.5 block text-caption text-text-muted">
+                Für Zahlungsdienste wie PayPal.
+              </span>
             </span>
-            <span className="flex items-center gap-2 rounded-input bg-bg-input px-4">
+            <Toggle checked={alwaysReview} onChange={onAlwaysReview} label="Immer prüfen" />
+          </label>
+        )}
+
+        {pool.length > 0 && (
+          <>
+            <span className="mb-1.5 mt-4 flex items-center gap-2 rounded-input bg-bg-input px-4">
               <Search size={16} className="shrink-0 text-text-muted" />
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Suchen"
-                className="w-full bg-transparent py-3.5 text-field text-text-primary placeholder:text-text-muted outline-none"
+                placeholder="Bestehenden Händler suchen"
+                aria-label="Händler suchen"
+                className="w-full bg-transparent py-3 text-field text-text-primary placeholder:text-text-muted outline-none"
               />
             </span>
-          </label>
-          <div className="mt-2 space-y-1">
-            {found.map((merchant) => (
-              <button
-                key={merchant.id}
-                onClick={() => onPick(merchant.id)}
-                className="press-tint flex min-h-[44px] w-full items-center rounded-chip px-3 py-2 text-left text-ui text-text-primary"
-              >
-                {merchant.canonical_name}
-              </button>
-            ))}
-            {found.length === 0 && (
-              <p className="px-3 py-2 text-caption text-text-muted">Kein Händler gefunden.</p>
-            )}
-          </div>
-        </>
-      )}
-    </div>
+            <div className="max-h-[40vh] overflow-y-auto overscroll-contain">
+              {found.map((merchant) => (
+                <button
+                  key={merchant.id}
+                  onClick={() => onPick(merchant.id)}
+                  aria-pressed={merchantId === merchant.id}
+                  className="press-tint flex min-h-[44px] w-full items-center justify-between gap-3 rounded-chip px-3 py-2 text-left"
+                >
+                  <span className="min-w-0 flex-1 truncate text-body text-text-primary">
+                    {merchant.canonical_name}
+                  </span>
+                  {merchantId === merchant.id && <Check size={18} className="shrink-0 text-accent" />}
+                </button>
+              ))}
+              {found.length === 0 && (
+                <p className="px-3 py-2 text-caption text-text-muted">Kein Händler gefunden.</p>
+              )}
+            </div>
+          </>
+        )}
+
+        {allowNew && (
+          <button
+            onClick={() => onPick(null)}
+            className="press-tint mt-3 min-h-[44px] w-full rounded-btn bg-accent py-3 text-body font-semibold text-white"
+          >
+            Neuen Händler verwenden
+          </button>
+        )}
+      </div>
+    </BottomSheet>
   )
 }
 
-// ── Category ─────────────────────────────────────────────────────────────────
-
-// The rows the database holds, never a copy of the list in the UI: a category
-// the user renames must read the way they renamed it.
-function CategoryPicker({ categories, value, onPick }) {
+function CategoryPicker({ categories, value, onPick, onClose }) {
   return (
-    <div className="overflow-hidden rounded-card border border-subtle bg-bg-card">
-      {categories.map((category, i) => (
-        <button
-          key={category.id ?? category.slug}
-          onClick={() => onPick(category.slug)}
-          aria-pressed={value === category.slug}
-          className={`press-tint flex min-h-[44px] w-full items-center justify-between px-4 py-3 text-left ${
-            i < categories.length - 1 ? 'border-b border-subtle' : ''
-          }`}
-        >
-          <span className={`text-body ${value === category.slug ? 'font-semibold text-text-primary' : 'text-text-secondary'}`}>
-            {category.label}
-          </span>
-          {value === category.slug && <Check size={18} className="shrink-0 text-accent" />}
-        </button>
-      ))}
-      {categories.length === 0 && (
-        <p className="px-4 py-3 text-caption text-text-muted">
-          Es wurden keine Kategorien geladen.
-        </p>
-      )}
-    </div>
+    <BottomSheet open onClose={onClose} title="Kategorie" z="z-[60]">
+      <div className="px-5 pb-6">
+        {categories.map((category) => (
+          <button
+            key={category.id ?? category.slug}
+            onClick={() => onPick(category.slug)}
+            aria-pressed={value === category.slug}
+            className="press-tint flex min-h-[44px] w-full items-center justify-between gap-3 rounded-chip px-3 py-2 text-left"
+          >
+            <span
+              className={`min-w-0 flex-1 truncate text-body ${
+                value === category.slug ? 'font-semibold text-text-primary' : 'text-text-secondary'
+              }`}
+            >
+              {category.label}
+            </span>
+            {value === category.slug && <Check size={18} className="shrink-0 text-accent" />}
+          </button>
+        ))}
+        {categories.length === 0 && (
+          <p className="px-3 py-2 text-caption text-text-muted">Es wurden keine Kategorien geladen.</p>
+        )}
+      </div>
+    </BottomSheet>
   )
 }
 
 // ── After ────────────────────────────────────────────────────────────────────
 
-// Saved, and the queue has already moved on: the reload happened before this
-// was rendered, so the number below is the real one, not a guess.
-function SavedStep({ done, remaining }) {
+function SavedStep({ done, remaining, onClose }) {
   return (
     <div className="pt-2" aria-live="polite">
-      <p className="text-section font-semibold text-text-primary">Gespeichert</p>
-      <ul className="mt-3 space-y-1">
+      <p className="text-section font-semibold text-text-primary">
+        {done.partial ? 'Teilweise gespeichert' : 'Gespeichert'}
+      </p>
+      <ul className="mt-2 space-y-1">
         {done.lines.map((line) => (
           <li key={line} className="text-ui text-text-secondary">
             {line}
@@ -766,6 +729,14 @@ function SavedStep({ done, remaining }) {
       <p className="mt-4 text-caption text-text-muted">
         {remaining > 0 ? 'Weiter mit der nächsten offenen Buchung …' : 'Es wartet keine Buchung mehr.'}
       </p>
+      {remaining <= 0 && (
+        <button
+          onClick={onClose}
+          className="press-tint mt-5 min-h-[44px] w-full rounded-btn bg-accent py-3 text-body font-semibold text-white"
+        >
+          Fertig
+        </button>
+      )}
     </div>
   )
 }
@@ -773,16 +744,15 @@ function SavedStep({ done, remaining }) {
 function FinishedStep({ onClose }) {
   return (
     <div className="pt-2">
-      {/* Not „alles zugeordnet": a booking somebody locked or overrode is out
-          of the queue without necessarily carrying a merchant AND a category.
-          What is true is that nothing is waiting. */}
+      {/* Not „alles zugeordnet": a booking somebody locked or overrode is out of
+          the queue without necessarily carrying a merchant AND a category. */}
       <p className="text-section font-semibold text-text-primary">Keine offenen Zuordnungen</p>
       <p className="mt-2 text-ui text-text-secondary">
         Aktuell wartet keine Buchung auf deine Entscheidung.
       </p>
       <button
         onClick={onClose}
-        className="press-tint mt-6 w-full rounded-btn bg-accent py-3.5 text-body font-semibold text-white"
+        className="press-tint mt-6 min-h-[44px] w-full rounded-btn bg-accent py-3 text-body font-semibold text-white"
       >
         Fertig
       </button>
@@ -801,13 +771,13 @@ function PostponedStep({ count, onAgain, onClose }) {
       </p>
       <button
         onClick={onClose}
-        className="press-tint mt-6 w-full rounded-btn bg-accent py-3.5 text-body font-semibold text-white"
+        className="press-tint mt-6 min-h-[44px] w-full rounded-btn bg-accent py-3 text-body font-semibold text-white"
       >
         Fertig
       </button>
       <button
         onClick={onAgain}
-        className="press-tint mt-3 w-full rounded-btn bg-bg-input py-3.5 text-body font-semibold text-text-primary"
+        className="press-tint mt-3 min-h-[44px] w-full rounded-btn bg-bg-input py-3 text-body font-semibold text-text-primary"
       >
         Noch einmal durchgehen
       </button>

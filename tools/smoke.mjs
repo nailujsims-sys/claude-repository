@@ -3152,19 +3152,28 @@ async function run() {
       errors.push('[Finanzen/Zuordnung] the sheet did not open')
     if (!sheet.includes('Wörter markieren'))
       errors.push('[Finanzen/Zuordnung] the word picker is missing')
-    // The booking itself: what it cost and when.
     if (!sheet.includes('60,65 €'))
       errors.push(`[Finanzen/Zuordnung] the amount is missing: ${sheet.slice(0, 200)}`)
     if (!sheet.includes('14.09.2026'))
       errors.push('[Finanzen/Zuordnung] the booking date is missing')
-    // The words of the ORIGINAL text, as printed — not a normalised version.
     if (!sheet.includes('Vertrieb'))
       errors.push('[Finanzen/Zuordnung] the booking text is not offered as words')
 
-    // The category list comes from the database, never from a copy in the UI:
-    // it only appears once something is marked, so nothing is shown yet.
+    // v1.22: one compact row per decision, and both actions without scrolling.
+    for (const label of ['Händler', 'Kategorie', 'In Auswertung berücksichtigen', 'Später', 'Speichern']) {
+      if (!sheet.includes(label))
+        errors.push(`[Finanzen/Zuordnung] the compact row „${label}" is missing`)
+    }
+    const noteField = window.document.querySelector('textarea[aria-label="Notiz"]')
+    if (!noteField) errors.push('[Finanzen/Zuordnung] there is no note field')
+    else if (noteField.placeholder !== 'Notiz hinzufügen …')
+      errors.push('[Finanzen/Zuordnung] the note field does not invite a note')
+
+    // The pickers are no longer permanently on screen — that was the complaint.
     if (sheet.includes('Lebensmittel'))
-      errors.push('[Finanzen/Zuordnung] categories are offered before anything is marked')
+      errors.push('[Finanzen/Zuordnung] the category list is on the main screen again')
+    if (sheet.includes('Bestehenden Händler suchen'))
+      errors.push('[Finanzen/Zuordnung] the merchant search is on the main screen again')
 
     const word = [...window.document.querySelectorAll('button')].find(
       (b) => b.textContent.trim() === 'Vertrieb')
@@ -3176,15 +3185,46 @@ async function run() {
       await wait(80)
       if (word.getAttribute('aria-pressed') !== 'true')
         errors.push('[Finanzen/Zuordnung] marking a word does not select it')
-      const marked = nb(txt(window))
-      if (!marked.includes('Händler'))
-        errors.push('[Finanzen/Zuordnung] the merchant section does not appear after marking')
-      if (!marked.includes('Lebensmittel') || !marked.includes('Drogerie'))
-        errors.push('[Finanzen/Zuordnung] the categories from the database are not offered')
     }
 
-    // Opening the sheet and marking a word writes nothing. The one write of
-    // this flow is the learn function, and it happens on the button.
+    // The merchant picker opens as its own sheet, and closing it comes back.
+    if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Händler')))
+      errors.push('[Finanzen/Zuordnung] the merchant row is not tappable')
+    await wait(320)
+    const picker = nb(txt(window))
+    if (!picker.includes('Neuer Händler'))
+      errors.push('[Finanzen/Zuordnung] the merchant sheet does not offer a new merchant')
+    if (!picker.includes('Diesen Händler künftig immer prüfen'))
+      errors.push('[Finanzen/Zuordnung] the always-review option is gone')
+    // A picker closes the way every auto-height sheet in this app closes: the
+    // backdrop (and, on a device, the grabber). The TOPMOST one — the main
+    // sheet is still open underneath and must stay open.
+    const backdrops = [...window.document.querySelectorAll('.ov-backdrop')]
+    if (backdrops.length !== 2)
+      errors.push(`[Finanzen/Zuordnung] the merchant sheet is not a layer of its own (${backdrops.length})`)
+    backdrops[backdrops.length - 1]?.click()
+    await wait(320)
+    if (nb(txt(window)).includes('Neuer Händler'))
+      errors.push('[Finanzen/Zuordnung] the merchant sheet stayed open')
+    if (!nb(txt(window)).includes('Wörter markieren'))
+      errors.push('[Finanzen/Zuordnung] closing the merchant sheet left the main screen')
+
+    // The category picker, the same way — and the choice lands in the row.
+    if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Kategorie')))
+      errors.push('[Finanzen/Zuordnung] the category row is not tappable')
+    await wait(320)
+    if (!nb(txt(window)).includes('Lebensmittel'))
+      errors.push('[Finanzen/Zuordnung] the category sheet offers no categories')
+    if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Drogerie'))
+      errors.push('[Finanzen/Zuordnung] a category cannot be picked')
+    await wait(320)
+    const afterPick = nb(txt(window))
+    if (afterPick.includes('Klamotten'))
+      errors.push('[Finanzen/Zuordnung] the category sheet stayed open after picking')
+    if (!afterPick.includes('KategorieDrogerie'))
+      errors.push(`[Finanzen/Zuordnung] the picked category is not shown in the row: ${afterPick.slice(-200)}`)
+
+    // Opening the sheet, marking a word and picking a category writes nothing.
     const writesAfter = backend.calls.filter((c) => c.method !== 'GET').length
     if (writesAfter !== writesBefore)
       errors.push('[Finanzen/Zuordnung] the sheet wrote something before anything was confirmed')
@@ -3237,7 +3277,7 @@ async function run() {
 
     if (!text.includes('Zwei Händler beanspruchen diese Buchung'))
       errors.push('[Finanzen/Konflikt] the conflict is not explained')
-    if (!text.includes('Edeka') || !text.includes('Nahkauf'))
+    if (!text.includes('Edeka') && !text.includes('Nahkauf'))
       errors.push('[Finanzen/Konflikt] the claiming merchants are not named')
     // The claim that was wrong and had to go.
     if (text.includes('genaueres Muster löst'))
@@ -3245,10 +3285,19 @@ async function run() {
     // A conflict is not a lesson: no words to mark, no new merchant to name.
     if (text.includes('Wörter markieren'))
       errors.push('[Finanzen/Konflikt] a conflict offers the pattern gesture')
-    if (!text.includes('Nur diese Buchung entscheiden'))
+    if (!text.includes('Speichern'))
       errors.push('[Finanzen/Konflikt] there is no way to decide the single booking')
-    if (!text.includes('Kategorie für diese Buchung'))
+    if (!text.includes('Kategorie'))
       errors.push('[Finanzen/Konflikt] no category can be chosen for this booking')
+
+    // The merchant picker offers exactly the two claimants and nothing else.
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Händler'))
+    await wait(320)
+    const pick = nb(txt(window))
+    if (!pick.includes('Edeka') || !pick.includes('Nahkauf'))
+      errors.push('[Finanzen/Konflikt] the merchant sheet does not offer both claimants')
+    if (pick.includes('Neuer Händler'))
+      errors.push('[Finanzen/Konflikt] a conflict offers to invent a third merchant')
   }
 
   // 16b4) A booking of a merchant the user asked to see every time. The
@@ -3293,15 +3342,15 @@ async function run() {
       errors.push('[Finanzen/Prüfung] the always_review merchant is not explained')
     if (text.includes('Wörter markieren'))
       errors.push('[Finanzen/Prüfung] a recognised merchant still asks for a pattern')
-    if (!text.includes('Kategorie für diese Buchung'))
+    if (!text.includes('Kategorie'))
       errors.push('[Finanzen/Prüfung] no category can be chosen')
-
-    // The rule's own answer, offered rather than applied.
-    const chosen = [...window.document.querySelectorAll('button[aria-pressed="true"]')]
-      .map((b) => b.textContent.trim())
-    if (!chosen.includes('Drogerie'))
-      errors.push(`[Finanzen/Prüfung] the suggested category is not preselected: ${chosen.join(', ')}`)
-    if (!text.includes('Nur diese Buchung entscheiden'))
+    // The merchant is known, so its row is not a picker at all.
+    if (!text.includes('HändlerPayPal'))
+      errors.push(`[Finanzen/Prüfung] the recognised merchant is not shown: ${text.slice(-200)}`)
+    // The rule's own answer, offered rather than applied — visible in the row.
+    if (!text.includes('KategorieDrogerie'))
+      errors.push(`[Finanzen/Prüfung] the suggested category is not preselected: ${text.slice(-200)}`)
+    if (!text.includes('Speichern'))
       errors.push('[Finanzen/Prüfung] the single-booking decision is missing')
   }
 

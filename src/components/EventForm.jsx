@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import BottomSheet from './BottomSheet'
 import MiniCalendar from './MiniCalendar'
+import Toggle from './Toggle'
 import { useUI } from '../context/UIContext'
 import useRetained from '../lib/useRetained'
 import { useEvents } from '../context/EventsContext'
@@ -493,26 +494,6 @@ function Divider() {
   return <div className="border-t border-subtle" />
 }
 
-function Toggle({ checked, onChange, disabled = false }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`press-tint relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-        checked ? 'bg-accent' : 'bg-bg-input'
-      } ${disabled ? 'opacity-50' : ''}`}
-    >
-      <span
-        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${
-          checked ? 'left-[22px]' : 'left-0.5'
-        }`}
-      />
-    </button>
-  )
-}
 
 function DateTimeRow({
   label,
