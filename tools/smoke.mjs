@@ -3251,6 +3251,60 @@ async function run() {
       errors.push('[Finanzen/Konflikt] no category can be chosen for this booking')
   }
 
+  // 16b4) A booking of a merchant the user asked to see every time. The
+  //       merchant is recognised, so there is nothing to learn — and the
+  //       category the rule WOULD have produced starts preselected.
+  {
+    const M = '11111111-2222-4333-8444-000000000203'
+    const CAT = FIN_CATEGORIES.find((c) => c.slug === 'drogerie').id
+    const reviewSeed = {
+      ...financeSeed,
+      finance_transactions: [
+        { id: '11111111-2222-4333-8444-000000000104', user_id: TEST_USER_ID, account_id: FIN_ACCOUNT,
+          booking_date: '2026-09-14', amount_minor: -2599, currency: 'EUR',
+          raw_description: 'PayPal Europe Sarl et Cie SCA',
+          normalized_tokens: ['PAYPAL', 'EUROPE', 'SARL', 'ET', 'CIE', 'SCA'],
+          include_in_analytics: true, manual_lock: false },
+      ],
+      finance_merchants: [
+        { id: M, user_id: TEST_USER_ID, canonical_name: 'PayPal', review_mode: 'always_review' },
+      ],
+      finance_merchant_patterns: [
+        { id: '11111111-2222-4333-8444-000000000213', user_id: TEST_USER_ID, merchant_id: M,
+          pattern_type: 'exact_token', tokens: ['PAYPAL'], active: true },
+      ],
+      finance_category_rules: [
+        { id: '11111111-2222-4333-8444-000000000221', user_id: TEST_USER_ID, merchant_id: M,
+          category_id: CAT, min_amount_minor: null, max_amount_minor: null,
+          min_inclusive: true, max_inclusive: true, currency: null, active: true },
+      ],
+    }
+    const window = makeDom('#/finanzen', { finance: reviewSeed })
+    mount(window, code, 'Finanzen/Pruefung')
+    await wait(400)
+    window.__restoreConsole?.()
+
+    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    await wait(320)
+    const text = nb(txt(window))
+    console.log(`=== Finanzen — Prüfung ===\n  ${text.slice(-300)}`)
+
+    if (!text.includes('PayPal wird jedes Mal geprüft'))
+      errors.push('[Finanzen/Prüfung] the always_review merchant is not explained')
+    if (text.includes('Wörter markieren'))
+      errors.push('[Finanzen/Prüfung] a recognised merchant still asks for a pattern')
+    if (!text.includes('Kategorie für diese Buchung'))
+      errors.push('[Finanzen/Prüfung] no category can be chosen')
+
+    // The rule's own answer, offered rather than applied.
+    const chosen = [...window.document.querySelectorAll('button[aria-pressed="true"]')]
+      .map((b) => b.textContent.trim())
+    if (!chosen.includes('Drogerie'))
+      errors.push(`[Finanzen/Prüfung] the suggested category is not preselected: ${chosen.join(', ')}`)
+    if (!text.includes('Nur diese Buchung entscheiden'))
+      errors.push('[Finanzen/Prüfung] the single-booking decision is missing')
+  }
+
   // 16c) The database is unreachable. "Nothing here" and "we could not look"
   //      are different sentences, as everywhere else in the app.
   {

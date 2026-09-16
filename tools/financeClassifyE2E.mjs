@@ -152,7 +152,7 @@ ${sql}`
   // Bookings are inserted the way an import writes them: the text and the
   // tokens together, tokenised by the very module the app uses.
   let day = 0
-  const insertBooking = (raw, { lock = false } = {}) => {
+  const insertBooking = (raw, { lock = false, amountMinor = -1234 } = {}) => {
     day += 1
     return jsonAsUser(
       userId,
@@ -160,7 +160,7 @@ ${sql}`
          (user_id, account_id, booking_date, amount_minor, currency, raw_description,
           normalized_tokens, manual_lock)
        values ('${userId}', '${accountId}', '2026-09-${String((day % 28) + 1).padStart(2, '0')}',
-               -1234, 'EUR', ${lit(raw)}::jsonb #>> '{}',
+               ${amountMinor}, 'EUR', ${lit(raw)}::jsonb #>> '{}',
                (select array_agg(x) from jsonb_array_elements_text(${lit(tokenize(raw))}::jsonb) as t(x)),
                ${lock})
        returning id`
@@ -693,6 +693,82 @@ ${sql}`
        after.merchants.find((m) => m.id === paypal.id).review_mode === 'always_review')
     ok('…and its bookings are still put up for review',
        queueOf(after).entries.find((e) => e.transaction.id === tx).status === 'review_required')
+  }
+
+  // ══ 12. REGRESSION: the OTHER reason for review_required ════════════════
+  //
+  // resolveCategory reports REVIEW_REQUIRED for a merchant the user asked to see
+  // every time AND for a booking whose amount no rule covered. The override
+  // path is the same; the sentence must not be.
+  {
+    // A merchant nothing else in this file has taught, so `merchant_created`
+    // really is about this call.
+    const small = insertBooking('BACKHAUS Musterstadt Filiale klein', { amountMinor: -1234 })
+    const large = insertBooking('BACKHAUS Musterstadt Filiale gross', { amountMinor: -6000 })
+    const state = reload()
+
+    // A conditional merchant with a default rule, created in one call.
+    const g = gesture(state, small, { from: 0, to: 0 }, {
+      categorySlug: 'lebensmittel', merchantName: 'Backhaus',
+    })
+    g.built.request.p_review_mode = 'conditional'
+    const created = learn(g.built.request)
+    ok('the conditional merchant was created', created.merchant_created === true)
+
+    const withEdeka = reload()
+    const edeka = withEdeka.merchants.find((m) => m.canonical_name === 'Backhaus')
+    ok('…and it really is conditional', edeka.review_mode === 'conditional')
+
+    // An amount rule that covers only the large booking, through the same call.
+    const g2 = gesture(withEdeka, large, { from: 0, to: 0 }, {
+      categorySlug: 'restaurant', merchantId: edeka.id,
+    })
+    g2.built.request.p_min_amount_minor = 5000
+    g2.built.request.p_rule_currency = 'EUR'
+    const ruled = learn(g2.built.request)
+    ok('the amount rule was added as its own rule', ruled.rule_created === true)
+
+    const ready = reload()
+    ok('the merchant now has two rules',
+       ready.categoryRules.filter((r) => r.merchant_id === edeka.id).length === 2)
+
+    const q = queueOf(ready)
+    const smallEntry = q.entries.find((e) => e.transaction.id === small)
+    const largeEntry = q.entries.find((e) => e.transaction.id === large)
+
+    ok('the covered booking is decided automatically', largeEntry.status === 'resolved')
+    ok('…by the amount rule',
+       largeEntry.categoryId === ready.categories.find((c) => c.slug === 'restaurant').id)
+    ok('the uncovered one is put up once', smallEntry.status === 'review_required')
+    ok('…for the other reason', smallEntry.category.reason === 'merchant_conditional_default')
+    ok('…and it is in the queue', q.open.some((e) => e.transaction.id === small))
+
+    const explanation = decisionExplanation(smallEntry, ready.merchants)
+    ok('the screen does not claim this merchant is checked every time',
+       !explanation.headline.includes('jedes Mal') && !explanation.lines.join(' ').includes('jedes Mal'))
+    ok('…it explains that no rule covered this booking',
+       explanation.headline.includes('greift keine Regel'))
+
+    // The rule's own answer is offered, preselected.
+    const lebensmittel = ready.categories.find((c) => c.slug === 'lebensmittel').id
+    ok('the fallback the rule would have used is offered as the suggestion',
+       smallEntry.category.suggestedCategoryId === lebensmittel)
+    ok('…without having been applied', smallEntry.categoryId === null)
+
+    // Decide it, and the same override path settles it.
+    const drogerie = ready.categories.find((c) => c.slug === 'drogerie').id
+    writeOverride(small, buildOverride({ merchantId: edeka.id, categoryId: drogerie }))
+
+    const decided = reload()
+    const after = queueOf(decided)
+    ok('the decided booking is resolved', after.entries.find((e) => e.transaction.id === small).status === 'resolved')
+    ok('…in the category the user picked',
+       after.entries.find((e) => e.transaction.id === small).categoryId === drogerie)
+    ok('…and out of the queue', !after.open.some((e) => e.transaction.id === small))
+    ok('the merchant keeps its conditional mode',
+       decided.merchants.find((m) => m.id === edeka.id).review_mode === 'conditional')
+    ok('…and both of its rules are untouched',
+       decided.categoryRules.filter((r) => r.merchant_id === edeka.id).length === 2)
   }
 
   console.log(`finance classify e2e: ${pass} passed, ${fail} failed`)

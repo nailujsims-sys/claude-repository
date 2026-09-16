@@ -637,9 +637,15 @@ first real bug:
   ranking, on purpose, so the booking would stay in conflict forever. The screen
   therefore does not offer one. It names both claimants and lets the user decide
   this one booking.
-- `review_required` — the merchant IS recognised and the user asked to see every
-  booking of it. Another default rule would settle nothing; the category for this
-  one booking would.
+- `review_required` — the merchant IS recognised, and the category was
+  deliberately not decided. Two different reasons end here and the screen says
+  which one it is: `merchant_always_review` is a standing instruction about the
+  merchant („PayPal wird jedes Mal geprüft"), while `merchant_conditional_default`
+  is about this booking alone — no amount rule covered it, so instead of falling
+  back to the default silently, the category is confirmed once. Calling the
+  second one „jedes Mal" would describe a merchant setting nobody made. In both
+  cases the category the rule WOULD have produced (`suggestedCategoryId`) starts
+  preselected: it is the rule's own answer, offered rather than applied.
 
 The last two are written to `finance_transaction_overrides`, which beats every
 rule and changes none of them. A merchant like PayPal gets its
@@ -667,8 +673,8 @@ Three rules the screen holds to, and the reasons:
   matching forever. Those words are shown and struck through rather than hidden;
   the intact words of the same booking stay usable.
 
-`tools/financeClassifyLogic.mjs` covers it with 143 assertions against the real
-engine; `tools/financeClassifyE2E.mjs` (89) runs the whole gesture against a
+`tools/financeClassifyLogic.mjs` covers it with 166 assertions against the real
+engine; `tools/financeClassifyE2E.mjs` (107) runs the whole gesture against a
 real Postgres and the real `finance_learn_merchant_rule`, **reloading after
 every save** — including the assertion the screen exists for: the number the
 preview promised and the `applied_count` the database returns are the same

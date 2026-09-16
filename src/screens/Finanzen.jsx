@@ -91,7 +91,9 @@ function ClassifyCard({ summary, onOpen }) {
     return (
       <div className="mt-3 flex items-center gap-2 px-1 py-2">
         <Check size={16} className="shrink-0 text-success" />
-        <p className="text-caption text-text-secondary">Alle Umsätze sind zugeordnet.</p>
+        {/* Not „alle zugeordnet": a booking the user locked or decided by hand
+            is out of the queue whether or not it carries both ids. */}
+        <p className="text-caption text-text-secondary">Keine offenen Zuordnungen.</p>
       </div>
     )
   }

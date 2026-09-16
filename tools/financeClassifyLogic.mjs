@@ -718,6 +718,129 @@ const rule = (id, merchantId, categoryId, over = {}) => ({
      }).valid === false)
 }
 
+// ── 18. review_required has two reasons, and they mean different things ────
+//
+// REGRESSION. resolveCategory reports REVIEW_REQUIRED both for a merchant the
+// user asked to see every time and for a booking whose amount no rule covered.
+// Describing the second one as „wird jedes Mal geprüft" would state a merchant
+// setting nobody made.
+{
+  const M = uuid(120)
+  const merchants = [merchant(M, 'EDEKA', { review_mode: 'conditional' })]
+  const patterns = [pattern(uuid(390), M, 'exact_token', ['EDEKA'])]
+  // A default rule and one amount rule that does NOT cover this booking.
+  const rules = [
+    rule(uuid(470), M, cat('lebensmittel')),
+    rule(uuid(471), M, cat('restaurant'), { min_amount_minor: 5000, currency: 'EUR' }),
+  ]
+  const small = booking('EDEKA Musterstadt klein', { amount_minor: -1234 })
+
+  const queue = buildClassificationQueue({ transactions: [small], patterns, merchants, rules })
+  const entry = queue.open[0]
+  ok('a conditional merchant with no matching amount rule asks once',
+     entry.status === FINANCE_STATUS.REVIEW_REQUIRED)
+  ok('…for that reason and not the other',
+     entry.category.reason === 'merchant_conditional_default')
+  ok('…and it is the same kind of decision', decisionKindOf(entry) === DECISION.REVIEW)
+
+  const explanation = decisionExplanation(entry, merchants)
+  ok('the screen does NOT claim this merchant is checked every time',
+     !explanation.headline.includes('jedes Mal') &&
+     !explanation.lines.join(' ').includes('jedes Mal'))
+  ok('…it says no rule covered this booking',
+     explanation.headline.includes('greift keine Regel') &&
+     explanation.lines.join(' ').includes('Betragsregeln passt'))
+  ok('…and it names the merchant', explanation.headline.includes('EDEKA'))
+  ok('the reason travels with the explanation',
+     explanation.reason === 'merchant_conditional_default')
+
+  // The always_review merchant keeps its own wording.
+  const P = uuid(121)
+  const paypal = [merchant(P, 'PayPal', { review_mode: 'always_review' })]
+  const pp = buildClassificationQueue({
+    transactions: [booking('PayPal Europe Sarl')],
+    patterns: [pattern(uuid(391), P, 'exact_token', ['PAYPAL'])],
+    merchants: paypal,
+    rules: [rule(uuid(472), P, cat('sonstige'))],
+  }).open[0]
+  ok('an always_review merchant keeps the standing-instruction wording',
+     decisionExplanation(pp, paypal).headline.includes('jedes Mal'))
+  ok('…with its own reason', pp.category.reason === 'merchant_always_review')
+
+  // The sentence afterwards follows the same split.
+  ok('the conditional case gets the neutral closing sentence',
+     describeOverrideResult({
+       kind: DECISION.REVIEW, reason: 'merchant_conditional_default',
+       merchantName: 'EDEKA', categoryName: 'Lebensmittel',
+     }).lines.some((l) => l.includes('Händlerregeln bleiben unverändert')))
+  ok('…and never the standing-instruction one',
+     !describeOverrideResult({
+       kind: DECISION.REVIEW, reason: 'merchant_conditional_default',
+       merchantName: 'EDEKA', categoryName: 'Lebensmittel',
+     }).lines.join(' ').includes('jedes Mal'))
+  ok('the always_review case still gets it',
+     describeOverrideResult({
+       kind: DECISION.REVIEW, reason: 'merchant_always_review',
+       merchantName: 'PayPal', categoryName: 'Sonstige',
+     }).lines.some((l) => l.includes('jedes Mal geprüft')))
+  ok('a conflict keeps its own sentence',
+     describeOverrideResult({
+       kind: DECISION.RESOLVE_CONFLICT, merchantName: 'Edeka', categoryName: 'Lebensmittel',
+     }).lines.some((l) => l.includes('gespeicherten Mustern hat sich nichts geändert')))
+  // A caller that passes no reason at all gets the sentence that is true of
+  // every case rather than the one that is true of one of them.
+  ok('without a reason the neutral sentence is used',
+     describeOverrideResult({ kind: DECISION.REVIEW, merchantName: 'X', categoryName: 'Y' })
+       .lines.some((l) => l.includes('Händlerregeln bleiben unverändert')))
+
+  // …and the override settles it, whichever reason it was.
+  const override = { transaction_id: small.id, ...buildOverride({ merchantId: M, categoryId: cat('restaurant') }) }
+  const after = buildClassificationQueue({
+    transactions: [small], patterns, merchants, rules, overrides: [override],
+  })
+  ok('the decided booking is resolved', after.entries[0].status === FINANCE_STATUS.RESOLVED)
+  ok('…in the chosen category', after.entries[0].categoryId === cat('restaurant'))
+  ok('…and out of the queue', after.open.length === 0)
+  ok('the merchant keeps its conditional mode', merchants[0].review_mode === 'conditional')
+}
+
+// ── 19. The rule's own answer is offered, preselected ──────────────────────
+{
+  const M = uuid(122)
+  const merchants = [merchant(M, 'PayPal', { review_mode: 'always_review' })]
+  const patterns = [pattern(uuid(392), M, 'exact_token', ['PAYPAL'])]
+  const rules = [rule(uuid(480), M, cat('drogerie'))]
+  const tx = booking('PayPal Europe Sarl et Cie')
+
+  const entry = buildClassificationQueue({ transactions: [tx], patterns, merchants, rules }).open[0]
+  ok('a review carries the category the rule would have produced',
+     entry.category.suggestedCategoryId === cat('drogerie'))
+  ok('…without applying it', entry.categoryId === null)
+  ok('…so the screen can start on it',
+     CATEGORIES.find((c) => c.id === entry.category.suggestedCategoryId).slug === 'drogerie')
+
+  // Two rules that disagree produce no suggestion — there the whole point is
+  // that nothing could be decided.
+  const conflicting = [rule(uuid(481), M, cat('drogerie')), rule(uuid(482), M, cat('restaurant'))]
+  const ambiguous = buildClassificationQueue({
+    transactions: [tx], patterns, merchants, rules: conflicting,
+  }).open[0]
+  ok('two disagreeing rules offer no preselection', ambiguous.category.suggestedCategoryId === null)
+
+  // A conflict has no merchant at all, so it has nothing to suggest either.
+  const A = uuid(123), B = uuid(124)
+  const clash = buildClassificationQueue({
+    transactions: [booking('EDEKA MARKT Bonn')],
+    patterns: [
+      pattern(uuid(393), A, 'exact_token', ['EDEKA']),
+      pattern(uuid(394), B, 'exact_token', ['MARKT']),
+    ],
+    merchants: [merchant(A, 'Edeka'), merchant(B, 'Nahkauf')],
+    rules: [rule(uuid(483), A, cat('lebensmittel'))],
+  }).open[0]
+  ok('a conflict suggests nothing', clash.category.suggestedCategoryId === null)
+}
+
 console.log(\`finance classify: \${pass} passed, \${fail} failed\`)
 process.exit(fail ? 1 : 0)
 `

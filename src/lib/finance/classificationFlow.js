@@ -374,6 +374,7 @@ export function decisionExplanation(entry, merchants = []) {
     const names = claimingMerchants(entry, merchants)
     return {
       kind,
+      reason: entry?.category?.reason ?? null,
       headline: 'Zwei Händler beanspruchen diese Buchung.',
       lines: [
         names.length > 0 ? `Gemerkt sind: ${names.join(' und ')}.` : '',
@@ -383,16 +384,32 @@ export function decisionExplanation(entry, merchants = []) {
   }
   if (kind === DECISION.REVIEW) {
     const name = entry?.merchantMatch?.merchant?.canonical_name ?? 'Dieser Händler'
+    // Two different reasons end in the same status, and they mean different
+    // things to the user. 'always_review' is a standing instruction — every
+    // booking of this merchant, forever. 'conditional_default' is about THIS
+    // booking: the merchant's amount rules did not cover it, so the fallback
+    // would have decided it, and the user asked not to let that happen
+    // silently. Saying „jedes Mal" for the second one would describe a merchant
+    // setting nobody made.
+    const conditional = entry?.category?.reason === 'merchant_conditional_default'
     return {
       kind,
-      headline: `${name} wird jedes Mal geprüft.`,
-      lines: [
-        'Der Händler ist erkannt, die Kategorie wird bei diesem Händler absichtlich nie automatisch gesetzt.',
-        'Du wählst sie für diese eine Buchung.',
-      ],
+      reason: entry?.category?.reason ?? null,
+      headline: conditional
+        ? `Für diese Buchung von ${name} greift keine Regel.`
+        : `${name} wird jedes Mal geprüft.`,
+      lines: conditional
+        ? [
+            'Der Händler ist erkannt, aber keine seiner Betragsregeln passt auf diesen Betrag.',
+            'Statt still auf die Standardkategorie zurückzufallen, wird sie hier einmal bestätigt.',
+          ]
+        : [
+            'Der Händler ist erkannt, die Kategorie wird bei diesem Händler absichtlich nie automatisch gesetzt.',
+            'Du wählst sie für diese eine Buchung.',
+          ],
     }
   }
-  return { kind, headline: '', lines: [] }
+  return { kind, reason: null, headline: '', lines: [] }
 }
 
 /**
@@ -409,12 +426,18 @@ export const buildOverride = ({ merchantId = null, categoryId }) => ({
 })
 
 /** What was decided, once it is written. */
-export function describeOverrideResult({ kind, merchantName, categoryName }) {
+export function describeOverrideResult({ kind, reason = null, merchantName, categoryName }) {
   const lines = [`Diese Buchung ist ${merchantName ? `${merchantName} · ` : ''}${categoryName}.`]
-  lines.push(
-    kind === DECISION.RESOLVE_CONFLICT
-      ? 'Nur diese Buchung wurde entschieden — an den gespeicherten Mustern hat sich nichts geändert.'
-      : 'Nur diese Buchung wurde entschieden — der Händler wird weiterhin jedes Mal geprüft.'
-  )
+  // What stayed the same is the point of the sentence, and it has to be true
+  // for the case at hand. „Wird weiterhin jedes Mal geprüft" is a statement
+  // about a merchant setting, and only one of the reasons that lead here is
+  // that setting; the neutral half is true of all of them.
+  if (kind === DECISION.RESOLVE_CONFLICT) {
+    lines.push('Nur diese Buchung wurde entschieden — an den gespeicherten Mustern hat sich nichts geändert.')
+  } else if (reason === 'merchant_always_review') {
+    lines.push('Nur diese Buchung wurde entschieden — der Händler wird weiterhin jedes Mal geprüft.')
+  } else {
+    lines.push('Nur diese Buchung wurde entschieden — die Händlerregeln bleiben unverändert.')
+  }
   return { lines }
 }

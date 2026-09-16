@@ -473,7 +473,19 @@ function OverrideDecision({ kind, entry, merchants, categories, saving, failure,
   const recognised = entry.merchantMatch?.merchant ?? null
 
   const [merchantId, setMerchantId] = useState(recognised?.id ?? (claimants.length === 1 ? claimants[0] : null))
-  const [categorySlug, setCategorySlug] = useState(null)
+
+  // resolveCategory already worked out which category the merchant's rules
+  // WOULD have produced — it just refused to apply it, which is the whole
+  // meaning of review_required. Offering that answer preselected turns the
+  // common case into one tap, and it is a suggestion in the honest sense: it is
+  // the rule's own result, and changing it is one tap too.
+  //
+  // A conflict gets no preselection unless the engine produced an unambiguous
+  // one: there the whole problem is that nothing could be decided.
+  const suggested = entry.category?.suggestedCategoryId ?? null
+  const [categorySlug, setCategorySlug] = useState(
+    () => categories.find((c) => c.id === suggested)?.slug ?? null
+  )
 
   const category = categories.find((c) => c.slug === categorySlug) ?? null
   const merchantName =
@@ -546,7 +558,11 @@ function OverrideDecision({ kind, entry, merchants, categories, saving, failure,
           onDecide(
             entry.transaction.id,
             buildOverride({ merchantId, categoryId: category.id }),
-            { kind, merchantName, categoryName: category.label }
+            // The reason travels with the decision: what stayed unchanged is
+            // different for an always_review merchant than for a booking no
+            // amount rule covered, and the sentence afterwards has to be true
+            // for the case at hand.
+            { kind, reason: entry.category?.reason ?? null, merchantName, categoryName: category.label }
           )
         }
         disabled={!canSave}
@@ -748,7 +764,7 @@ function SavedStep({ done, remaining }) {
         ))}
       </ul>
       <p className="mt-4 text-caption text-text-muted">
-        {remaining > 0 ? 'Weiter mit der nächsten offenen Buchung …' : 'Keine offenen Buchungen mehr.'}
+        {remaining > 0 ? 'Weiter mit der nächsten offenen Buchung …' : 'Es wartet keine Buchung mehr.'}
       </p>
     </div>
   )
@@ -757,9 +773,12 @@ function SavedStep({ done, remaining }) {
 function FinishedStep({ onClose }) {
   return (
     <div className="pt-2">
-      <p className="text-section font-semibold text-text-primary">Alles zugeordnet</p>
+      {/* Not „alles zugeordnet": a booking somebody locked or overrode is out
+          of the queue without necessarily carrying a merchant AND a category.
+          What is true is that nothing is waiting. */}
+      <p className="text-section font-semibold text-text-primary">Keine offenen Zuordnungen</p>
       <p className="mt-2 text-ui text-text-secondary">
-        Jede Buchung hat einen Händler und eine Kategorie.
+        Aktuell wartet keine Buchung auf deine Entscheidung.
       </p>
       <button
         onClick={onClose}
