@@ -28,6 +28,7 @@ import {
   describeParseFailure,
   formatAmountMinor,
   formatBookingDate,
+  hydrateForMatching,
   plural,
   previewRows,
   readStatementFile,
@@ -309,6 +310,101 @@ const overlapTotals = summarizePlan(overlap)
   ok('every outcome has a German word', outcomes.every((o) => typeof OUTCOME_LABELS[o] === 'string'))
   ok('…and none of them is the outcome itself',
      outcomes.every((o) => OUTCOME_LABELS[o] !== o))
+}
+
+// ── 13b. The evidence a reload must bring back ─────────────────────────────
+// A booking's stored text is frozen; the richer text a later export contributed
+// lives beside it as an observation. Everything the matcher knows is derived
+// from the description — the reference included — so a booking whose reference
+// only ever appeared in the richer text has, for matching purposes, none at all
+// unless the observation is read back with it.
+{
+  const booking = {
+    id: uuid(1), account_id: ACCOUNT, booking_date: '2026-09-14', amount_minor: -5005,
+    currency: 'EUR', raw_description: 'Deutsche Bahn', external_reference: null,
+  }
+  const observations = [{
+    transaction_id: uuid(1),
+    observed_description: 'DB.Vertrieb.GmbH/564851284265',
+    observed_reference: '564851284265',
+    created_at: '2026-09-15T10:00:00Z',
+  }]
+
+  const plain = hydrateForMatching([booking], [])
+  ok('without observations the booking is handed over untouched', plain[0] === booking)
+
+  const rich = hydrateForMatching([booking], observations)
+  ok('with one, the matcher sees the better text',
+     rich[0].raw_description === 'DB.Vertrieb.GmbH/564851284265')
+  ok('…and the reference that only lived there', rich[0].external_reference === '564851284265')
+  ok('…while the stored row itself is untouched', booking.raw_description === 'Deutsche Bahn')
+  ok('…and the identity is carried over', rich[0].id === uuid(1) && rich[0].account_id === ACCOUNT)
+
+  const newest = hydrateForMatching([booking], [
+    ...observations,
+    { transaction_id: uuid(1), observed_description: 'Noch besser', observed_reference: null,
+      created_at: '2026-09-16T10:00:00Z' },
+  ])
+  ok('the newest observation wins', newest[0].raw_description === 'Noch besser')
+
+  ok('an observation for another booking changes nothing',
+     hydrateForMatching([booking], [{ transaction_id: uuid(9), observed_description: 'Fremd',
+       created_at: '2026-09-20T10:00:00Z' }])[0] === booking)
+  ok('an observation equal to the stored text changes nothing',
+     hydrateForMatching([booking], [{ transaction_id: uuid(1),
+       observed_description: 'Deutsche Bahn', created_at: '2026-09-20T10:00:00Z' }])[0] === booking)
+  ok('a malformed observation is ignored',
+     hydrateForMatching([booking], [{ transaction_id: uuid(1), observed_description: null }])[0] === booking)
+
+  // And it reaches the matcher, in the shape that matters most: this booking's
+  // only distinguishing mark is the reference, and the reference exists solely
+  // in the observation. Without it the arrival matches no tier at all and comes
+  // out as NEW — the same payment imported a second time. With it, it is
+  // recognised. This is why a reload has to bring the observations back.
+  const incoming = {
+    booking_date: '2026-09-14', amount_minor: -5005, currency: 'EUR',
+    raw_description: 'DB.Vertrieb.GmbH/564851284265',
+  }
+  const parsed = { ok: true, header: { period_start: '2026-09-14', period_end: '2026-09-14' },
+                   transactions: [incoming] }
+  const without = buildPlan({ parsed, existing: [booking], accountId: ACCOUNT })
+  const withObs = buildPlan({ parsed, existing: [booking], observations, accountId: ACCOUNT })
+  ok('without the observation the same payment would be imported again',
+     without.decisions[0].outcome === 'new')
+  ok('…and the preview would have promised a new booking',
+     summarizePlan(without).neu === 1)
+  ok('with it, it is recognised as the same booking',
+     withObs.decisions[0].outcome === 'duplicate')
+  ok('…and the preview stops promising a change',
+     summarizePlan(withObs).aktualisiert === 0)
+}
+
+// ── 13c. A manual decision has to reach the preview ────────────────────────
+{
+  const booking = {
+    id: uuid(2), account_id: ACCOUNT, booking_date: '2026-09-14', amount_minor: -5005,
+    currency: 'EUR', raw_description: 'Deutsche Bahn', manual_lock: false,
+  }
+  const parsed = { ok: true, header: { period_start: '2026-09-14', period_end: '2026-09-14' },
+                   transactions: [{ booking_date: '2026-09-14', amount_minor: -5005,
+                                    currency: 'EUR', raw_description: 'Deutsche Bahn' }] }
+
+  const plain = buildPlan({ parsed, existing: [booking], accountId: ACCOUNT })
+  ok('an unprotected booking matches normally', plain.decisions[0].outcome === 'duplicate')
+
+  const overridden = buildPlan({
+    parsed, existing: [booking], overrideTransactionIds: [uuid(2)], accountId: ACCOUNT,
+  })
+  ok('an overridden booking is flagged for review', overridden.decisions[0].outcome === 'review')
+  ok('…and the preview says "Prüfen"',
+     previewRows(parsed.transactions, overridden)[0].status === 'Prüfen')
+  ok('…and counts it as needing a look', summarizePlan(overridden).pruefen === 1)
+
+  const locked = buildPlan({
+    parsed, existing: [{ ...booking, manual_lock: true }], accountId: ACCOUNT,
+  })
+  ok('manual_lock does the same without any extra plumbing',
+     locked.decisions[0].outcome === 'review')
 }
 
 // ── 14. The repository path: what actually goes on the wire ────────────────

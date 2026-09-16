@@ -10,6 +10,7 @@ import {
   confirmSentence,
   describeApplyResult,
   describeParseFailure,
+  failureLog,
   previewRows,
   summarizePlan,
   summaryLines,
@@ -37,10 +38,13 @@ export default function FinanceImportSheet() {
 }
 
 function Sheet({ onClose }) {
-  const { account, transactions, createAccount, openImport, applyPlan } = useFinance()
+  const {
+    account, transactions, observations, overrideTransactionIds,
+    createAccount, findImport, openImport, applyPlan, reload,
+  } = useFinance()
   const fileRef = useRef(null)
 
-  // 'pick' | 'reading' | 'account' | 'preview' | 'applying' | 'done' | 'error'
+  // 'pick' | 'reading' | 'already' | 'account' | 'preview' | 'applying' | 'done' | 'error'
   const [step, setStep] = useState('pick')
   const [accountName, setAccountName] = useState(DEFAULT_ACCOUNT_NAME)
   const [statement, setStatement] = useState(null) // { hash, result, fileName }
@@ -73,7 +77,7 @@ function Sheet({ onClose }) {
   const prepare = useCallback(
     (parsed, accountId) => {
       const existing = transactions.filter((t) => t.account_id === accountId)
-      const nextPlan = buildPlan({ parsed, existing, accountId })
+      const nextPlan = buildPlan({ parsed, existing, observations, overrideTransactionIds, accountId })
       setTargetAccountId(accountId)
       setPlan(nextPlan)
       const nextTotals = summarizePlan(nextPlan)
@@ -81,7 +85,7 @@ function Sheet({ onClose }) {
       setRows(previewRows(parsed.transactions, nextPlan))
       setStep('preview')
     },
-    [transactions]
+    [transactions, observations, overrideTransactionIds]
   )
 
   const onFile = useCallback(
@@ -99,18 +103,30 @@ function Sheet({ onClose }) {
           return
         }
         setStatement({ hash, result, fileName: file.name ?? null })
+
+        // The same file, already applied. Said plainly instead of walked through
+        // a preview of nothing — and the screen behind is resynced first,
+        // because the most likely way to get here is an apply that committed on
+        // the server while the answer never reached this device.
+        const known = await findImport(hash)
+        if (known?.status === 'imported') {
+          await reload()
+          setStep('already')
+          return
+        }
+
         if (account) prepare(result, account.id)
         else setStep('account')
       } catch (err) {
-        console.error(err)
-        // Whatever went wrong while reading, the user sees the same honest
-        // sentence: this file was not imported. The code stays in the console,
-        // never in the interface.
+        // The code, never the object: see failureLog. Whatever went wrong while
+        // reading, the user sees the same honest sentence — this file was not
+        // imported — and the console gets no page of the statement.
+        console.error(failureLog('lesen', err))
         setFailure(describeParseFailure({ errors: [{ code: 'read_failed', message: String(err?.message ?? err) }] }))
         setStep('error')
       }
     },
-    [account, prepare]
+    [account, prepare, findImport, reload]
   )
 
   const onCreateAccount = useCallback(async () => {
@@ -120,7 +136,7 @@ function Sheet({ onClose }) {
       const row = await createAccount(name)
       prepare(statement.result, row.id)
     } catch (err) {
-      console.error(err)
+      console.error(failureLog('konto', err))
       setFailure({ headline: 'Das Konto konnte nicht angelegt werden.', details: [] })
       setStep('error')
     }
@@ -147,7 +163,9 @@ function Sheet({ onClose }) {
       setOutcome({ ...describeApplyResult(result, totals), reused })
       setStep('done')
     } catch (err) {
-      console.error(err)
+      // The most sensitive of the three: a constraint violation from the apply
+      // function answers with the row that broke it.
+      console.error(failureLog('import', err))
       setFailure({
         headline:
           'Der Import konnte nicht gespeichert werden. Es wurde nichts übernommen — du kannst es erneut versuchen.',
@@ -163,17 +181,26 @@ function Sheet({ onClose }) {
 
   return (
     <BottomSheet open onClose={onClose} full title="Umsätze importieren">
-      <div className="flex-1 overflow-y-auto px-5 py-5 pb-10">
+      {/* No scroll container of its own: BottomSheet's body already is one,
+          and a second one nested inside it swallows the momentum of a flick and
+          keeps the last row under the fold on a phone. */}
+      <div className="px-5 py-5 pb-10">
         <input
           ref={fileRef}
           type="file"
           accept="application/pdf,.pdf"
           className="hidden"
+          // The button above is the control a person sees and reaches; this
+          // element only carries the native picker. Left in the tab order it
+          // would be an invisible stop inside the sheet's focus trap.
+          tabIndex={-1}
+          aria-hidden="true"
           onChange={(e) => onFile(e.target.files?.[0])}
         />
 
         {step === 'pick' && <PickStep onPick={() => fileRef.current?.click()} />}
         {step === 'reading' && <ReadingStep />}
+        {step === 'already' && <AlreadyStep onRetry={reset} onClose={onClose} />}
         {step === 'account' && (
           <AccountStep value={accountName} onChange={setAccountName} onSubmit={onCreateAccount} />
         )}
@@ -232,6 +259,33 @@ function ReadingStep() {
   )
 }
 
+// Not an error: the file is fine and the bookings are already where they
+// belong. The database would say so too — the apply function replays instead of
+// writing — but making the user sit through an empty preview to find that out
+// would be the app hiding what it already knows.
+function AlreadyStep({ onRetry, onClose }) {
+  return (
+    <div className="pt-2">
+      <p className="text-body text-text-primary">Dieser DKB-Export wurde bereits importiert.</p>
+      <p className="mt-2 text-ui text-text-secondary">
+        Es wurde nichts doppelt gespeichert.
+      </p>
+      <button
+        onClick={onClose}
+        className="press-tint mt-6 w-full rounded-btn bg-accent py-3.5 text-body font-semibold text-white"
+      >
+        Fertig
+      </button>
+      <button
+        onClick={onRetry}
+        className="press-tint mt-3 flex w-full items-center justify-center gap-2 rounded-btn bg-bg-input py-3.5 text-body font-semibold text-text-primary"
+      >
+        <FileText size={18} /> Andere Datei wählen
+      </button>
+    </div>
+  )
+}
+
 function AccountStep({ value, onChange, onSubmit }) {
   return (
     <div className="pt-2">
@@ -261,7 +315,12 @@ function AccountStep({ value, onChange, onSubmit }) {
   )
 }
 
-function PreviewStep({ totals, rows, statement, busy, onApply }) {
+// Exported so a real browser can measure it. The preview is the one screen of
+// this flow that has to survive hostile content — a description longer than the
+// phone, an amount with thousands separators, five hundred bookings at once —
+// and none of that can be checked in a DOM without layout. See
+// tools/financeImportLayout.mjs.
+export function PreviewStep({ totals, rows, statement, busy, onApply }) {
   const replaced = supersessionSentence(totals)
   const warnings = statement?.result?.warnings?.filter((w) => w.in_transaction) ?? []
 
@@ -377,14 +436,20 @@ function ErrorStep({ failure, onRetry }) {
   const [openDetails, setOpenDetails] = useState(false)
   return (
     <div className="pt-2">
-      <p className="text-body text-text-primary">{failure.headline}</p>
+      <p className="text-body text-text-primary" role="alert">
+        {failure.headline}
+      </p>
 
       {failure.details.length > 0 && (
         <>
           <button
             onClick={() => setOpenDetails((v) => !v)}
             aria-expanded={openDetails}
-            className="press-tint mt-4 flex items-center gap-1.5 rounded-btn py-1 text-ui text-text-secondary"
+            // py-3/-my-2 rather than py-1: measured in a real browser at 390 px the
+            // strip was 29 px tall, well under what a thumb reliably hits. The
+            // padding grows the target, the negative margin gives the four pixels
+            // of visual spacing back, so nothing moves.
+            className="press-tint -my-2 mt-4 flex items-center gap-1.5 rounded-btn py-3 text-ui text-text-secondary"
           >
             Details
             <ChevronDown
@@ -425,7 +490,7 @@ function Details({ label, counts, period, warnings }) {
       <button
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="press-tint flex items-center gap-1.5 rounded-btn py-1 text-ui text-text-secondary"
+        className="press-tint -my-2 flex items-center gap-1.5 rounded-btn py-3 text-ui text-text-secondary"
       >
         {label}
         <ChevronDown

@@ -53,7 +53,7 @@ import {
 import { parseAmountMinor, parseGermanDate } from './amount'
 import { extractReference } from './reference'
 import { sanitizeGlyphs, unmappedGlyphWarning } from './glyphs'
-import { groupIntoLines, lineText } from './lines'
+import { groupIntoLines, lineText, mergeAdjacent } from './lines'
 
 /** Booking blocks that carry a card timestamp are marked — and nothing more. */
 export const SOURCE_VARIANTS = ['standard', 'timestamped_card']
@@ -190,7 +190,14 @@ export function parseDkbUmsatzexport(doc) {
       )
     }
 
-    const pageLabelItem = page.items.find(
+    // Everything above the table is read as printed RUNS, not as the items
+    // pdfjs happened to cut the page into — see mergeAdjacent() for why that
+    // difference is not cosmetic. The band below is untouched: it always read
+    // whole lines.
+    const runs = lines.flatMap((line) => mergeAdjacent(line.items))
+    const headerLineItems = new Set(headerLine.items)
+
+    const pageLabelItem = runs.find(
       (item) => hasInk(item) && PAGE_LABEL_PATTERN.test(item.str.trim())
     )
     if (!pageLabelItem) {
@@ -212,7 +219,7 @@ export function parseDkbUmsatzexport(doc) {
     const inBand = (item) => item.y < bandTop && item.y > FOOTER_Y_MAX
 
     // ── everything above the table: known header shapes only ──
-    for (const item of page.items) {
+    for (const item of runs) {
       if (!hasInk(item)) continue
       if (item === pageLabelItem) continue
       if (near(item.fontSize, FOOTER_FONT_SIZE)) {
@@ -239,7 +246,7 @@ export function parseDkbUmsatzexport(doc) {
         continue
       }
       if (item.y >= bandTop) {
-        if (headerLine.items.includes(item)) continue
+        if (item.parts.some((part) => headerLineItems.has(part))) continue
         const text = item.str.trim()
         if (atX(item, X_ADDRESS)) continue // Anschrift, „Auszug", IBAN des Kontos
         if (ISSUE_DATE_PATTERN.test(text)) continue
@@ -347,9 +354,20 @@ export function parseDkbUmsatzexport(doc) {
 
     // Description lines, verbatim: everything between the description column
     // and the amount column, every line of the block, spacing items included.
+    //
+    // The one thing removed is whitespace at the two ends of a line. That is
+    // not the document's text — pdfjs pads a line with a spacing item whenever
+    // the next thing it draws sits further right, so whether a description ends
+    // in a space depends on the chunking, not on the statement. It was measured
+    // on a generated PDF of the identical layout: "Deutsche Bahn " where the
+    // page says "Deutsche Bahn". Left in, it would be frozen into
+    // raw_description and change the fingerprint — the same booking from two
+    // readings would stop being the same booking. Spaces BETWEEN words are
+    // untouched; they are what the document shows (see lines.js).
     for (const line of block.lines) {
       const text = lineText(line, { from: X_DESCRIPTION - X_TOLERANCE, to: X_AMOUNT_MIN })
-      if (text.trim() !== '') result.lines.push(text)
+      const trimmed = text.replace(/^[ \t]+|[ \t]+$/g, '')
+      if (trimmed !== '') result.lines.push(trimmed)
     }
     if (result.lines.length === 0) {
       errors.push(

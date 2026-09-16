@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { financeRepository } from '../data/financeRepository'
+import { failureLog } from '../lib/finance/importFlow'
 import { useAuth } from './AuthContext'
 
 const FinanceContext = createContext(null)
@@ -23,6 +24,13 @@ export function FinanceProvider({ children }) {
 
   const [accounts, setAccounts] = useState([])
   const [transactions, setTransactions] = useState([])
+  // Not for the screen — for the matcher. A booking's stored text is frozen at
+  // the moment it arrived; the richer text a later export contributed lives
+  // beside it, and a manual decision lives in its own row. Both are evidence the
+  // next reconciliation needs, and both are lost on a reload unless they are
+  // read back with the bookings.
+  const [observations, setObservations] = useState([])
+  const [overrides, setOverrides] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -31,15 +39,19 @@ export function FinanceProvider({ children }) {
       if (!user) return
       if (!silent) setLoading(true)
       try {
-        const [accountRows, transactionRows] = await Promise.all([
+        const [accountRows, transactionRows, observationRows, overrideRows] = await Promise.all([
           repo.listAccounts(user.id),
           repo.listTransactions(user.id),
+          repo.listObservations(user.id),
+          repo.listOverrides(user.id),
         ])
         setAccounts(accountRows)
         setTransactions(transactionRows)
+        setObservations(observationRows)
+        setOverrides(overrideRows)
         setError(null)
       } catch (err) {
-        console.error(err)
+        console.error(failureLog('laden', err))
         setError(err)
       } finally {
         if (!silent) setLoading(false)
@@ -77,6 +89,12 @@ export function FinanceProvider({ children }) {
    * pile up import records, and if that row was already applied the flow can say
    * so instead of proposing the work a second time.
    */
+  /** Has this exact file been read before, and what became of it? */
+  const findImport = useCallback(
+    async (sourceHash) => (sourceHash ? repo.findImportBySourceHash(user.id, sourceHash) : null),
+    [user, repo]
+  )
+
   const openImport = useCallback(
     async ({ accountId, sourceHash, sourceName, periodStart, periodEnd }) => {
       const existing = await repo.findImportBySourceHash(user.id, sourceHash)
@@ -113,14 +131,17 @@ export function FinanceProvider({ children }) {
       accounts,
       account,
       transactions,
+      observations,
+      overrideTransactionIds: overrides.map((o) => o.transaction_id),
       loading,
       error,
       reload: () => load({ silent: true }),
       createAccount,
+      findImport,
       openImport,
       applyPlan,
     }),
-    [accounts, account, transactions, loading, error, load, createAccount, openImport, applyPlan]
+    [accounts, account, transactions, observations, overrides, loading, error, load, createAccount, findImport, openImport, applyPlan]
   )
 
   return <FinanceContext.Provider value={value}>{children}</FinanceContext.Provider>

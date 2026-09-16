@@ -137,7 +137,10 @@ npm run test:logic   # pure-logic tests: drag/resize math, search, timezone-safe
                      # module, and the Google sync (mapping, conflicts, two-way
                      # create/update/delete, DST, duplicates) against a fake
                      # Google
-npm run test:rls     # the RLS policies against a throwaway Postgres
+npm run test:rls     # the RLS policies and the import end-to-end against a
+                     # throwaway Postgres
+npm run test:layout  # the import preview in a real Chromium at 390 px, with
+                     # hostile content (needs a build first)
 ```
 
 ---
@@ -416,7 +419,7 @@ relies on was **measured** on a real export with `pdfjs.getTextContent()`, not
 assumed: a booking block begins at an item that sits in the date column and is
 exactly `dd.mm.yyyy`, and ends before the next one.
 
-Three properties of the real file shape the implementation:
+Four properties of the real file shape the implementation:
 
 - **The document counts itself.** It prints *"Anzahl der Transaktionen: 27"* and
   no balance at all, so that count — not a sum — is what the import is verified
@@ -430,6 +433,15 @@ Three properties of the real file shape the implementation:
   Those positions become `U+FFFD` (a NUL could not be stored in a `text` column
   anyway) and raise a structured warning; the word they came from can never
   become a merchant pattern (`unreliableTokens` in `normalize.js`).
+- **pdfjs decides where one text item ends.** That decision is a heuristic over
+  glyph advances, not a property of the document: the same page label arrives as
+  one item `Seite 1 von 3` from the real export and as three from a generated
+  PDF of the identical layout. The header therefore reads printed *runs* —
+  touching items joined back together, a wide whitespace item ending the run
+  because it is a column gap, not a space (`mergeAdjacent` in `lines.js`) — and
+  whitespace at the two ends of a description line is dropped, because it is
+  padding pdfjs inserted and would otherwise be frozen into `raw_description`
+  and change the fingerprint.
 
 Anything the parser cannot read with certainty stops the **whole** import — a
 statement half-read is a spending total quietly missing a booking.
@@ -570,14 +582,25 @@ merchant would need either a schema change or a second write path past the
 function's invariants. Bookings arrive unresolved and stay that way until the
 learning flow exists.
 
-`tools/financeImportFlowLogic.mjs` covers the flow with 92 assertions — the
+`tools/financeImportFlowLogic.mjs` covers the flow with 110 assertions — the
 real parser, the real matcher, the real payload builder and the repository's
 RPC path — because that is where "15 neu" has to be true. The DOM assertions in
 `tools/smoke.mjs` cover the states reachable without a PDF (empty account, an
 account with bookings, a failed load, the sheet opening and closing, the file
-input accepting only PDFs); the states after a file is picked need pdfjs, which
-jsdom cannot run, and faking the parser to get a green DOM test would be exactly
-the UI mock this module is not allowed to have.
+input accepting only PDFs).
+
+Three suites close what a jsdom test structurally cannot:
+
+- `tools/financeImportPdfLogic.mjs` (36) writes a **real PDF file** from the
+  measured geometry (`tools/fixtures/dkbPdf.mjs`) and hands the bytes to the
+  real `readStatementFile` with the real pdfjs behind it — the one link the
+  fixtures cannot exercise, because they start where pdfjs stops.
+- `tools/financeImportE2E.mjs` (37) runs the flow against a real Postgres with
+  the real apply function, **reloading between imports** exactly as the app
+  does, so nothing can quietly survive in memory from one import to the next.
+- `tools/financeImportLayout.mjs` (13) renders the real preview in the
+  installed Chromium at 390 px with five hundred hostile bookings and measures
+  it — jsdom has no layout and cannot tell whether anything fits.
 
 `tools/financeImportLogic.mjs` covers the client half (44 assertions);
 `supabase/tests/finance_import.sql` covers the rest against a real Postgres

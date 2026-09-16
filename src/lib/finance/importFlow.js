@@ -23,6 +23,23 @@ import { sourceHash } from './dkb/sourceHash'
 // real matcher, which a component test could not do.
 
 /**
+ * What a failure may be written down as.
+ *
+ * WHY NOT `console.error(err)`. A PostgREST error object carries `details` and
+ * `hint`, and for a constraint violation those hold the row that caused it —
+ * which here means a booking text, an amount and a date out of somebody's bank
+ * statement, written into the browser console where it outlives the session.
+ * The code and the message are enough to find the cause and carry no row.
+ *
+ * @param {string} where a fixed label, never interpolated from data
+ */
+export function failureLog(where, error) {
+  const code = error?.code ?? error?.name ?? 'unbekannt'
+  const message = typeof error?.message === 'string' ? error.message.slice(0, 200) : ''
+  return `finance/${where}: ${code}${message ? ` — ${message}` : ''}`
+}
+
+/**
  * What each outcome is called in front of a user.
  *
  * Deliberately five words for seven outcomes: `supersedes` and
@@ -309,6 +326,54 @@ export async function readStatementFile(file, deps = {}) {
 }
 
 /**
+ * The best text the database holds about each stored booking.
+ *
+ * A booking's `raw_description` is frozen at the moment it arrived, and rightly
+ * so. But a later export often describes the same booking better — "Deutsche
+ * Bahn" becomes "DB.Vertrieb.GmbH/508354771568" — and that richer text is kept
+ * beside it as an observation rather than written over it.
+ *
+ * WHY THE MATCHER NEEDS IT. Every fact the matcher works from is derived from
+ * the description, the reference included. So a booking whose reference only
+ * ever appeared in the richer text has, as far as matching is concerned, no
+ * reference at all — and the tiers that match on one can never recognise it
+ * again. Reloading the app made that permanent: the session that imported the
+ * richer text had it in hand, the next session did not.
+ *
+ * So the rows handed to the matcher carry the newest description the database
+ * knows. The stored row is not touched and is never written back; this is a
+ * reading of the evidence, not an edit of the booking.
+ */
+export function hydrateForMatching(transactions, observations = []) {
+  const rows = Array.isArray(transactions) ? transactions : []
+  const list = Array.isArray(observations) ? observations : []
+  if (list.length === 0) return rows
+
+  const best = new Map()
+  for (const observation of list) {
+    const id = observation?.transaction_id
+    if (!id || typeof observation.observed_description !== 'string') continue
+    const previous = best.get(id)
+    // Newest wins. Ties keep the first seen, which is stable because the
+    // repository reads observations in a fixed order.
+    if (!previous || String(observation.created_at ?? '') > String(previous.created_at ?? '')) {
+      best.set(id, observation)
+    }
+  }
+
+  return rows.map((row) => {
+    const observation = best.get(row?.id)
+    if (!observation) return row
+    if (observation.observed_description === row.raw_description) return row
+    return {
+      ...row,
+      raw_description: observation.observed_description,
+      external_reference: observation.observed_reference ?? row.external_reference ?? null,
+    }
+  })
+}
+
+/**
  * Reconcile the parsed file against what this account already holds.
  *
  * `accountId` is passed on purpose and is not optional in practice: stored
@@ -316,11 +381,19 @@ export async function readStatementFile(file, deps = {}) {
  * arrival would fall through as new and the import would double everything.
  * `reconcileImport` refuses that case outright — this is the one call site that
  * has to get it right.
+ *
+ * `overrideTransactionIds` is the other half of the same duty. A booking the
+ * user decided about by hand is never quietly re-labelled by an import, and the
+ * database enforces that whatever the plan claims — but a preview that did not
+ * know about the override would promise "Ersetzt" for a booking that is about to
+ * stand down, which is the preview telling the user the opposite of what will
+ * happen.
  */
-export function buildPlan({ parsed, existing = [], accountId }) {
+export function buildPlan({ parsed, existing = [], observations = [], overrideTransactionIds = [], accountId }) {
   return reconcileImport({
-    existing,
+    existing: hydrateForMatching(existing, observations),
     incoming: parsed?.transactions ?? [],
+    overrideTransactionIds,
     period: {
       start: parsed?.header?.period_start ?? null,
       end: parsed?.header?.period_end ?? null,
