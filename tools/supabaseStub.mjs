@@ -32,6 +32,15 @@ export const FINANCE_TABLES = [
   'finance_imports',
   'finance_transactions',
   'finance_transaction_overrides',
+  // Added by 0009. They are read on every finance load — the matcher needs the
+  // observations to recognise a booking it has already seen described better —
+  // so a stub without them no longer represents production.
+  'finance_transaction_observations',
+  'finance_transaction_observation_sightings',
+  'finance_transaction_relations',
+  'finance_transaction_relation_members',
+  'finance_import_review_items',
+  'finance_import_review_item_transactions',
 ]
 
 // Creating a Supabase client also builds its realtime client, and that one

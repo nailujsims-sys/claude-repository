@@ -72,3 +72,60 @@ export const lineItems = (line, { from = -Infinity, to = Infinity } = {}) =>
 
 /** Has this line any ink at all? A line of pure spacing items has not. */
 export const isBlank = (line) => lineText(line).trim() === ''
+
+/**
+ * Adjacent items of one line, joined back into the runs they were printed as.
+ *
+ * WHY THIS IS NEEDED. pdfjs decides for itself where one text item ends and the
+ * next begins, and that decision is not part of the document — it is a
+ * heuristic over glyph advances that can differ between pdfjs versions, between
+ * fonts, and between two files that print the same words. Measured on a
+ * generated PDF of the very same layout (tools/fixtures/dkbPdf.mjs), the page
+ * label the real export delivers as one item "Seite 1 von 3" arrived as three:
+ * "Seite", " ", "1 von 3".
+ *
+ * The table band never cared: it reads whole lines through `lineText`. The
+ * header did, because it tests its patterns against single items — so a
+ * different chunking of the same page turned every header fact into "missing"
+ * and refused an import that was perfectly readable.
+ *
+ * So the header reads runs instead of items. A run is what the eye sees as one
+ * piece of text: items that touch (the real export is gapless to within a point
+ * of kerning — see above), including the narrow whitespace items that carry the
+ * spaces between words. A WIDE whitespace item is not a space, it is the gap to
+ * the next column — "Auszug" and the issue date share a baseline and must stay
+ * two facts — so it ends the run instead of joining it.
+ *
+ * Nothing is invented: the run's text is its items concatenated, and every run
+ * keeps its `parts` so an unrecognised one can still be reported at the
+ * coordinates it was printed at.
+ *
+ * @param {Array<{str: string, x: number, y: number, width: number, fontSize: number}>} items
+ * @returns {Array<{str: string, x: number, y: number, width: number, fontSize: number, parts: Array<object>}>}
+ */
+export function mergeAdjacent(items) {
+  const KERNING = 1.5 // measured: 13 of 15 transitions gapless, 2 below 1 pt
+  const COLUMN_GAP = 2.5 // × font size — wider whitespace separates columns
+  const sorted = [...items].sort((a, b) => a.x - b.x)
+  const runs = []
+  let current = null
+  for (const item of sorted) {
+    const isWideSpace =
+      item.str.trim() === '' && item.width > item.fontSize * COLUMN_GAP
+    const touches =
+      current &&
+      current.fontSize === item.fontSize &&
+      Math.abs(item.x - (current.x + current.width)) <= KERNING
+    if (isWideSpace || !touches) {
+      current = isWideSpace
+        ? null
+        : { str: item.str, x: item.x, y: item.y, width: item.width, fontSize: item.fontSize, parts: [item] }
+      if (current) runs.push(current)
+      continue
+    }
+    current.str += item.str
+    current.width = item.x + item.width - current.x
+    current.parts.push(item)
+  }
+  return runs
+}
