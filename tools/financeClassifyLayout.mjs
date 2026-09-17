@@ -40,6 +40,7 @@ const RENDER = `
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
 import { BookingStep } from './src/components/FinanceClassifySheet.jsx'
+import Toggle from './src/components/Toggle.jsx'
 import { classifyTransaction } from './src/lib/finance/classificationQueue.js'
 import { tokenize } from './src/lib/finance/normalize.js'
 import { FINANCE_CATEGORIES } from './src/config/finance.js'
@@ -102,7 +103,17 @@ const render = (transaction, extra = {}) => {
   )
 }
 
+// EventForm's row, reproduced: a label and the switch in a py-2 flex row. The
+// switch grew a 44×44 target in v1.22 and must still contribute 24 px of
+// layout, or every such row in the app would get taller.
+const toggleRow = renderToStaticMarkup(
+  createElement('div', { className: 'flex items-center justify-between py-2', id: 'row' },
+    createElement('span', { className: 'text-body text-text-primary' }, 'Ganztägig'),
+    createElement(Toggle, { checked: false, onChange: () => {} }))
+)
+
 process.stdout.write(JSON.stringify({
+  toggleRow,
   ordinary: render(booking(ORDINARY, -2483)),
   hostile: render(booking(HOSTILE, -123456789)),
   // A booking with a long note already on it, and a long category name.
@@ -248,6 +259,15 @@ const toggle = sheet.querySelector('[role="switch"]')
 add(CASE + ': the analytics switch is there', !!toggle)
 add(CASE + ': …and it is on by default', toggle?.getAttribute('aria-checked') === 'true')
 
+// A row that holds only the switch keeps the height it had before the target
+// grew: 24px of content plus the row's own padding.
+const eventRow = document.getElementById('row')
+if (eventRow) {
+  add(CASE + ': a switch row is not made taller by the bigger target',
+      Math.round(eventRow.getBoundingClientRect().height) === 40,
+      Math.round(eventRow.getBoundingClientRect().height) + 'px')
+}
+
 // The word picker is capped rather than endless.
 const picker = [...sheet.querySelectorAll('div')].find((d) => d.className.includes('max-h-'))
 if (picker) {
@@ -256,22 +276,29 @@ if (picker) {
 }
 
 // Touch targets.
-// The switch is excluded on purpose: it is the platform control every system
-// draws 24 px tall, and what a thumb aims at is the 44 px row around it, which
-// is asserted separately below.
 const small = buttons.filter((b) => {
-  if (b.getAttribute('role') === 'switch') return false
   const r = b.getBoundingClientRect()
   return r.height > 0 && r.height < 44
-}).map((b) => (b.textContent || '').trim().slice(0, 18) + ' ' + Math.round(b.getBoundingClientRect().height))
+}).map((b) => ((b.textContent || '').trim() || b.getAttribute('role') || '?').slice(0, 18)
+  + ' ' + Math.round(b.getBoundingClientRect().height))
 add(CASE + ': every button is at least 44px tall', small.length === 0, small.join(' · '))
-// The switch is the platform control, 24px tall inside a 44px row.
-const switchRow = toggle?.closest('div')
-if (switchRow) {
-  add(CASE + ': …and the switch sits in a 44px row',
-      switchRow.getBoundingClientRect().height >= 44,
-      Math.round(switchRow.getBoundingClientRect().height) + 'px')
+
+// The switch included: the track may look 44×24, the thing a thumb aims at may
+// not be.
+if (toggle) {
+  const r = toggle.getBoundingClientRect()
+  add(CASE + ': the switch target is at least 44×44',
+      r.width >= 44 && r.height >= 44,
+      Math.round(r.width) + '×' + Math.round(r.height))
+  // …without pushing its row taller: the negative margin gives the layout back.
+  const track = toggle.firstElementChild
+  add(CASE + ': …while the track still looks 44×24',
+      track && Math.round(track.getBoundingClientRect().height) === 24,
+      track ? Math.round(track.getBoundingClientRect().width) + '×' + Math.round(track.getBoundingClientRect().height) : 'kein Track')
 }
+// The row around the switch no longer has to carry the target — the switch
+// carries its own (asserted above), which is why a 40 px row is fine now and
+// why no existing row in the app changed height.
 
 const out = document.createElement('div')
 out.id = 'report'
@@ -300,6 +327,14 @@ const measure = (markup, height, caseName, fits) => {
 }
 
 const report = []
+
+// The switch on its own, in the row shape EventForm uses.
+{
+  const rows = measure(variants.toggleRow, 400, 'Toggle in einer Zeile', false)
+  report.push(...rows.filter(
+    (r) => r.name.includes('switch') || r.name.includes('sideways') || r.name.includes('switch row')))
+}
+
 for (const viewport of VIEWPORTS) {
   // The ordinary booking must FIT on both phones — that is the release goal.
   report.push(...measure(variants.ordinary, viewport.height, `${viewport.name} ${WIDTH}×${viewport.height} · REWE`, true))

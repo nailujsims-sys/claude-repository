@@ -91,29 +91,36 @@ function Sheet({ onClose }) {
    * „gespeichert" over a half-written decision.
    */
   const onSave = useCallback(
-    async ({ learnRequest, transactionId, override, merchantScope }) => {
+    async ({ learnRequest, transactionId, override, merchantScope, labels, kind, reason }) => {
       setSaving(true)
       setFailure(null)
       const steps = { rule: null, override: null, merchant: null }
+      const report = (error = null) =>
+        describeSaveOutcome({ steps, include: merchantScope?.include, labels, kind, reason, error })
       try {
+        // A merchant that does not exist yet gets its id from the learn call —
+        // which is also why this runs after it and not before.
         let merchantId = merchantScope?.merchantId ?? null
         if (learnRequest) {
           const result = await learnRule(learnRequest)
           steps.rule = result
-          merchantId = result?.merchant_id ?? merchantId
+          merchantId = merchantId ?? result?.merchant_id ?? null
         }
         if (override) {
           await saveOverride(transactionId, override)
           steps.override = true
         }
+        // Only when the user actually chose „alle Buchungen von …". `merchantScope`
+        // is null for every other save, so learning a rule never changes what a
+        // merchant counts for.
         if (merchantScope && merchantId) {
           await setMerchantAnalytics(merchantId, merchantScope.include)
           steps.merchant = true
         }
-        setDone(describeSaveOutcome({ steps, ...merchantScope, labels: merchantScope?.labels }))
+        setDone(report())
       } catch (err) {
         console.error(failureLog('zuordnen', err))
-        setFailure(describeSaveOutcome({ steps, error: err }).failure ?? describeLearnFailure(err))
+        setFailure(report(err).failure ?? describeLearnFailure(err))
       } finally {
         setSaving(false)
       }
@@ -261,11 +268,23 @@ export function BookingStep({
   // for a brand-new one the id arrives with the learn call, which is why the
   // scope row only appears once one is picked or recognised.
   const merchantKnown = Boolean(chosenMerchant) || Boolean(built?.request && merchantName.trim())
-  const scopeOffered = !include && merchantKnown
+  // Offered in BOTH directions, and only when the switch actually moved. A
+  // merchant-wide „nicht berücksichtigen" that could not be taken back would be
+  // a one-way door, and this screen is the only place the door is.
+  const includeChanged = include !== current.included
+  const scopeOffered = includeChanged && merchantKnown
 
   const noteValue = normalizeNote(note)
   const noteChanged = noteValue !== (override?.note ?? null)
-  const includeChanged = include !== current.included || scope === 'merchant'
+  // A merchant-wide decision is a decision about the DEFAULT, so an older
+  // individual one about this booking has to get out of its way — otherwise the
+  // booking the user was looking at would be the one booking the new rule does
+  // not reach. Setting it back to null rather than to the same value keeps the
+  // meaning honest: this booking has no opinion of its own any more, it follows
+  // the merchant. Every other field of the override survives (see
+  // financeRepository.saveOverride).
+  const clearsIndividual =
+    scope === 'merchant' && typeof override?.include_in_analytics === 'boolean'
 
   const canSave = learning
     ? Boolean(built?.valid) && !blocking && !saving
@@ -277,27 +296,35 @@ export function BookingStep({
     // carries merchant and category. For a learned rule the rule carries them,
     // and an override is written only when the user decided something the rule
     // cannot hold: a note, or that this booking does not count.
+    const individual =
+      scope === 'merchant'
+        ? (clearsIndividual ? { include_in_analytics: null } : {})
+        : (includeChanged ? { include_in_analytics: include } : {})
+
     const overridePatch = learning
-      ? (noteChanged || (includeChanged && scope === 'transaction')
-          ? {
-              ...(noteChanged ? { note: noteValue } : {}),
-              ...(includeChanged && scope === 'transaction' ? { include_in_analytics: include } : {}),
-            }
+      ? (noteChanged || Object.keys(individual).length > 0
+          ? { ...(noteChanged ? { note: noteValue } : {}), ...individual }
           : null)
       : {
           ...buildOverride({ merchantId, categoryId: chosenCategory.id }),
           note: noteValue,
-          ...(scope === 'transaction' ? { include_in_analytics: include } : {}),
+          // A conflict or a review always writes the row anyway, so the
+          // individual decision is written with it — or cleared, when the user
+          // just said the merchant decides.
+          ...(scope === 'merchant' ? { include_in_analytics: null } : { include_in_analytics: include }),
         }
 
     onSave({
       learnRequest: learning ? built.request : null,
       transactionId: transaction.id,
       override: overridePatch,
-      merchantScope:
-        scope === 'merchant' && merchantKnown
-          ? { merchantId, include, labels, kind, reason: entry.category?.reason ?? null }
-          : { merchantId: null, include, labels, kind, reason: entry.category?.reason ?? null },
+      // null unless the user chose the merchant-wide scope. `merchantId` may be
+      // null here for a merchant that is about to be created — the learn call
+      // returns its id.
+      merchantScope: scope === 'merchant' && merchantKnown ? { merchantId, include } : null,
+      labels,
+      kind,
+      reason: entry.category?.reason ?? null,
     })
   }
 
@@ -380,7 +407,9 @@ export function BookingStep({
             checked={include}
             onChange={(next) => {
               setInclude(next)
-              if (next) setScope('transaction')
+              // Back to the value it already had? Then there is nothing to
+              // scope, and a stale „alle Buchungen von …" must not survive it.
+              if (next === current.included) setScope('transaction')
             }}
             label="In Auswertung berücksichtigen"
           />
@@ -398,6 +427,12 @@ export function BookingStep({
               onPick={() => setScope('merchant')}
               label={`Alle Buchungen von ${chosenMerchantName}`}
             />
+            {scope === 'merchant' && clearsIndividual && (
+              <p className="pb-1 text-caption text-text-muted">
+                Die bisherige Einstellung dieser Buchung wird dabei aufgehoben — sie folgt dann dem
+                Händler.
+              </p>
+            )}
           </div>
         )}
         <div className="border-t border-subtle px-4 py-2">

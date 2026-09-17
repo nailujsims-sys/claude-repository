@@ -690,7 +690,18 @@ follows the merchant's default the moment a pattern recognises it. A booking two
 merchants claim has no unambiguous default and falls through to its own column.
 
 „Nicht berücksichtigen" is an interpretation, never a deletion: no booking is
-rewritten, nothing is removed, and every step is reversible.
+rewritten, nothing is removed, and every step is reversible — the scope choice
+(„nur diese Buchung" / „alle Buchungen von …") is offered in BOTH directions,
+whenever the switch moves and a merchant is unambiguous.
+
+Choosing the merchant scope **clears** the booking's own decision rather than
+overwriting it with the same value. That is the semantics, not a shortcut:
+priority is override → merchant → transaction, so an older individual decision
+would otherwise outlive the new merchant-wide one, and the booking the user was
+looking at would be the single booking the new rule failed to reach. `null`
+means „diese Buchung hat keine eigene Meinung mehr, sie folgt dem Händler", and
+a later change of the merchant default reaches it too. Note, merchant, category
+and transaction type in the same row are untouched.
 
 The same rule exists twice — in JavaScript for the screen, and in SQL for
 `finance_analytics_transactions`, which a future chart will read. Two

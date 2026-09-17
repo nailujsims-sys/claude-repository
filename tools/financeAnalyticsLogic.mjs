@@ -345,6 +345,95 @@ const pattern = (id, merchantId, tokens) => ({
      switchedBack.lines.some((l) => l.includes('zählen wieder in Auswertungen')))
 }
 
+// ── 9. A merchant-wide decision has to reach the booking in hand ───────────
+//
+// REGRESSION. The priority is override > merchant > transaction, so a booking
+// that already carried an individual include_in_analytics would have kept it
+// after the user said „alle Buchungen von X nicht berücksichtigen" — the one
+// booking they were looking at would have been the one the new rule missed.
+//
+// The fix is a semantic one, not a patch: choosing the merchant scope CLEARS
+// the individual decision (sets it to null) rather than overwriting it with the
+// same value. „Diese Buchung folgt dem Händler" is what the user just said, and
+// null is how the data says it — so a later change of the merchant default
+// reaches this booking too.
+{
+  const M = uuid(100)
+  const merchants = [merchant(M, 'Scalable Capital')]
+  const patterns = [pattern(uuid(400), M, ['SCALABLE'])]
+  const tx = booking('Scalable Capital Verrechnungskonto')
+
+  // Before: an individual decision that this booking counts.
+  const individual = { transaction_id: tx.id, include_in_analytics: true, note: 'Sparplan',
+                       merchant_id: M, category_id: uuid(999) }
+  const before = matchMerchant({ transaction: tx, patterns, merchants })
+  ok('the individual decision wins over the merchant today',
+     resolveAnalyticsInclusion({
+       transaction: tx, override: individual, merchantMatch: before,
+       merchants: [merchant(M, 'Scalable Capital', { default_include_in_analytics: false })],
+     }) === true)
+
+  // After the merchant-wide decision: the merchant says false, and the
+  // individual one is gone.
+  const offMerchants = [merchant(M, 'Scalable Capital', { default_include_in_analytics: false })]
+  const cleared = { ...individual, include_in_analytics: null }
+  ok('with the individual decision cleared, the merchant governs',
+     resolveAnalyticsInclusion({
+       transaction: tx, override: cleared,
+       merchantMatch: matchMerchant({ transaction: tx, patterns, merchants: offMerchants }),
+       merchants: offMerchants,
+     }) === false)
+  ok('…and the source says so',
+     analyticsInclusion({
+       transaction: tx, override: cleared,
+       merchantMatch: matchMerchant({ transaction: tx, patterns, merchants: offMerchants }),
+       merchants: offMerchants,
+     }).source === 'merchant')
+
+  // Everything else the override carried survives the clearing — that is the
+  // repository's job, and this is the shape it has to preserve.
+  ok('the note survives', cleared.note === 'Sparplan')
+  ok('…the merchant', cleared.merchant_id === M)
+  ok('…and the category', cleared.category_id === uuid(999))
+
+  // And the other direction: the merchant is switched back on.
+  const onMerchants = [merchant(M, 'Scalable Capital', { default_include_in_analytics: true })]
+  ok('switching the merchant back on reaches the booking too',
+     resolveAnalyticsInclusion({
+       transaction: tx, override: cleared,
+       merchantMatch: matchMerchant({ transaction: tx, patterns, merchants: onMerchants }),
+       merchants: onMerchants,
+     }) === true)
+
+  // A booking that never had an individual decision needs no clearing at all.
+  const plain = booking('Scalable Capital Sparplan')
+  ok('a booking without an individual decision follows the merchant anyway',
+     resolveAnalyticsInclusion({
+       transaction: plain,
+       merchantMatch: matchMerchant({ transaction: plain, patterns, merchants: offMerchants }),
+       merchants: offMerchants,
+     }) === false)
+}
+
+// ── 10. A note-only override does not decide anything about analytics ──────
+{
+  const M = uuid(101)
+  const offMerchants = [merchant(M, 'Scalable Capital', { default_include_in_analytics: false })]
+  const patterns = [pattern(uuid(401), M, ['SCALABLE'])]
+  const tx = booking('Scalable Capital Verrechnungskonto')
+  const match = matchMerchant({ transaction: tx, patterns, merchants: offMerchants })
+
+  ok('a null in the column is not an opinion',
+     resolveAnalyticsInclusion({
+       transaction: tx, override: { note: 'nur Text', include_in_analytics: null },
+       merchantMatch: match, merchants: offMerchants,
+     }) === false)
+  ok('…and neither is a missing column',
+     resolveAnalyticsInclusion({
+       transaction: tx, override: { note: 'nur Text' }, merchantMatch: match, merchants: offMerchants,
+     }) === false)
+}
+
 console.log(\`finance analytics: \${pass} passed, \${fail} failed\`)
 process.exit(fail ? 1 : 0)
 `

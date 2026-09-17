@@ -3352,6 +3352,86 @@ async function run() {
       errors.push(`[Finanzen/Prüfung] the suggested category is not preselected: ${text.slice(-200)}`)
     if (!text.includes('Speichern'))
       errors.push('[Finanzen/Prüfung] the single-booking decision is missing')
+
+    // The scope choice appears when the switch MOVES, in both directions, and
+    // only while a merchant is known. It must not be a one-way door.
+    const toggle = window.document.querySelector('[role="switch"]')
+    if (!toggle) errors.push('[Finanzen/Prüfung] there is no analytics switch')
+    else {
+      if (toggle.getAttribute('aria-checked') !== 'true')
+        errors.push('[Finanzen/Prüfung] the switch does not start on')
+      if (nb(txt(window)).includes('Gilt für'))
+        errors.push('[Finanzen/Prüfung] the scope choice is shown before anything changed')
+
+      toggle.click()
+      await wait(80)
+      const off = nb(txt(window))
+      if (!off.includes('Gilt für'))
+        errors.push('[Finanzen/Prüfung] turning the switch off offers no scope choice')
+      if (!off.includes('Alle Buchungen von PayPal'))
+        errors.push('[Finanzen/Prüfung] the merchant-wide option does not name the merchant')
+      if (!off.includes('Nur diese Buchung'))
+        errors.push('[Finanzen/Prüfung] the single-booking option is missing')
+
+      // Back to where it was: nothing changed, so nothing to scope.
+      toggle.click()
+      await wait(80)
+      if (nb(txt(window)).includes('Gilt für'))
+        errors.push('[Finanzen/Prüfung] the scope choice survives the switch going back')
+    }
+  }
+
+  // 16b5) The other direction: a merchant that is switched off today can be
+  //       switched back on for all of its bookings. Without this the
+  //       merchant-wide decision would be a one-way door.
+  {
+    const M = '11111111-2222-4333-8444-000000000204'
+    const CAT = FIN_CATEGORIES.find((c) => c.slug === 'sonstige').id
+    const offSeed = {
+      ...financeSeed,
+      finance_transactions: [
+        { id: '11111111-2222-4333-8444-000000000105', user_id: TEST_USER_ID, account_id: FIN_ACCOUNT,
+          booking_date: '2026-09-14', amount_minor: -50000, currency: 'EUR',
+          raw_description: 'Scalable Capital Verrechnungskonto',
+          normalized_tokens: ['SCALABLE', 'CAPITAL', 'VERRECHNUNGSKONTO'],
+          include_in_analytics: true, manual_lock: false },
+      ],
+      finance_merchants: [
+        { id: M, user_id: TEST_USER_ID, canonical_name: 'Scalable Capital',
+          review_mode: 'always_review', default_include_in_analytics: false },
+      ],
+      finance_merchant_patterns: [
+        { id: '11111111-2222-4333-8444-000000000214', user_id: TEST_USER_ID, merchant_id: M,
+          pattern_type: 'exact_token', tokens: ['SCALABLE'], active: true },
+      ],
+      finance_category_rules: [
+        { id: '11111111-2222-4333-8444-000000000222', user_id: TEST_USER_ID, merchant_id: M,
+          category_id: CAT, min_amount_minor: null, max_amount_minor: null,
+          min_inclusive: true, max_inclusive: true, currency: null, active: true },
+      ],
+    }
+    const window = makeDom('#/finanzen', { finance: offSeed })
+    mount(window, code, 'Finanzen/Wieder-einschalten')
+    await wait(400)
+    window.__restoreConsole?.()
+
+    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    await wait(320)
+
+    const toggle = window.document.querySelector('[role="switch"]')
+    if (!toggle) errors.push('[Finanzen/Einschalten] there is no analytics switch')
+    else {
+      // The merchant is off, so the booking shows as not counting.
+      if (toggle.getAttribute('aria-checked') !== 'false')
+        errors.push('[Finanzen/Einschalten] the switch does not reflect the merchant default')
+      toggle.click()
+      await wait(80)
+      const on = nb(txt(window))
+      if (!on.includes('Gilt für'))
+        errors.push('[Finanzen/Einschalten] turning the switch ON offers no scope choice')
+      if (!on.includes('Alle Buchungen von Scalable Capital'))
+        errors.push('[Finanzen/Einschalten] a merchant cannot be switched back on for all bookings')
+    }
   }
 
   // 16c) The database is unreachable. "Nothing here" and "we could not look"

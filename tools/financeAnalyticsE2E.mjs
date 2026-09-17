@@ -493,7 +493,114 @@ ${sql}`
     agree('and the two halves still agree at the end', state)
   }
 
-  // ══ 8. Another user sees none of it ══════════════════════════════════════
+  // ══ 8. REGRESSION: a merchant-wide decision reaches the booking in hand ══
+  //
+  // Priority is override > merchant > transaction, so a booking that already
+  // carried an individual decision would have survived „alle Buchungen von X
+  // nicht berücksichtigen" — the one booking the user was looking at would be
+  // the one the new rule missed. Choosing the merchant scope therefore CLEARS
+  // the individual decision instead of overwriting it, and everything else in
+  // that override has to come through untouched.
+  {
+    const tx = insertBooking('TRADEREPUBLIC Verrechnungskonto Einzahlung')
+    const other = insertBooking('TRADEREPUBLIC Sparplan Ausfuehrung')
+    let state = reload()
+    const g = gesture(state, tx, { from: 0, to: 0 }, {
+      categorySlug: 'sonstige', merchantName: 'Trade Republic',
+    })
+    learn(g.built.request)
+
+    state = reload()
+    const tr = state.merchants.find((m) => m.canonical_name === 'Trade Republic')
+    const sonstige = state.categories.find((c) => c.slug === 'sonstige').id
+
+    // The awkward starting point: this booking was individually marked as
+    // counting, and it carries a note and a category the user set.
+    writeOverride(tx, {
+      merchant_id: tr.id, category_id: sonstige, include_in_analytics: true,
+      note: 'Einzahlung, kein Konsum',
+    })
+    const armed = reload()
+    ok('the booking counts because of its own decision',
+       agree('individual decision, both halves agree', armed).includes(tx))
+
+    // Now the user says: all bookings of this merchant do not count.
+    // The screen writes both — the merchant default, and the clearing of the
+    // individual decision.
+    jsonAsUser(userId,
+      `update public.finance_merchants set default_include_in_analytics = false
+       where id = '${tr.id}' and user_id = '${userId}' returning id`)
+    const before = armed.overrides.find((o) => o.transaction_id === tx)
+    writeOverride(tx, { ...before, include_in_analytics: null })
+
+    const after = reload()
+    const merchantRow = after.merchants.find((m) => m.id === tr.id)
+    ok('the merchant default is off', merchantRow.default_include_in_analytics === false)
+
+    const counted = agree('after the merchant-wide decision, both halves agree', after)
+    ok('…the booking in hand is excluded too', !counted.includes(tx))
+    ok('…and so is the other one', !counted.includes(other))
+
+    // Nothing else in the override was lost.
+    const row = after.overrides.find((o) => o.transaction_id === tx)
+    ok('the note survived the clearing', row.note === 'Einzahlung, kein Konsum')
+    ok('…the merchant', row.merchant_id === tr.id)
+    ok('…the category', row.category_id === sonstige)
+    ok('…and the individual decision really is gone', row.include_in_analytics === null)
+
+    // A booking imported afterwards follows the merchant without anybody
+    // touching it.
+    const future = insertBooking('TRADEREPUBLIC Sparplan Februar')
+    const later = reload()
+    ok('a newly imported booking of that merchant is excluded',
+       !agree('a later booking agrees too', later).includes(future))
+    ok('…although its row carries no merchant id',
+       later.transactions.find((t) => t.id === future).merchant_id === null)
+  }
+
+  // ══ 9. REGRESSION: and the same in the other direction ═══════════════════
+  //
+  // A merchant-wide „nicht berücksichtigen" that could not be taken back would
+  // be a one-way door. The path exists, and it works the same way.
+  {
+    const state = reload()
+    const tr = state.merchants.find((m) => m.canonical_name === 'Trade Republic')
+    const tx = state.transactions.find((t) => t.raw_description.includes('Einzahlung')).id
+
+    // The awkward starting point in this direction: an individual decision that
+    // this booking does NOT count, while the merchant is about to be switched on.
+    const before = state.overrides.find((o) => o.transaction_id === tx)
+    writeOverride(tx, { ...before, include_in_analytics: false })
+    const armed = reload()
+    ok('the booking is excluded by its own decision',
+       !agree('individual false, both halves agree', armed).includes(tx))
+
+    // „Alle Buchungen von Trade Republic wieder berücksichtigen."
+    jsonAsUser(userId,
+      `update public.finance_merchants set default_include_in_analytics = true
+       where id = '${tr.id}' and user_id = '${userId}' returning id`)
+    writeOverride(tx, { ...armed.overrides.find((o) => o.transaction_id === tx), include_in_analytics: null })
+
+    const after = reload()
+    ok('the merchant counts again',
+       after.merchants.find((m) => m.id === tr.id).default_include_in_analytics === true)
+    const counted = agree('switching back on, both halves agree', after)
+    ok('…and the booking in hand counts again', counted.includes(tx))
+    ok('…as do the others of that merchant',
+       after.transactions.filter((t) => t.raw_description.startsWith('TRADEREPUBLIC'))
+         .every((t) => counted.includes(t.id)))
+    ok('the note is still there',
+       after.overrides.find((o) => o.transaction_id === tx).note === 'Einzahlung, kein Konsum')
+
+    // Individual decisions still win afterwards — the door swings both ways
+    // without the individual level losing its meaning.
+    writeOverride(tx, { ...after.overrides.find((o) => o.transaction_id === tx), include_in_analytics: false })
+    const again = reload()
+    ok('an individual decision still overrules the merchant',
+       !agree('individual over merchant, both halves agree', again).includes(tx))
+  }
+
+  // ══ 10. Another user sees none of it ═════════════════════════════════════
   {
     const other = '11111111-2222-4333-8444-999999999999'
     psql(['-c', `insert into auth.users (id, email) values ('${other}', 'fremd2@mindwhiteboard.test')`])
