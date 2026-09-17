@@ -159,10 +159,44 @@ function Sheet({ onClose }) {
           its bottom edge. The actions are therefore reachable without scrolling
           whatever the booking text does, which was the whole complaint. */}
       <div className="flex min-h-full flex-col px-5 pt-3">
-        {open.length === 0 ? (
-          <FinishedStep onClose={onClose} />
+        {/* THE ORDER MATTERS, and it was wrong.
+            `open.length === 0` used to be asked first, which made the queue's
+            end state beat everything else:
+
+              • a half-saved LAST booking vanished behind „Keine offenen
+                Zuordnungen" — the rule had resolved it, so the queue was empty
+                while `pinned` still held it, and the retry the message promised
+                had nowhere to happen;
+              • and the confirmation for the last booking was never shown at
+                all, for the same reason.
+
+            So a held retry comes first — it is the only state with unfinished
+            work in it — then what was just saved, and only then the end of the
+            queue. */}
+        {pinned && entry ? (
+          <BookingStep
+            key={entry.transaction.id}
+            entry={entry}
+            transactions={transactions}
+            patterns={patterns}
+            merchants={merchants}
+            categories={categories}
+            overrides={overrides}
+            remaining={Math.max(queue.length, 1)}
+            saving={saving}
+            failure={failure}
+            onSave={onSave}
+            onSkip={onSkip}
+          />
         ) : done ? (
-          <SavedStep done={done} remaining={queue.length - 1} onClose={onClose} />
+          <SavedStep
+            done={done}
+            remaining={queue.length}
+            onNext={() => setDone(null)}
+            onClose={onClose}
+          />
+        ) : open.length === 0 ? (
+          <FinishedStep onClose={onClose} />
         ) : entry ? (
           <BookingStep
             key={entry.transaction.id}
@@ -773,7 +807,7 @@ function CategoryPicker({ categories, value, onPick, onClose }) {
 
 // ── After ────────────────────────────────────────────────────────────────────
 
-function SavedStep({ done, remaining, onClose }) {
+function SavedStep({ done, remaining, onNext, onClose }) {
   return (
     <div className="pt-2" aria-live="polite">
       <p className="text-section font-semibold text-text-primary">
@@ -787,16 +821,22 @@ function SavedStep({ done, remaining, onClose }) {
         ))}
       </ul>
       <p className="mt-4 text-caption text-text-muted">
-        {remaining > 0 ? 'Weiter mit der nächsten offenen Buchung …' : 'Es wartet keine Buchung mehr.'}
+        {remaining > 0
+          ? remaining === 1
+            ? 'Eine Buchung wartet noch.'
+            : `${remaining} Buchungen warten noch.`
+          : 'Es wartet keine Buchung mehr.'}
       </p>
-      {remaining <= 0 && (
-        <button
-          onClick={onClose}
-          className="press-tint mt-5 min-h-[44px] w-full rounded-btn bg-accent py-3 text-body font-semibold text-white"
-        >
-          Fertig
-        </button>
-      )}
+      {/* The way on. Without it this screen was a dead end whenever bookings
+          remained: the confirmation stayed until the sheet was closed. Deliberately
+          a button rather than a timer — the user reads what happened and decides
+          when to move on. */}
+      <button
+        onClick={remaining > 0 ? onNext : onClose}
+        className="press-tint mt-5 min-h-[44px] w-full rounded-btn bg-accent py-3 text-body font-semibold text-white"
+      >
+        {remaining > 0 ? 'Weiter' : 'Fertig'}
+      </button>
     </div>
   )
 }

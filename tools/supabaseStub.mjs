@@ -435,6 +435,7 @@ export function makeBackend({
       rpcCalls.push({ name, body })
       const handler = rpc[name]
       if (typeof handler === 'function') return handler(body)
+      if (name === 'finance_learn_merchant_rule') return json(learnMerchantRule(body))
       return json({ ok: true })
     }
 
@@ -556,6 +557,128 @@ export function makeBackend({
     }
 
     return json({ message: `method ${method} not stubbed` }, 405)
+  }
+
+  // ── finance_learn_merchant_rule, as far as a screen can tell ─────────────
+  //
+  // The real one is 200 lines of plpgsql in 0008 and is tested against a real
+  // Postgres (tools/financeClassifyE2E.mjs). What a DOM test needs is its
+  // OBSERVABLE effects: the merchant, pattern and rule exist afterwards, the
+  // booking is stamped, and the queue therefore no longer contains it. Without
+  // that, the call was counted and nothing changed — so a test could not tell a
+  // successful save from a no-op, and the end-of-queue cases could not be
+  // reached at all.
+  //
+  // The three conditions that protect a decision somebody already made are
+  // reproduced, because they are the ones a screen can get wrong: a booking is
+  // only swept up when it has no merchant, is not locked and has no override.
+  function learnMerchantRule(body) {
+    const p = body ?? {}
+    const tokens = p.p_tokens ?? []
+    const matches = (row) => {
+      const have = Array.isArray(row?.normalized_tokens) ? row.normalized_tokens : []
+      if (p.p_pattern_type === 'exact_token') return tokens.length === 1 && have.includes(tokens[0])
+      if (p.p_pattern_type !== 'exact_phrase' || tokens.length < 2) return false
+      for (let i = 0; i + tokens.length <= have.length; i += 1) {
+        if (tokens.every((t, k) => have[i + k] === t)) return true
+      }
+      return false
+    }
+    const owned = (list) => list.filter((r) => r.user_id === TEST_USER_ID)
+    const category = owned(tables.finance_categories).find((c) => c.slug === p.p_category_slug)
+    if (!category) return { message: `finance: Kategorie ${p.p_category_slug} gibt es nicht` }
+
+    const name = (p.p_merchant_name ?? '').trim()
+    let merchant = p.p_merchant_id
+      ? owned(tables.finance_merchants).find((m) => m.id === p.p_merchant_id)
+      : owned(tables.finance_merchants).find(
+          (m) => m.canonical_name.trim().toLowerCase() === name.toLowerCase())
+    let merchantCreated = false
+    if (!merchant) {
+      merchant = financeRow({
+        user_id: TEST_USER_ID, canonical_name: name,
+        review_mode: p.p_review_mode ?? 'auto', default_include_in_analytics: true,
+      })
+      tables.finance_merchants.push(merchant)
+      merchantCreated = true
+    } else if (p.p_review_mode) {
+      merchant.review_mode = p.p_review_mode
+    }
+
+    let pattern = owned(tables.finance_merchant_patterns).find(
+      (x) => x.active && x.pattern_type === p.p_pattern_type &&
+        (x.tokens ?? []).join('\u0000') === tokens.join('\u0000'))
+    let patternCreated = false
+    if (!pattern) {
+      pattern = financeRow({
+        user_id: TEST_USER_ID, merchant_id: merchant.id,
+        pattern_type: p.p_pattern_type, tokens, active: true,
+      })
+      tables.finance_merchant_patterns.push(pattern)
+      patternCreated = true
+    }
+
+    let rule = owned(tables.finance_category_rules).find(
+      (r) => r.active && r.merchant_id === merchant.id &&
+        (r.min_amount_minor ?? null) === (p.p_min_amount_minor ?? null) &&
+        (r.max_amount_minor ?? null) === (p.p_max_amount_minor ?? null))
+    let ruleCreated = false
+    if (!rule) {
+      rule = financeRow({
+        user_id: TEST_USER_ID, merchant_id: merchant.id, category_id: category.id,
+        min_amount_minor: p.p_min_amount_minor ?? null,
+        max_amount_minor: p.p_max_amount_minor ?? null,
+        min_inclusive: p.p_min_inclusive ?? true, max_inclusive: p.p_max_inclusive ?? true,
+        currency: p.p_rule_currency ?? null, active: true,
+      })
+      tables.finance_category_rules.push(rule)
+      ruleCreated = true
+    } else {
+      rule.category_id = category.id
+    }
+
+    const overridden = (id) =>
+      owned(tables.finance_transaction_overrides).some((o) => o.transaction_id === id)
+    const stamp = (row) => {
+      row.merchant_id = merchant.id
+      row.category_id = category.id
+    }
+
+    const target = owned(tables.finance_transactions).find((t) => t.id === p.p_transaction_id)
+    let transactionUpdated = false
+    // The booking in hand: not locked, no override — its merchant_id is not a
+    // condition here, which is the asymmetry the real function has too.
+    if (target && target.manual_lock !== true && !overridden(target.id)) {
+      stamp(target)
+      transactionUpdated = true
+    }
+
+    const requested = p.p_apply_transaction_ids ?? []
+    let applied = 0
+    for (const id of requested) {
+      const row = owned(tables.finance_transactions).find((t) => t.id === id)
+      if (!row || row.id === p.p_transaction_id) continue
+      if (row.merchant_id) continue
+      if (row.manual_lock === true) continue
+      if (overridden(row.id)) continue
+      if (!matches(row)) continue
+      stamp(row)
+      applied += 1
+    }
+
+    return {
+      merchant_id: merchant.id,
+      merchant_created: merchantCreated,
+      pattern_id: pattern.id,
+      pattern_created: patternCreated,
+      rule_id: rule.id,
+      rule_created: ruleCreated,
+      category_id: category.id,
+      transaction_id: p.p_transaction_id,
+      transaction_updated: transactionUpdated,
+      requested_count: requested.length,
+      applied_count: applied,
+    }
   }
 
   const backend = {

@@ -3511,6 +3511,159 @@ async function run() {
     window.__restoreConsole?.()
   }
 
+  // 16b6b) The same, but the half-saved booking was the LAST open one.
+  //
+  //        This is where the render order used to lose the retry: the rule
+  //        resolves the booking, so the queue is empty — and „Keine offenen
+  //        Zuordnungen" was asked before `pinned`, so the screen showed the end
+  //        state while the message promised a retry that had nowhere to happen.
+  const ONE_BOOKING = {
+    ...financeSeed,
+    finance_transactions: [
+      { id: '11111111-2222-4333-8444-000000000107', user_id: TEST_USER_ID, account_id: FIN_ACCOUNT,
+        booking_date: '2026-09-14', amount_minor: -6065, currency: 'EUR',
+        raw_description: 'DB.Vertrieb.GmbH/508354771568', normalized_tokens: ['DB'],
+        include_in_analytics: true, manual_lock: false },
+    ],
+  }
+
+  // A run of the flow up to „Speichern", with one failing table. Returns the
+  // window so the caller can assert and retry.
+  const halfSave = async (label, failing, { merchantWide = false } = {}) => {
+    const window = makeDom('#/finanzen', { finance: ONE_BOOKING })
+    mount(window, code, label, { expectErrors: true })
+    await wait(400)
+    const backend = window.__backend
+
+    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    await wait(320)
+    if (!nb(txt(window)).includes('Letzte offene Buchung'))
+      errors.push(`[${label}] the fixture is not a single open booking`)
+
+    ;[...window.document.querySelectorAll('button')]
+      .find((b) => b.textContent.trim() === 'DB')?.click()
+    await wait(60)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Kategorie'))
+    await wait(320)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Sonstige')
+    await wait(320)
+
+    const note = window.document.querySelector('textarea[aria-label="Notiz"]')
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype, 'value').set
+    setter.call(note, 'Bahnfahrt nach Köln')
+    note.dispatchEvent(new window.Event('input', { bubbles: true }))
+    await wait(60)
+
+    if (merchantWide) {
+      // Switch analytics off and scope it to the whole merchant, so the third
+      // step of the sequence exists at all.
+      window.document.querySelector('[role="switch"]')?.click()
+      await wait(80)
+      if (!click(window, (el) => el.tagName === 'BUTTON' &&
+          el.textContent.trim().startsWith('Alle Buchungen von')))
+        errors.push(`[${label}] the merchant-wide scope was not offered`)
+      await wait(80)
+    }
+
+    backend.failTable = failing
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Speichern')
+    await wait(500)
+    return { window, backend }
+  }
+
+  // a) The override write fails on the last open booking.
+  {
+    const label = 'Finanzen/Letzte-Teilweise'
+    const { window, backend } = await halfSave(label, 'finance_transaction_overrides')
+
+    const after = nb(txt(window))
+    if (!after.includes('Teilweise gespeichert'))
+      errors.push(`[${label}] a half-written save is not reported: ${after.slice(-240)}`)
+    // The booking is resolved now and the queue is empty — and it is still the
+    // thing on screen.
+    if (after.includes('Keine offenen Zuordnungen'))
+      errors.push(`[${label}] the end state won over the held retry`)
+    if (!after.includes('60,65 €'))
+      errors.push(`[${label}] the held booking is not on screen: ${after.slice(-240)}`)
+    if (!after.includes('Bahnfahrt nach Köln'))
+      errors.push(`[${label}] the note the user typed was lost`)
+    if (!after.includes('Speichern'))
+      errors.push(`[${label}] there is nothing left to retry with`)
+    const learned = backend.rpcCalls.filter((c) => c.name === 'finance_learn_merchant_rule').length
+    if (learned !== 1) errors.push(`[${label}] the rule was not written exactly once (${learned})`)
+
+    // Retry: only the missing step.
+    backend.failTable = null
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Speichern')
+    await wait(500)
+    const again = backend.rpcCalls.filter((c) => c.name === 'finance_learn_merchant_rule').length
+    if (again !== 1) errors.push(`[${label}] the retry learned the rule a second time (${again})`)
+    const done = nb(txt(window))
+    if (done.includes('Teilweise gespeichert'))
+      errors.push(`[${label}] the retry did not clear the partial state`)
+    if (!done.includes('Gespeichert'))
+      errors.push(`[${label}] the retry is not reported: ${done.slice(-240)}`)
+    if (!done.includes('Es wartet keine Buchung mehr'))
+      errors.push(`[${label}] the confirmation does not say the queue is empty`)
+    const stored = window.__backend.tables.finance_transaction_overrides.find(
+      (o) => o.transaction_id === '11111111-2222-4333-8444-000000000107')
+    if (stored?.note !== 'Bahnfahrt nach Köln')
+      errors.push(`[${label}] the note did not reach the database on retry`)
+    window.__restoreConsole?.()
+  }
+
+  // b) The merchant-wide write fails — the third step of the sequence, on the
+  //    last open booking.
+  {
+    const label = 'Finanzen/Letzte-Händler'
+    const { window, backend } = await halfSave(label, 'finance_merchants', { merchantWide: true })
+
+    const after = nb(txt(window))
+    if (!after.includes('Teilweise gespeichert'))
+      errors.push(`[${label}] a half-written save is not reported: ${after.slice(-240)}`)
+    if (after.includes('Keine offenen Zuordnungen'))
+      errors.push(`[${label}] the end state won over the held retry`)
+    if (!after.includes('60,65 €'))
+      errors.push(`[${label}] the held booking is not on screen`)
+    if (!after.includes('Einstellung für den Händler'))
+      errors.push(`[${label}] the message does not name the missing step: ${after.slice(-240)}`)
+    const learned = backend.rpcCalls.filter((c) => c.name === 'finance_learn_merchant_rule').length
+    if (learned !== 1) errors.push(`[${label}] the rule was not written exactly once (${learned})`)
+
+    backend.failTable = null
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Speichern')
+    await wait(500)
+    const again = backend.rpcCalls.filter((c) => c.name === 'finance_learn_merchant_rule').length
+    if (again !== 1) errors.push(`[${label}] the retry learned the rule a second time (${again})`)
+    const done = nb(txt(window))
+    if (!done.includes('Gespeichert') || done.includes('Teilweise'))
+      errors.push(`[${label}] the retry is not reported as done: ${done.slice(-240)}`)
+    const merchant = window.__backend.tables.finance_merchants.find(
+      (m) => m.canonical_name === 'DB')
+    if (merchant?.default_include_in_analytics !== false)
+      errors.push(`[${label}] the merchant-wide decision did not reach the database on retry`)
+    window.__restoreConsole?.()
+  }
+
+  // c) And once everything is decided, the end state is what a fresh open shows.
+  {
+    const window = makeDom('#/finanzen', {
+      finance: {
+        ...ONE_BOOKING,
+        finance_transactions: [{ ...ONE_BOOKING.finance_transactions[0], manual_lock: true }],
+      },
+    })
+    mount(window, code, 'Finanzen/Fertig')
+    await wait(400)
+    window.__restoreConsole?.()
+    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    await wait(320)
+    const text = nb(txt(window))
+    if (!text.includes('Keine offenen Zuordnungen'))
+      errors.push(`[Finanzen/Fertig] the end state is not shown when nothing waits: ${text.slice(-200)}`)
+  }
+
   // 16b7) The way back out of a global exclusion. A merchant switched off is
   //       recognised automatically, so its bookings never reach the queue —
   //       which is why the switch has to be reachable somewhere else.
