@@ -710,6 +710,23 @@ implementations of one rule is one of them waiting to be wrong, so
 database full of awkward cases and asserts, row by row, that the view and the
 function select exactly the same bookings.
 
+**Saving is a sequence, and it reloads exactly once.** `learnRule`,
+`saveOverride` and `setMerchantAnalytics` each reload after themselves, which is
+right when one of them is the whole save and wrong when they are chained: the
+first reload can resolve the booking the user is looking at, so a failure in step
+two would report „die Notiz fehlt noch" over a screen that has already moved on.
+`FinanceContext.saveClassification` therefore runs the steps against the
+repository with no reload between them and loads once in `finally`; the sheet
+pins the booking and remembers which steps succeeded, so a retry writes only the
+rest and the message stays attached to the booking it is about.
+
+**A global exclusion has a way back.** An excluded merchant is recognised
+automatically, so its bookings are resolved and never reach the queue again —
+and the switch that excluded them would be out of reach. The Finanzen screen
+therefore shows one compact row, *only while something is excluded*, that opens
+the list and lets a merchant count again. New exclusions still happen in the
+classification flow, with the booking in front of the user.
+
 A note lives in the same override row (`note`, 500 characters, trimmed, empty
 means null). `financeRepository.saveOverride` therefore takes the override as
 last read and sends the merged row: a save that only decides a note cannot drop

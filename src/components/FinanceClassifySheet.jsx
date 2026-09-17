@@ -56,28 +56,42 @@ export default function FinanceClassifySheet() {
 function Sheet({ onClose }) {
   const {
     transactions, patterns, merchants, categories, categoryRules, overrides,
-    learnRule, saveOverride, setMerchantAnalytics,
+    saveClassification,
   } = useFinance()
 
   const [skipped, setSkipped] = useState(() => new Set())
   const [saving, setSaving] = useState(false)
   const [failure, setFailure] = useState(null)
   const [done, setDone] = useState(null)
+  // A save that got halfway holds its booking in place. Without this the one
+  // reload at the end of the sequence could resolve the booking and move the
+  // screen on — while the message still says „ein erneuter Versuch wiederholt
+  // nur, was fehlt". The user would have nothing left to retry on.
+  const [pinned, setPinned] = useState(null)
+  const [progress, setProgress] = useState(null)
 
-  const { open, queue } = useMemo(
+  const { entries, open, queue } = useMemo(
     () => buildClassificationQueue({
       transactions, patterns, merchants, rules: categoryRules, overrides, skippedIds: skipped,
     }),
     [transactions, patterns, merchants, categoryRules, overrides, skipped]
   )
 
-  const entry = queue[0] ?? null
+  const entry = pinned
+    ? entries.find((e) => e.transaction.id === pinned) ?? queue[0] ?? null
+    : queue[0] ?? null
+
+  const release = useCallback(() => {
+    setPinned(null)
+    setProgress(null)
+    setFailure(null)
+  }, [])
 
   const onSkip = useCallback(() => {
     if (!entry) return
     setSkipped((prev) => new Set(prev).add(entry.transaction.id))
-    setFailure(null)
-  }, [entry])
+    release()
+  }, [entry, release])
 
   /**
    * Everything this screen decided, saved.
@@ -94,38 +108,49 @@ function Sheet({ onClose }) {
     async ({ learnRequest, transactionId, override, merchantScope, labels, kind, reason }) => {
       setSaving(true)
       setFailure(null)
-      const steps = { rule: null, override: null, merchant: null }
-      const report = (error = null) =>
+
+      // What an earlier attempt already wrote. Each repository call is
+      // idempotent, but repeating one is still a write nobody asked for — and
+      // a second learn call would count as a second decision in the result.
+      const already = progress ?? { rule: null, override: false, merchant: false }
+      const plan = {
+        transactionId,
+        learnRequest: already.rule ? null : learnRequest,
+        override: already.override ? null : override,
+        merchantScope: already.merchant ? null : merchantScope,
+      }
+      // The merchant an earlier attempt created: its id lives in that attempt's
+      // result, not in this render's state.
+      if (!plan.learnRequest && plan.merchantScope && !plan.merchantScope.merchantId && already.rule?.merchant_id) {
+        plan.merchantScope = { ...plan.merchantScope, merchantId: already.rule.merchant_id }
+      }
+
+      const combine = (fresh) => ({
+        rule: already.rule ?? fresh?.rule ?? null,
+        override: already.override || Boolean(fresh?.override),
+        merchant: already.merchant || Boolean(fresh?.merchant),
+      })
+      const report = (steps, error = null) =>
         describeSaveOutcome({ steps, include: merchantScope?.include, labels, kind, reason, error })
+
       try {
-        // A merchant that does not exist yet gets its id from the learn call —
-        // which is also why this runs after it and not before.
-        let merchantId = merchantScope?.merchantId ?? null
-        if (learnRequest) {
-          const result = await learnRule(learnRequest)
-          steps.rule = result
-          merchantId = merchantId ?? result?.merchant_id ?? null
-        }
-        if (override) {
-          await saveOverride(transactionId, override)
-          steps.override = true
-        }
-        // Only when the user actually chose „alle Buchungen von …". `merchantScope`
-        // is null for every other save, so learning a rule never changes what a
-        // merchant counts for.
-        if (merchantScope && merchantId) {
-          await setMerchantAnalytics(merchantId, merchantScope.include)
-          steps.merchant = true
-        }
-        setDone(report())
+        const steps = combine(await saveClassification(plan))
+        setPinned(null)
+        setProgress(null)
+        setDone(report(steps))
       } catch (err) {
         console.error(failureLog('zuordnen', err))
-        setFailure(report(err).failure ?? describeLearnFailure(err))
+        const steps = combine(err.steps)
+        // Hold this booking — and what was already written — until the user
+        // retries or deliberately moves on.
+        setProgress(steps)
+        setPinned(transactionId)
+        setFailure(report(steps, err).failure ?? describeLearnFailure(err))
       } finally {
         setSaving(false)
       }
     },
-    [learnRule, saveOverride, setMerchantAnalytics]
+    [saveClassification, progress]
   )
 
   return (

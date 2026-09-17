@@ -325,6 +325,9 @@ export function makeBackend({
       { id: TEST_USER_ID, display_name: 'Julian', timezone: 'Europe/Berlin', created_at: nowIso(), updated_at: nowIso() },
     ],
   }
+  // Mutable so a test can turn a failure on and off between two requests;
+  // `makeBackend({ failTable })` still sets the starting value.
+  const state = { failTable }
   const calls = []
   const functionCalls = []
   const rpcCalls = []
@@ -446,7 +449,9 @@ export function makeBackend({
 
     // A backend that is having a bad day, on request — the app has to say so
     // rather than render an empty screen as if there were nothing to show.
-    if (failTable === table) {
+    // Read from the mutable holder, not from the argument: a test that has to
+    // fail ONE write and then let the retry through needs to switch it mid-run.
+    if (state.failTable === table) {
       return json({ message: 'Datenbank nicht erreichbar (Test)', code: 'PGRST000' }, 500)
     }
 
@@ -553,5 +558,14 @@ export function makeBackend({
     return json({ message: `method ${method} not stubbed` }, 405)
   }
 
-  return { fetch: fetchStub, tables, calls, functionCalls, rpcCalls, rateCalls, auth, session: auth.session }
+  const backend = {
+    fetch: fetchStub, tables, calls, functionCalls, rpcCalls, rateCalls, auth,
+    session: auth.session,
+  }
+  Object.defineProperty(backend, 'failTable', {
+    get: () => state.failTable,
+    set: (value) => { state.failTable = value },
+    enumerable: true,
+  })
+  return backend
 }

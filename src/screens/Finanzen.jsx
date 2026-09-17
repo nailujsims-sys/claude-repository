@@ -1,10 +1,11 @@
 import { useMemo } from 'react'
-import { Check, Tag, Upload } from 'lucide-react'
+import { Check, ChevronRight, Tag, Upload } from 'lucide-react'
 import TopBar from '../components/TopBar'
 import { SkeletonExpenseList } from '../components/Skeleton'
 import { useFinance } from '../context/FinanceContext'
 import { useUI } from '../context/UIContext'
 import { buildClassificationQueue } from '../lib/finance/classificationQueue'
+import { excludedMerchants } from '../lib/finance/analytics'
 import { formatBookingDate, plural } from '../lib/finance/importFlow'
 
 // Finanzen, at its first stage: a way in, and the one action that fills it.
@@ -17,7 +18,7 @@ import { formatBookingDate, plural } from '../lib/finance/importFlow'
 export default function Finanzen() {
   const { transactions, account, patterns, merchants, categoryRules, overrides, loading, error } =
     useFinance()
-  const { openFinanceImport, openFinanceClassify } = useUI()
+  const { openFinanceImport, openFinanceClassify, openFinanceExclusions } = useUI()
 
   // Which bookings still need a human is the engine's answer, asked fresh on
   // every render from rows the user can see — never a counter somebody wrote
@@ -36,6 +37,10 @@ export default function Finanzen() {
     }
     return newest
   }, [transactions])
+
+  // Only while something is excluded: an account with nothing switched off gets
+  // no permanent row for a state it is not in.
+  const excluded = useMemo(() => excludedMerchants(merchants), [merchants])
 
   const isEmpty = !loading && transactions.length === 0
 
@@ -69,6 +74,21 @@ export default function Finanzen() {
         )}
 
         {!loading && !isEmpty && <ClassifyCard summary={summary} onOpen={openFinanceClassify} />}
+
+        {!loading && excluded.length > 0 && (
+          <button
+            onClick={openFinanceExclusions}
+            className="press-tint mt-3 flex min-h-[44px] w-full items-center gap-3 rounded-card bg-bg-card px-4 py-2 text-left"
+          >
+            <span className="min-w-0 flex-1 text-body text-text-primary">
+              Aus Auswertung ausgeschlossen
+            </span>
+            <span className="shrink-0 tabular-nums text-body text-text-secondary">
+              {excluded.length}
+            </span>
+            <ChevronRight size={18} className="shrink-0 text-text-muted" />
+          </button>
+        )}
 
         {loading ? (
           <div className="pt-4">

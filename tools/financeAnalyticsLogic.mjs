@@ -14,7 +14,7 @@ import { webcrypto } from 'node:crypto'
 import { SUPABASE_URL, SUPABASE_ANON_KEY, installRealtimeStub } from './supabaseStub.mjs'
 
 const TEST = `
-import { analyticsInclusion, analyticsTransactions, resolveAnalyticsInclusion }
+import { analyticsInclusion, analyticsTransactions, excludedMerchants, resolveAnalyticsInclusion }
   from './src/lib/finance/analytics.js'
 import { matchMerchant, FINANCE_STATUS } from './src/lib/finance/merchantMatching.js'
 import { MAX_NOTE_LENGTH, compactPreview, describeSaveOutcome, normalizeNote, noteIsValid,
@@ -432,6 +432,52 @@ const pattern = (id, merchantId, tokens) => ({
      resolveAnalyticsInclusion({
        transaction: tx, override: { note: 'nur Text' }, merchantMatch: match, merchants: offMerchants,
      }) === false)
+}
+
+// ── 11. The way back out of a global exclusion ─────────────────────────────
+//
+// A merchant switched off is recognised automatically from then on, so its
+// bookings are resolved and never reach the classification queue again — which
+// is why the switch that excluded it has to be reachable somewhere else. This
+// is the list that screen shows, and it exists only while something is on it.
+{
+  const A = uuid(110), B = uuid(111), C = uuid(112)
+  const all = [
+    merchant(A, 'Scalable Capital', { default_include_in_analytics: false }),
+    merchant(B, 'REWE'),
+    merchant(C, 'Trade Republic', { default_include_in_analytics: false }),
+  ]
+  const list = excludedMerchants(all)
+  ok('only the excluded merchants are listed', list.length === 2)
+  ok('…in a stable order, by name',
+     list.map((m) => m.canonical_name).join(',') === 'Scalable Capital,Trade Republic')
+  ok('…and a counting merchant is not among them',
+     !list.some((m) => m.canonical_name === 'REWE'))
+
+  ok('an account with nothing excluded gets an empty list',
+     excludedMerchants([merchant(B, 'REWE')]).length === 0)
+  ok('…and so does one with no merchants at all', excludedMerchants([]).length === 0)
+  ok('a merchant row without the column is not treated as excluded',
+     excludedMerchants([{ id: A, canonical_name: 'Alt' }]).length === 0)
+
+  // Switching one back on takes it off the list — and its bookings count again.
+  const restored = all.map((m) => (m.id === A ? { ...m, default_include_in_analytics: true } : m))
+  ok('switching a merchant back on removes it from the list',
+     excludedMerchants(restored).map((m) => m.canonical_name).join(',') === 'Trade Republic')
+
+  const patterns = [pattern(uuid(410), A, ['SCALABLE'])]
+  const tx = booking('Scalable Capital Verrechnungskonto')
+  ok('…and its bookings count again',
+     resolveAnalyticsInclusion({
+       transaction: tx,
+       merchantMatch: matchMerchant({ transaction: tx, patterns, merchants: restored }),
+       merchants: restored,
+     }) === true)
+  ok('…including one imported afterwards, with no merchant id',
+     analyticsTransactions({
+       transactions: [booking('Scalable Capital Sparplan Maerz')],
+       patterns, merchants: restored,
+     }).length === 1)
 }
 
 console.log(\`finance analytics: \${pass} passed, \${fail} failed\`)

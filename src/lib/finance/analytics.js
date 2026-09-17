@@ -92,6 +92,25 @@ export function analyticsInclusion({
 }
 
 /**
+ * The merchants whose bookings count in nothing.
+ *
+ * The list the Finanzen screen offers a way back out of — and the reason it
+ * exists: once a merchant is excluded, the pattern engine resolves its bookings
+ * automatically, so they never reach the classification queue again and the
+ * switch that excluded them is out of reach.
+ *
+ * Sorted by name so the list does not reshuffle when a row is read back from
+ * the database in another order.
+ *
+ * @param {Array<object>} merchants
+ * @returns {Array<object>}
+ */
+export const excludedMerchants = (merchants = []) =>
+  merchants
+    .filter((m) => m?.default_include_in_analytics === false)
+    .sort((a, b) => String(a.canonical_name ?? '').localeCompare(String(b.canonical_name ?? '')))
+
+/**
  * The bookings a total is allowed to add up.
  *
  * Not a sum: this module decides WHICH rows count, and leaves adding them to

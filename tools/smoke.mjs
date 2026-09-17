@@ -3434,6 +3434,150 @@ async function run() {
     }
   }
 
+  // 16b6) A save that got halfway holds its booking. The rule is written, the
+  //       override write fails — and the screen must still be on the booking
+  //       the message is about, with only the missing step left to retry.
+  {
+    const window = makeDom('#/finanzen', { finance: financeSeed })
+    // The console stays captured for the whole block: the failing write logs on
+    // purpose, and restoring early would hand that log to whichever section
+    // patches the console next.
+    mount(window, code, 'Finanzen/Teilweise', { expectErrors: true })
+    await wait(400)
+    const backend = window.__backend
+
+    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    await wait(320)
+
+    // Mark a word the booking's STORED tokens really contain — the seed freezes
+    // ['DB'], so that is the only one the engine would accept.
+    const word = [...window.document.querySelectorAll('button')].find(
+      (b) => b.textContent.trim() === 'DB')
+    word?.click()
+    await wait(60)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Kategorie'))
+    await wait(320)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Sonstige')
+    await wait(320)
+    const note = window.document.querySelector('textarea[aria-label="Notiz"]')
+    if (note) {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype, 'value').set
+      setter.call(note, 'Bahnfahrt nach Köln')
+      note.dispatchEvent(new window.Event('input', { bubbles: true }))
+      await wait(60)
+    }
+
+    const before = nb(txt(window))
+    if (!before.includes('60,65 €'))
+      errors.push('[Finanzen/Teilweise] the booking under test is not the one on screen')
+
+    // The rule goes through, the override does not.
+    backend.failTable = 'finance_transaction_overrides'
+    if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Speichern'))
+      errors.push('[Finanzen/Teilweise] the save button was not clickable')
+    await wait(500)
+
+    const after = nb(txt(window))
+    if (!after.includes('Teilweise gespeichert'))
+      errors.push(`[Finanzen/Teilweise] a half-written save is not reported: ${after.slice(-260)}`)
+    if (!after.includes('Notiz'))
+      errors.push('[Finanzen/Teilweise] the message does not name the missing step')
+    if (!after.includes('wiederholt nur, was fehlt'))
+      errors.push('[Finanzen/Teilweise] the message does not promise a safe retry')
+    // THE point: the screen has not moved on, although the rule resolved the
+    // booking and a reload happened.
+    if (!after.includes('60,65 €'))
+      errors.push(`[Finanzen/Teilweise] the screen jumped to another booking: ${after.slice(-260)}`)
+    if (!after.includes('Bahnfahrt nach Köln'))
+      errors.push('[Finanzen/Teilweise] the note the user typed was lost')
+
+    const rulesBefore = backend.rpcCalls.filter((c) => c.name === 'finance_learn_merchant_rule').length
+    if (rulesBefore !== 1)
+      errors.push(`[Finanzen/Teilweise] the rule was not written exactly once (${rulesBefore})`)
+
+    // Retry: only the missing step goes out.
+    backend.failTable = null
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Speichern')
+    await wait(500)
+    const retried = backend.rpcCalls.filter((c) => c.name === 'finance_learn_merchant_rule').length
+    if (retried !== 1)
+      errors.push(`[Finanzen/Teilweise] the retry learned the rule a second time (${retried})`)
+    const done = nb(txt(window))
+    if (done.includes('Teilweise gespeichert'))
+      errors.push('[Finanzen/Teilweise] the retry did not clear the partial state')
+    if (!done.includes('Gespeichert'))
+      errors.push(`[Finanzen/Teilweise] the retry is not reported as done: ${done.slice(-220)}`)
+    window.__restoreConsole?.()
+  }
+
+  // 16b7) The way back out of a global exclusion. A merchant switched off is
+  //       recognised automatically, so its bookings never reach the queue —
+  //       which is why the switch has to be reachable somewhere else.
+  {
+    const M = '11111111-2222-4333-8444-000000000205'
+    const excludedSeed = {
+      ...financeSeed,
+      finance_transactions: [
+        { id: '11111111-2222-4333-8444-000000000106', user_id: TEST_USER_ID, account_id: FIN_ACCOUNT,
+          booking_date: '2026-09-14', amount_minor: -50000, currency: 'EUR',
+          raw_description: 'Scalable Capital Verrechnungskonto',
+          normalized_tokens: ['SCALABLE', 'CAPITAL', 'VERRECHNUNGSKONTO'],
+          include_in_analytics: true, manual_lock: false },
+      ],
+      finance_merchants: [
+        { id: M, user_id: TEST_USER_ID, canonical_name: 'Scalable Capital',
+          review_mode: 'auto', default_include_in_analytics: false },
+      ],
+      finance_merchant_patterns: [
+        { id: '11111111-2222-4333-8444-000000000215', user_id: TEST_USER_ID, merchant_id: M,
+          pattern_type: 'exact_token', tokens: ['SCALABLE'], active: true },
+      ],
+      finance_category_rules: [
+        { id: '11111111-2222-4333-8444-000000000223', user_id: TEST_USER_ID, merchant_id: M,
+          category_id: FIN_CATEGORIES.find((c) => c.slug === 'sonstige').id,
+          min_amount_minor: null, max_amount_minor: null,
+          min_inclusive: true, max_inclusive: true, currency: null, active: true },
+      ],
+    }
+    const window = makeDom('#/finanzen', { finance: excludedSeed })
+    mount(window, code, 'Finanzen/Ausschluss')
+    await wait(400)
+    window.__restoreConsole?.()
+
+    const screen = nb(txt(window))
+    console.log(`=== Finanzen — Ausschluss ===\n  ${screen.slice(0, 240)}`)
+    // The booking is resolved by the rule, so nothing waits — and the row is
+    // there all the same.
+    if (screen.includes('warten auf Händler'))
+      errors.push('[Finanzen/Ausschluss] the excluded merchant still queues its bookings')
+    if (!screen.includes('Aus Auswertung ausgeschlossen'))
+      errors.push(`[Finanzen/Ausschluss] there is no way back to the exclusion: ${screen.slice(0, 240)}`)
+
+    if (!click(window, (el) => el.tagName === 'BUTTON' &&
+        el.textContent.trim().startsWith('Aus Auswertung ausgeschlossen')))
+      errors.push('[Finanzen/Ausschluss] the row is not tappable')
+    await wait(320)
+    const sheet = nb(txt(window))
+    if (!sheet.includes('Scalable Capital'))
+      errors.push('[Finanzen/Ausschluss] the excluded merchant is not listed')
+
+    const toggle = [...window.document.querySelectorAll('[role="switch"]')].pop()
+    if (!toggle) errors.push('[Finanzen/Ausschluss] the merchant cannot be switched back on')
+    else {
+      if (toggle.getAttribute('aria-checked') !== 'false')
+        errors.push('[Finanzen/Ausschluss] the switch does not show the exclusion')
+      toggle.click()
+      await wait(400)
+      const stored = window.__backend.tables.finance_merchants.find((m) => m.id === M)
+      if (stored.default_include_in_analytics !== true)
+        errors.push('[Finanzen/Ausschluss] switching it on did not reach the database')
+      const back = nb(txt(window))
+      if (back.includes('Aus Auswertung ausgeschlossen') && !back.includes('kein Händler mehr'))
+        errors.push('[Finanzen/Ausschluss] the row survives although nothing is excluded')
+    }
+  }
+
   // 16c) The database is unreachable. "Nothing here" and "we could not look"
   //      are different sentences, as everywhere else in the app.
   {
