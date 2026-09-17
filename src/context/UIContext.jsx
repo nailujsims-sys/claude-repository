@@ -31,6 +31,8 @@ export function UIProvider({ children }) {
   const [financeImport, setFinanceImport] = useState(null)
   // financeClassify: null | true
   const [financeClassify, setFinanceClassify] = useState(null)
+  // financeExclusions: null | true
+  const [financeExclusions, setFinanceExclusions] = useState(null)
 
   const value = useMemo(
     () => ({
@@ -64,8 +66,11 @@ export function UIProvider({ children }) {
       financeClassify,
       openFinanceClassify: () => setFinanceClassify(true),
       closeFinanceClassify: () => setFinanceClassify(null),
+      financeExclusions,
+      openFinanceExclusions: () => setFinanceExclusions(true),
+      closeFinanceExclusions: () => setFinanceExclusions(null),
     }),
-    [sidebarOpen, actionSheetOpen, taskForm, eventForm, listForm, expenseForm, financeImport, financeClassify]
+    [sidebarOpen, actionSheetOpen, taskForm, eventForm, listForm, expenseForm, financeImport, financeClassify, financeExclusions]
   )
 
   return <UIContext.Provider value={value}>{children}</UIContext.Provider>

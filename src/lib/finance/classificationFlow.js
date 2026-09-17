@@ -316,6 +316,132 @@ export function describeLearnResult(result, { merchantName, categoryName }) {
 /** A pattern as one readable line, for the confirmation and the warnings. */
 export const patternLabelOf = (tokens) => patternText(tokens)
 
+// ── The compact screen ──────────────────────────────────────────────────────
+//
+// v1.22 shrank the Zuordnung screen. What shrank is the presentation, never the
+// information: the backtest still decides what saving would do, and the sentence
+// below still says it — in one line instead of four.
+
+/** Mirrors `finance_transaction_overrides_note_len` in 0008. */
+export const MAX_NOTE_LENGTH = 500
+
+/**
+ * A note as it is stored: trimmed, and empty means none.
+ *
+ * `null` rather than `''` because the column is nullable and „keine Notiz" is
+ * one state, not two. Length is capped here as well as in the database — the
+ * check constraint is the guarantee, this is the part that does not need a
+ * round trip to tell the user.
+ */
+export function normalizeNote(value) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (trimmed === '') return null
+  return trimmed.slice(0, MAX_NOTE_LENGTH)
+}
+
+/** Is this note storable at all? The database asks the same question. */
+export const noteIsValid = (value) =>
+  value === null || value === undefined || (typeof value === 'string' && value.length <= MAX_NOTE_LENGTH)
+
+/**
+ * The booking text on one line.
+ *
+ * A DKB description is three to five printed lines; the compact header shows
+ * the first thing a person recognises it by and lets the rest live in the word
+ * picker below, where it is needed anyway.
+ */
+export function shortDescription(transaction, max = 64) {
+  const raw = typeof transaction?.raw_description === 'string' ? transaction.raw_description : ''
+  const oneLine = raw.replace(/\s+/g, ' ').trim()
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine
+}
+
+/**
+ * What saving will do, in a line that fits on a phone.
+ *
+ * The long form (confirmationLines) is still the truth and still tested; this
+ * is the same numbers, chosen down to what a person needs before pressing a
+ * button: who, what, and how many bookings it touches. The count is the one
+ * the database will really write — hits that stay unchanged are named
+ * separately, because a number that quietly includes protected bookings is the
+ * lie this module has spent two versions avoiding.
+ */
+export function compactPreview({ numbers, patternLabel, merchantName, categoryName }) {
+  const head = `${merchantName} · ${categoryName}`
+  if (numbers.gesamt === 0) {
+    return `${head} — diese Buchung bleibt, wie du sie gesetzt hast; die Regel „${patternLabel}" wird gespeichert.`
+  }
+  const rest =
+    numbers.unveraendert > 0
+      ? ` · ${plural(numbers.unveraendert, 'Umsatz bleibt', 'Umsätze bleiben')} unverändert`
+      : ''
+  return `${head} · ${plural(numbers.gesamt, 'Umsatz', 'Umsätze')}${rest}`
+}
+
+/**
+ * What actually happened, when saving is a sequence rather than one call.
+ *
+ * The screen writes up to three things: the rule (one database function), the
+ * override (one row) and the merchant's analytics default (one column). Each is
+ * idempotent, so retrying is safe — but a sequence can stop halfway, and the
+ * one thing this must never do is say „gespeichert" over half a decision. So it
+ * reports the steps that really happened, and marks the result partial when the
+ * first one succeeded and a later one did not.
+ */
+export function describeSaveOutcome({ steps = {}, include, labels = {}, kind, reason = null, error = null }) {
+  const merchantName = labels.merchantName ?? ''
+  const categoryName = labels.categoryName ?? ''
+  const lines = []
+
+  if (steps.rule) {
+    const applied = Number.isFinite(steps.rule.applied_count) ? steps.rule.applied_count : 0
+    const total = applied + (steps.rule.transaction_updated ? 1 : 0)
+    lines.push(
+      total === 0
+        ? 'Die Regel ist gespeichert.'
+        : `${plural(total, 'Umsatz ist', 'Umsätze sind')} jetzt ${merchantName} · ${categoryName}.`
+    )
+    if (steps.rule.merchant_created) lines.push(`${merchantName} wurde neu angelegt.`)
+  } else if (steps.override) {
+    lines.push(`Diese Buchung ist ${merchantName ? `${merchantName} · ` : ''}${categoryName}.`)
+    if (kind === DECISION.RESOLVE_CONFLICT) {
+      lines.push('Nur diese Buchung wurde entschieden — an den gespeicherten Mustern hat sich nichts geändert.')
+    } else if (reason === 'merchant_always_review') {
+      lines.push('Nur diese Buchung wurde entschieden — der Händler wird weiterhin jedes Mal geprüft.')
+    } else if (kind === DECISION.REVIEW) {
+      lines.push('Nur diese Buchung wurde entschieden — die Händlerregeln bleiben unverändert.')
+    }
+  }
+
+  if (steps.merchant) {
+    lines.push(
+      include
+        ? `Buchungen von ${merchantName} zählen wieder in Auswertungen.`
+        : `Buchungen von ${merchantName} zählen künftig nicht mehr in Auswertungen.`
+    )
+  }
+
+  // Something was written and something else was not. Named, not glossed over.
+  const started = Boolean(steps.rule || steps.override)
+  const partial = Boolean(error) && started
+  if (error) {
+    const missing = []
+    if (!steps.override) missing.push('die Notiz und die Auswertungs-Einstellung dieser Buchung')
+    if (!steps.merchant) missing.push('die Einstellung für den Händler')
+    return {
+      lines,
+      partial,
+      failure: partial
+        ? `Teilweise gespeichert: ${lines.join(' ')} Nicht gespeichert wurde ${missing.join(' und ')}. ` +
+          'Ein erneuter Versuch wiederholt nur, was fehlt.'
+        : describeLearnFailure(error),
+    }
+  }
+
+  return { lines, partial: false, failure: null }
+}
+
 // ── The two decisions that are not a rule ───────────────────────────────────
 //
 // Not every open booking is a merchant waiting to be taught. Two of the three

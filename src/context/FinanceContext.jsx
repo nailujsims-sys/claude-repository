@@ -177,12 +177,84 @@ export function FinanceProvider({ children }) {
    * The global patterns and rules are not touched, which is the whole point.
    */
   const saveOverride = useCallback(
-    async (transactionId, decision) => {
-      const row = await repo.saveOverride(user.id, transactionId, decision)
+    async (transactionId, patch) => {
+      // The override as last read travels with the patch, so a save that only
+      // decides a note cannot drop the merchant somebody picked last week. See
+      // financeRepository.saveOverride for why the merge is done here rather
+      // than left to the server.
+      const current = overrides.find((o) => o.transaction_id === transactionId) ?? null
+      const row = await repo.saveOverride(user.id, transactionId, patch, current)
+      await load({ silent: true })
+      return row
+    },
+    [user, repo, load, overrides]
+  )
+
+  /**
+   * „Buchungen dieses Händlers zählen nicht." — or count again.
+   *
+   * One column on the merchant, and deliberately reversible: this is an
+   * interpretation of the data, never a change to it. No booking is rewritten;
+   * what changes is the answer resolveAnalyticsInclusion gives for every
+   * booking the pattern engine recognises as this merchant's, past and future.
+   */
+  const setMerchantAnalytics = useCallback(
+    async (merchantId, include) => {
+      const row = await repo.setMerchantAnalyticsDefault(user.id, merchantId, include)
       await load({ silent: true })
       return row
     },
     [user, repo, load]
+  )
+
+  /**
+   * One classification, saved as a whole — and reloaded exactly once.
+   *
+   * WHY THIS EXISTS. `learnRule`, `saveOverride` and `setMerchantAnalytics` each
+   * reload afterwards, which is right when they are the whole save. Chained,
+   * they are wrong: the first reload can resolve the booking the user is looking
+   * at, so a failure in step two would report „die Notiz fehlt noch" over a
+   * screen that has already moved on to the next booking. The retry the message
+   * promises would then be impossible.
+   *
+   * So the steps run against the repository directly, with no reload between
+   * them, and `load()` happens once in `finally` — after success, and after a
+   * failure, by which time the caller has been told exactly how far it got. The
+   * writes themselves are untouched and each is idempotent, so a retry that
+   * repeats only the missing steps is safe.
+   *
+   * `done` says what actually happened; a thrown error carries the same record
+   * on `error.steps`, which is what lets the screen offer the rest and nothing
+   * more.
+   */
+  const saveClassification = useCallback(
+    async ({ learnRequest = null, transactionId, override = null, merchantScope = null } = {}) => {
+      const done = { rule: null, override: false, merchant: false }
+      try {
+        let merchantId = merchantScope?.merchantId ?? null
+        if (learnRequest) {
+          done.rule = await repo.learnMerchantRule(user.id, learnRequest)
+          // A merchant that did not exist yet gets its id from this call.
+          merchantId = merchantId ?? done.rule?.merchant_id ?? null
+        }
+        if (override) {
+          const current = overrides.find((o) => o.transaction_id === transactionId) ?? null
+          await repo.saveOverride(user.id, transactionId, override, current)
+          done.override = true
+        }
+        if (merchantScope && merchantId) {
+          await repo.setMerchantAnalyticsDefault(user.id, merchantId, merchantScope.include)
+          done.merchant = true
+        }
+        return done
+      } catch (err) {
+        err.steps = done
+        throw err
+      } finally {
+        await load({ silent: true })
+      }
+    },
+    [user, repo, load, overrides]
   )
 
   const value = useMemo(
@@ -206,10 +278,12 @@ export function FinanceProvider({ children }) {
       applyPlan,
       learnRule,
       saveOverride,
+      setMerchantAnalytics,
+      saveClassification,
     }),
     [accounts, account, transactions, observations, categories, merchants, patterns, categoryRules,
      overrides, loading, error, load, createAccount, findImport, openImport, applyPlan, learnRule,
-     saveOverride]
+     saveOverride, setMerchantAnalytics, saveClassification]
   )
 
   return <FinanceContext.Provider value={value}>{children}</FinanceContext.Provider>

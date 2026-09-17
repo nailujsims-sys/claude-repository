@@ -1,10 +1,14 @@
-// The Zuordnung screen in a real browser, at 390 px, with hostile content.
+// The Zuordnung screen in a real browser — and the measurement v1.22 exists for.
 //
-// Same reason as tools/financeImportLayout.mjs: jsdom has no layout, so it can
-// say an element exists and never that it fits. This screen is the one where a
-// bank's text becomes a grid of tappable words, and a description of two
-// hundred words has to wrap into something a thumb can still work with rather
-// than push the amount off the phone.
+// Production said the screen was too tall: the save button lived below the fold
+// and every decision cost a scroll. „Kompakter" is not something a DOM test can
+// check and not something a person should have to take on trust, so this suite
+// measures it: the ordinary case must FIT, header to footer, on a phone — and
+// on a short phone, which is the one that was actually failing.
+//
+// Two viewports, because width was never the problem:
+//   390 × 844   a current iPhone
+//   390 × 667   an iPhone SE, and what a keyboard leaves of a bigger one
 //
 // Requires `npm run build` first — it reads dist/assets/*.css, the stylesheet
 // the app actually ships.
@@ -15,7 +19,12 @@ import { pathToFileURL } from 'node:url'
 
 const CHROMIUM = '/opt/pw-browsers/chromium'
 const WIDTH = 390
-const HEIGHT = 844
+// The sheet's own chrome: BottomSheet draws a 56 px header above the body.
+const HEADER = 56
+const VIEWPORTS = [
+  { name: 'iPhone', height: 844 },
+  { name: 'iPhone SE', height: 667 },
+]
 
 const cssDir = 'dist/assets'
 const cssFile = existsSync(cssDir)
@@ -31,6 +40,7 @@ const RENDER = `
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
 import { BookingStep } from './src/components/FinanceClassifySheet.jsx'
+import Toggle from './src/components/Toggle.jsx'
 import { classifyTransaction } from './src/lib/finance/classificationQueue.js'
 import { tokenize } from './src/lib/finance/normalize.js'
 import { FINANCE_CATEGORIES } from './src/config/finance.js'
@@ -38,23 +48,29 @@ import { FINANCE_CATEGORIES } from './src/config/finance.js'
 const uuid = (n) => '11111111-2222-4333-8444-' + String(n).padStart(12, '0')
 const CATEGORIES = FINANCE_CATEGORIES.map((c, i) => ({ ...c, id: uuid(900 + i) }))
 
-// The worst booking text a bank could plausibly print: a Dauerauftrag with the
-// full legal name of a company, a reference number, and one word long enough to
-// have no break opportunity in it at all.
-const RAW = [
+// The ordinary case, and the one the complaint was about: a REWE booking
+// nothing recognises yet.
+const ORDINARY = 'REWE TROISDORF SAGT DANKE 8407'
+
+// And the worst a bank could send: four printed lines, a 78-character word with
+// no break opportunity, two damaged fragments, and an amount with two
+// thousands separators.
+const RC = String.fromCharCode(0xfffd)
+const HOSTILE = [
   'DAUERAUFTRAG Grundstuecksverwaltungsgesellschaft Musterstadt-Nord mbH & Co. Betriebs-KG',
-  'Verwendungszweck Nebenkostenabrechnung 2025 nebst Nachzahlung gemaess Schreiben vom 12.03.2026',
   'Donaudampfschifffahrtselektrizitaetenhauptbetriebswerkbauunterbeamtengesellschaft',
-  'END-TO-END-REF 1052906804694/PP.8169.PP/ Department of Home Affairs Ihr Einkauf',
+  'Verwendungszweck Nebenkostenabrechnung 2025 nebst Nachzahlung gemaess Schreiben',
+  'Lo' + RC + "e's Coffee Stu" + RC + 'gart END-TO-END-REF 1052906804694',
 ].join('\\n')
 
-const transaction = {
+const booking = (raw, amountMinor) => ({
   id: uuid(1), account_id: uuid(2), booking_date: '2026-09-14',
-  amount_minor: -123456789, currency: 'EUR', raw_description: RAW,
-  normalized_tokens: tokenize(RAW), manual_lock: false, merchant_id: null, category_id: null,
-}
+  amount_minor: amountMinor, currency: 'EUR', raw_description: raw,
+  normalized_tokens: tokenize(raw), manual_lock: false,
+  merchant_id: null, category_id: null, include_in_analytics: true,
+})
 
-// A merchant list that does not end, with names as long as the screen.
+// A merchant list that does not end, with names longer than the screen.
 const merchants = []
 for (let i = 0; i < 40; i += 1) {
   merchants.push({
@@ -63,28 +79,54 @@ for (let i = 0; i < 40; i += 1) {
       ? 'Grundstuecksverwaltungsgesellschaft Musterstadt-Nord mbH & Co. Betriebs-KG ' + i
       : 'Haendler ' + i,
     review_mode: 'auto',
+    default_include_in_analytics: true,
   })
 }
 
-const entry = classifyTransaction({ transaction, patterns: [], merchants, rules: [] })
+const render = (transaction, extra = {}) => {
+  const entry = classifyTransaction({ transaction, patterns: [], merchants, rules: [] })
+  return renderToStaticMarkup(
+    createElement(BookingStep, {
+      entry,
+      transactions: [transaction],
+      patterns: [],
+      merchants,
+      categories: CATEGORIES,
+      overrides: [],
+      remaining: 137,
+      saving: false,
+      failure: null,
+      onSave: () => {},
+      onSkip: () => {},
+      ...extra,
+    })
+  )
+}
 
-const markup = renderToStaticMarkup(
-  createElement(BookingStep, {
-    entry,
-    transactions: [transaction],
-    patterns: [],
-    merchants,
-    categories: CATEGORIES,
-    overrides: [],
-    remaining: 137,
-    saving: false,
-    failure: null,
-    done: null,
-    onSave: () => {},
-    onSkip: () => {},
-  })
+// EventForm's row, reproduced: a label and the switch in a py-2 flex row. The
+// switch grew a 44×44 target in v1.22 and must still contribute 24 px of
+// layout, or every such row in the app would get taller.
+const toggleRow = renderToStaticMarkup(
+  createElement('div', { className: 'flex items-center justify-between py-2', id: 'row' },
+    createElement('span', { className: 'text-body text-text-primary' }, 'Ganztägig'),
+    createElement(Toggle, { checked: false, onChange: () => {} }))
 )
-process.stdout.write(markup)
+
+process.stdout.write(JSON.stringify({
+  toggleRow,
+  ordinary: render(booking(ORDINARY, -2483)),
+  hostile: render(booking(HOSTILE, -123456789)),
+  // A booking with a long note already on it, and a long category name.
+  noted: render(booking(ORDINARY, -2483), {
+    overrides: [{
+      transaction_id: uuid(1),
+      note: 'Geburtstagsgeschenk fuer Mama, zusammen mit Anna bezahlt, sie gibt mir die Haelfte im naechsten Monat zurueck',
+    }],
+    categories: CATEGORIES.map((c) => ({
+      ...c, label: c.slug === 'lebensmittel' ? 'Lebensmittel und Haushaltswaren des taeglichen Bedarfs' : c.label,
+    })),
+  }),
+}))
 `
 
 const bundled = await build({
@@ -104,114 +146,159 @@ const cache = `${process.cwd()}/node_modules/.cache`
 mkdirSync(cache, { recursive: true })
 writeFileSync(`${cache}/financeClassifyLayout.render.mjs`, bundled.outputFiles[0].text)
 
-let markup = ''
+let variants = {}
 {
   const chunks = []
   const original = process.stdout.write.bind(process.stdout)
   process.stdout.write = (chunk) => { chunks.push(chunk); return true }
   await import(pathToFileURL(`${cache}/financeClassifyLayout.render.mjs`).href)
   process.stdout.write = original
-  markup = chunks.join('')
+  variants = JSON.parse(chunks.join(''))
 }
 
-const page = `<!doctype html><html lang="de"><head><meta charset="utf-8">
+const pageFor = (markup, height) => `<!doctype html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>${css}</style>
 <!-- The viewport, pinned. Chromium's --window-size does not reliably reach a
-     --dump-dom run, and a layout measured at whatever width the browser felt
-     like is not a measurement of the phone. -->
-<style>html,body{margin:0;width:${WIDTH}px}</style>
+     --dump-dom run, and a layout measured at whatever size the browser felt
+     like is not a measurement of a phone. The sheet is reproduced exactly as
+     BottomSheet draws it: a fixed header, and a body that is the only thing
+     that scrolls. -->
+<style>
+  html,body{margin:0;width:${WIDTH}px;height:${height}px;overflow:hidden}
+  #frame{height:${height}px}
+</style>
 </head><body class="bg-base">
-<div class="app-frame" id="frame"><div class="px-5 py-5 pb-10" id="sheet">${markup}</div></div>
+<div class="app-frame flex flex-col" id="frame">
+  <div class="flex h-14 shrink-0 items-center justify-between border-b border-subtle px-5" id="header">
+    <span class="text-heading font-semibold text-text-primary">Zuordnung</span>
+  </div>
+  <div class="flex-1 overflow-y-auto overscroll-contain" id="body">
+    <div class="flex min-h-full flex-col px-5 pt-3" id="sheet">${markup}</div>
+  </div>
+</div>
 <script>
 const report = []
 const add = (name, cond, detail) => report.push({ name, ok: !!cond, detail: detail ?? '' })
 const frame = document.getElementById('frame')
+const body = document.getElementById('body')
 const sheet = document.getElementById('sheet')
 const frameRect = frame.getBoundingClientRect()
-
-// Measured on the body and the frame, never on documentElement: for the root
-// element the DOM reports the VIEWPORT, not the element, so a page pinned to
-// 390 px would look 485 px wide and the assertion would be about the browser
-// window instead of the phone.
 const VIEWPORT = ${WIDTH}
-add('the page does not scroll sideways at ' + VIEWPORT + 'px',
-    document.body.scrollWidth <= VIEWPORT,
-    document.body.scrollWidth + ' > ' + VIEWPORT)
-add('…and the frame does not either',
-    frame.scrollWidth <= frame.clientWidth + 0.5,
-    frame.scrollWidth + ' > ' + frame.clientWidth)
-add('…and the frame really is that wide', Math.round(frameRect.width) === VIEWPORT,
-    Math.round(frameRect.width) + 'px')
-add('the sheet body does not scroll sideways either',
-    sheet.scrollWidth <= sheet.clientWidth + 1,
-    sheet.scrollWidth + ' > ' + sheet.clientWidth)
+const CASE = ${JSON.stringify('CASE_NAME')}
+const FITS = ${'FITS_FLAG'}
+
+add(CASE + ': the frame really is ' + VIEWPORT + 'px wide',
+    Math.round(frameRect.width) === VIEWPORT, Math.round(frameRect.width) + 'px')
+add(CASE + ': nothing scrolls sideways',
+    body.scrollWidth <= body.clientWidth + 1,
+    body.scrollWidth + ' > ' + body.clientWidth)
 
 let widest = null
 for (const el of sheet.querySelectorAll('*')) {
   const r = el.getBoundingClientRect()
   if (r.width === 0) continue
   if (r.right > frameRect.right + 0.5 || r.left < frameRect.left - 0.5) {
-    if (!widest || r.right > widest.right) widest = { right: r.right, tag: el.className, text: (el.textContent || '').slice(0, 30) }
+    if (!widest || r.right > widest.right) {
+      widest = { right: r.right, text: (el.textContent || '').slice(0, 24) }
+    }
   }
 }
-add('no element reaches past the phone frame', widest === null,
-    widest ? widest.text + ' (' + widest.tag + ') bis x=' + Math.round(widest.right) : '')
+add(CASE + ': no element reaches past the phone frame', widest === null,
+    widest ? widest.text + ' bis x=' + Math.round(widest.right) : '')
 
-// The gesture: every word of the booking has to be its own target, and every
-// one of them has to be reachable with a thumb.
-const words = [...sheet.querySelectorAll('button[aria-pressed]')].filter(
-  (b) => !b.className.includes('justify-between'))
-add('every word of the booking is its own target', words.length >= 30, 'gefunden: ' + words.length)
-let small = 0, outside = 0
-for (const word of words) {
-  const r = word.getBoundingClientRect()
-  if (r.height < 44) small += 1
-  if (r.right > frameRect.right + 0.5) outside += 1
+// THE measurement this file exists for.
+const overflow = body.scrollHeight - body.clientHeight
+if (FITS) {
+  add(CASE + ': the whole decision fits without scrolling the sheet',
+      overflow <= 1, 'überhängt um ' + Math.round(overflow) + 'px')
+  // Headroom for the two rows that only appear after a tap — the preview line
+  // and the „Gilt für" choice — so the answer stays yes once the user starts.
+  //
+  // Measured as the gap between the last content row and the footer, not as
+  // scroll overflow: the sheet is min-h-full and its footer is pushed down with
+  // mt-auto, so the scroll height always equals the body height exactly and
+  // would report a reserve of zero however much room there is.
+  const footer = document.querySelector('.sticky')
+  const rows = [...sheet.children].filter((el) => el !== footer)
+  const contentBottom = rows.reduce((max, el) => Math.max(max, el.getBoundingClientRect().bottom), 0)
+  const headroom = footer ? footer.getBoundingClientRect().top - contentBottom : 0
+  add(CASE + ': …with room for the preview and the scope choice',
+      headroom >= 72, 'Reserve: ' + Math.round(headroom) + 'px')
 }
-add('no word chip is smaller than 44 px', small === 0, small + ' zu klein')
-add('no word chip sticks out of the frame', outside === 0, outside + ' außerhalb')
 
-// Words wrap onto new rows rather than into one endless line.
-const rows = new Set(words.map((w) => Math.round(w.getBoundingClientRect().top)))
-add('the words wrap onto several rows', rows.size >= 6, 'Zeilen: ' + rows.size)
-
-// A word longer than the screen is still shown and still fits.
-const longest = words.reduce((a, b) =>
-  b.textContent.length > a.textContent.length ? b : a, words[0])
-add('the longest word is rendered in full', longest.textContent.length > 40,
-    longest.textContent.length + ' Zeichen')
-add('…and still fits the screen',
-    longest.getBoundingClientRect().right <= frameRect.right + 0.5)
-
-// The amount is the first thing read, and it is a big number.
-const amount = sheet.querySelector('.text-page')
-add('the amount is shown', !!amount && amount.textContent.includes('€'), amount ? amount.textContent : '')
-add('…with thousands separators intact', !!amount && amount.textContent.includes('1.234.567,89'),
-    amount ? amount.textContent : '')
-add('…on one line inside the frame',
-    !!amount && amount.getBoundingClientRect().right <= frameRect.right + 0.5)
-
-// Every button a finger has to hit.
-let shortButtons = []
-for (const button of sheet.querySelectorAll('button')) {
-  const r = button.getBoundingClientRect()
-  if (r.height < 44) shortButtons.push((button.textContent || '').trim().slice(0, 24) + ' ' + Math.round(r.height) + 'px')
+// The footer is reachable at all times, which is the actual complaint.
+const buttons = [...sheet.querySelectorAll('button')]
+const save = buttons.find((b) => (b.textContent || '').trim() === 'Speichern')
+const later = buttons.find((b) => (b.textContent || '').trim() === 'Später')
+add(CASE + ': there is a save button', !!save)
+add(CASE + ': there is a Später button', !!later)
+if (save && later) {
+  const r = save.getBoundingClientRect()
+  add(CASE + ': the save button is inside the viewport without scrolling',
+      r.bottom <= frameRect.bottom + 0.5 && r.top >= 0,
+      Math.round(r.top) + '…' + Math.round(r.bottom))
+  add(CASE + ': …and Später beside it',
+      later.getBoundingClientRect().bottom <= frameRect.bottom + 0.5)
+  add(CASE + ': the footer sticks to the bottom of the sheet',
+      getComputedStyle(save.parentElement).position === 'sticky')
 }
-add('every button is at least 44 px tall', shortButtons.length === 0, shortButtons.join(' · '))
 
-// The merchant list is bounded — forty merchants may not become forty rows.
-const merchantRows = [...sheet.querySelectorAll('button')].filter((b) =>
-  (b.textContent || '').startsWith('Haendler') || (b.textContent || '').startsWith('Grundstuecks'))
-add('the merchant list is capped rather than endless', merchantRows.length <= 6,
-    merchantRows.length + ' Zeilen')
+// Everything the screen owes, present and reachable.
+const text = sheet.textContent || ''
+for (const label of ['Händler', 'Kategorie', 'In Auswertung berücksichtigen']) {
+  add(CASE + ': the row „' + label + '" is there', text.includes(label))
+}
+const note = sheet.querySelector('textarea[aria-label="Notiz"]')
+add(CASE + ': the note field is there', !!note)
+if (note) {
+  const r = note.getBoundingClientRect()
+  add(CASE + ': …and it cannot grow without bound', r.height <= 72 + 1, Math.round(r.height) + 'px')
+}
+const toggle = sheet.querySelector('[role="switch"]')
+add(CASE + ': the analytics switch is there', !!toggle)
+add(CASE + ': …and it is on by default', toggle?.getAttribute('aria-checked') === 'true')
 
-// Accessibility: the selection state is announced, not only coloured.
-add('word chips carry a pressed state', words.every((w) => w.hasAttribute('aria-pressed')))
-const damaged = [...sheet.querySelectorAll('button[disabled]')]
-add('an unlearnable word is disabled rather than hidden', damaged.length >= 0)
-add('the category rows announce their selection',
-    [...sheet.querySelectorAll('button.justify-between')].every((b) => b.hasAttribute('aria-pressed')))
+// A row that holds only the switch keeps the height it had before the target
+// grew: 24px of content plus the row's own padding.
+const eventRow = document.getElementById('row')
+if (eventRow) {
+  add(CASE + ': a switch row is not made taller by the bigger target',
+      Math.round(eventRow.getBoundingClientRect().height) === 40,
+      Math.round(eventRow.getBoundingClientRect().height) + 'px')
+}
+
+// The word picker is capped rather than endless.
+const picker = [...sheet.querySelectorAll('div')].find((d) => d.className.includes('max-h-'))
+if (picker) {
+  add(CASE + ': the word area is capped', picker.getBoundingClientRect().height <= 132 + 1,
+      Math.round(picker.getBoundingClientRect().height) + 'px')
+}
+
+// Touch targets.
+const small = buttons.filter((b) => {
+  const r = b.getBoundingClientRect()
+  return r.height > 0 && r.height < 44
+}).map((b) => ((b.textContent || '').trim() || b.getAttribute('role') || '?').slice(0, 18)
+  + ' ' + Math.round(b.getBoundingClientRect().height))
+add(CASE + ': every button is at least 44px tall', small.length === 0, small.join(' · '))
+
+// The switch included: the track may look 44×24, the thing a thumb aims at may
+// not be.
+if (toggle) {
+  const r = toggle.getBoundingClientRect()
+  add(CASE + ': the switch target is at least 44×44',
+      r.width >= 44 && r.height >= 44,
+      Math.round(r.width) + '×' + Math.round(r.height))
+  // …without pushing its row taller: the negative margin gives the layout back.
+  const track = toggle.firstElementChild
+  add(CASE + ': …while the track still looks 44×24',
+      track && Math.round(track.getBoundingClientRect().height) === 24,
+      track ? Math.round(track.getBoundingClientRect().width) + '×' + Math.round(track.getBoundingClientRect().height) : 'kein Track')
+}
+// The row around the switch no longer has to carry the target — the switch
+// carries its own (asserted above), which is why a 40 px row is fine now and
+// why no existing row in the app changed height.
 
 const out = document.createElement('div')
 out.id = 'report'
@@ -220,24 +307,51 @@ document.body.appendChild(out)
 </script>
 </body></html>`
 
-const htmlPath = `${cache}/financeClassifyLayout.html`
-writeFileSync(htmlPath, page)
-
-const dom = execFileSync(
-  CHROMIUM,
-  ['--headless', '--no-sandbox', '--disable-gpu', `--window-size=${WIDTH},${HEIGHT}`,
-   '--virtual-time-budget=5000', '--dump-dom', pathToFileURL(htmlPath).href],
-  { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }
-)
-
-const match = dom.match(/<div id="report">([\s\S]*?)<\/div>/)
-if (!match) {
-  console.error('finance classify layout: der Browser hat nichts gemessen.')
-  process.exit(1)
+const measure = (markup, height, caseName, fits) => {
+  const html = pageFor(markup, height)
+    .replace('"CASE_NAME"', JSON.stringify(caseName))
+    .replace('FITS_FLAG', String(fits))
+  const htmlPath = `${cache}/financeClassifyLayout-${caseName.replace(/\W+/g, '-')}.html`
+  writeFileSync(htmlPath, html)
+  const dom = execFileSync(
+    CHROMIUM,
+    ['--headless', '--no-sandbox', '--disable-gpu', `--window-size=${WIDTH},${height}`,
+     '--virtual-time-budget=5000', '--dump-dom', pathToFileURL(htmlPath).href],
+    { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }
+  )
+  const match = dom.match(/<div id="report">([\s\S]*?)<\/div>/)
+  if (!match) throw new Error(`der Browser hat für ${caseName} nichts gemessen`)
+  return JSON.parse(
+    match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+  )
 }
-const decoded = match[1]
-  .replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-const report = JSON.parse(decoded)
+
+const report = []
+
+// The switch on its own, in the row shape EventForm uses.
+{
+  const rows = measure(variants.toggleRow, 400, 'Toggle in einer Zeile', false)
+  report.push(...rows.filter(
+    (r) => r.name.includes('switch') || r.name.includes('sideways') || r.name.includes('switch row')))
+}
+
+for (const viewport of VIEWPORTS) {
+  // The ordinary booking must FIT on both phones — that is the release goal.
+  report.push(...measure(variants.ordinary, viewport.height, `${viewport.name} ${WIDTH}×${viewport.height} · REWE`, true))
+  // The hostile one may scroll; it may not overflow sideways or hide the
+  // buttons, and the word area must stay capped.
+  report.push(...measure(variants.hostile, viewport.height, `${viewport.name} · Extremtext`, false))
+  report.push(...measure(variants.noted, viewport.height, `${viewport.name} · lange Notiz`, false))
+}
+
+// The numbers themselves, printed rather than only asserted — „kompakter" is a
+// claim, and this is what it measured.
+for (const entry of report) {
+  if (entry.name.includes('ohne Scrollen') || entry.name.includes('Reserve') ||
+      entry.name.includes('fits without scrolling') || entry.name.includes('room for the preview')) {
+    console.log(`  · ${entry.name} — ${entry.detail || 'ok'}`)
+  }
+}
 
 let pass = 0, fail = 0
 for (const entry of report) {

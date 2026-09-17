@@ -325,6 +325,9 @@ export function makeBackend({
       { id: TEST_USER_ID, display_name: 'Julian', timezone: 'Europe/Berlin', created_at: nowIso(), updated_at: nowIso() },
     ],
   }
+  // Mutable so a test can turn a failure on and off between two requests;
+  // `makeBackend({ failTable })` still sets the starting value.
+  const state = { failTable }
   const calls = []
   const functionCalls = []
   const rpcCalls = []
@@ -335,7 +338,14 @@ export function makeBackend({
     const url = new URL(typeof input === 'string' ? input : input.url)
     const method = (init.method || (typeof input !== 'string' && input.method) || 'GET').toUpperCase()
     const headers = new Headers(init.headers || (typeof input !== 'string' ? input.headers : undefined))
-    calls.push({ method, path: url.pathname, search: url.search })
+    // The body travels with the call, so a test can assert on what was SENT and
+    // not only on what the stub stored. A repository that merges a patch before
+    // writing it is only provable that way.
+    let recorded
+    if (typeof init.body === 'string') {
+      try { recorded = JSON.parse(init.body) } catch { recorded = init.body }
+    }
+    calls.push({ method, path: url.pathname, search: url.search, body: recorded })
 
     // ── The exchange-rate source ──────────────────────────────────────────
     // Everything that is not this project's Supabase host is the rate API: the
@@ -425,6 +435,7 @@ export function makeBackend({
       rpcCalls.push({ name, body })
       const handler = rpc[name]
       if (typeof handler === 'function') return handler(body)
+      if (name === 'finance_learn_merchant_rule') return json(learnMerchantRule(body))
       return json({ ok: true })
     }
 
@@ -439,7 +450,9 @@ export function makeBackend({
 
     // A backend that is having a bad day, on request — the app has to say so
     // rather than render an empty screen as if there were nothing to show.
-    if (failTable === table) {
+    // Read from the mutable holder, not from the argument: a test that has to
+    // fail ONE write and then let the retry through needs to switch it mid-run.
+    if (state.failTable === table) {
       return json({ message: 'Datenbank nicht erreichbar (Test)', code: 'PGRST000' }, 500)
     }
 
@@ -478,14 +491,41 @@ export function makeBackend({
           expenses: expenseRow,
           ...Object.fromEntries(FINANCE_TABLES.map((name) => [name, financeRow])),
         }[table] ?? taskRow
-      const created = incoming.map((data) => {
+      // An UPSERT is a POST with `Prefer: resolution=merge-duplicates` and the
+      // conflict target in `on_conflict`. Without this the stub inserted a
+      // second row where Postgres would have updated the first — so a test
+      // could pass here and the app lose data in production, which is the one
+      // thing this stub exists to prevent.
+      // Read off the URL rather than the parsed filters: `on_conflict` is not a
+      // filter, it is the conflict target, and it never appears as `col=eq.x`.
+      const prefer = headers.get('prefer') ?? ''
+      const conflict = prefer.includes('resolution=merge-duplicates')
+        ? (url.searchParams.get('on_conflict') ?? '').split(',').filter(Boolean)
+        : []
+
+      const created = []
+      const updated = []
+      for (const data of incoming) {
         // The database rejects a row without an owner, and so does this.
         if (!data.user_id) throw new Error('supabaseStub: insert without user_id')
-        return build(data)
-      })
-      rows.push(...created)
+        const existing =
+          conflict.length > 0
+            ? rows.find((r) => conflict.every((column) => r[column] === data[column]))
+            : null
+        if (existing) {
+          // ON CONFLICT DO UPDATE writes the columns the payload names and
+          // leaves every other one alone.
+          Object.assign(existing, data)
+          updated.push(existing)
+        } else {
+          const row = build(data)
+          rows.push(row)
+          created.push(row)
+        }
+      }
       for (const row of created) onChange?.({ table, type: 'INSERT', record: { ...row } })
-      return respond(created)
+      for (const row of updated) onChange?.({ table, type: 'UPDATE', record: { ...row } })
+      return respond([...created, ...updated])
     }
 
     if (method === 'PATCH') {
@@ -519,5 +559,136 @@ export function makeBackend({
     return json({ message: `method ${method} not stubbed` }, 405)
   }
 
-  return { fetch: fetchStub, tables, calls, functionCalls, rpcCalls, rateCalls, auth, session: auth.session }
+  // ── finance_learn_merchant_rule, as far as a screen can tell ─────────────
+  //
+  // The real one is 200 lines of plpgsql in 0008 and is tested against a real
+  // Postgres (tools/financeClassifyE2E.mjs). What a DOM test needs is its
+  // OBSERVABLE effects: the merchant, pattern and rule exist afterwards, the
+  // booking is stamped, and the queue therefore no longer contains it. Without
+  // that, the call was counted and nothing changed — so a test could not tell a
+  // successful save from a no-op, and the end-of-queue cases could not be
+  // reached at all.
+  //
+  // The three conditions that protect a decision somebody already made are
+  // reproduced, because they are the ones a screen can get wrong: a booking is
+  // only swept up when it has no merchant, is not locked and has no override.
+  function learnMerchantRule(body) {
+    const p = body ?? {}
+    const tokens = p.p_tokens ?? []
+    const matches = (row) => {
+      const have = Array.isArray(row?.normalized_tokens) ? row.normalized_tokens : []
+      if (p.p_pattern_type === 'exact_token') return tokens.length === 1 && have.includes(tokens[0])
+      if (p.p_pattern_type !== 'exact_phrase' || tokens.length < 2) return false
+      for (let i = 0; i + tokens.length <= have.length; i += 1) {
+        if (tokens.every((t, k) => have[i + k] === t)) return true
+      }
+      return false
+    }
+    const owned = (list) => list.filter((r) => r.user_id === TEST_USER_ID)
+    const category = owned(tables.finance_categories).find((c) => c.slug === p.p_category_slug)
+    if (!category) return { message: `finance: Kategorie ${p.p_category_slug} gibt es nicht` }
+
+    const name = (p.p_merchant_name ?? '').trim()
+    let merchant = p.p_merchant_id
+      ? owned(tables.finance_merchants).find((m) => m.id === p.p_merchant_id)
+      : owned(tables.finance_merchants).find(
+          (m) => m.canonical_name.trim().toLowerCase() === name.toLowerCase())
+    let merchantCreated = false
+    if (!merchant) {
+      merchant = financeRow({
+        user_id: TEST_USER_ID, canonical_name: name,
+        review_mode: p.p_review_mode ?? 'auto', default_include_in_analytics: true,
+      })
+      tables.finance_merchants.push(merchant)
+      merchantCreated = true
+    } else if (p.p_review_mode) {
+      merchant.review_mode = p.p_review_mode
+    }
+
+    let pattern = owned(tables.finance_merchant_patterns).find(
+      (x) => x.active && x.pattern_type === p.p_pattern_type &&
+        (x.tokens ?? []).join('\u0000') === tokens.join('\u0000'))
+    let patternCreated = false
+    if (!pattern) {
+      pattern = financeRow({
+        user_id: TEST_USER_ID, merchant_id: merchant.id,
+        pattern_type: p.p_pattern_type, tokens, active: true,
+      })
+      tables.finance_merchant_patterns.push(pattern)
+      patternCreated = true
+    }
+
+    let rule = owned(tables.finance_category_rules).find(
+      (r) => r.active && r.merchant_id === merchant.id &&
+        (r.min_amount_minor ?? null) === (p.p_min_amount_minor ?? null) &&
+        (r.max_amount_minor ?? null) === (p.p_max_amount_minor ?? null))
+    let ruleCreated = false
+    if (!rule) {
+      rule = financeRow({
+        user_id: TEST_USER_ID, merchant_id: merchant.id, category_id: category.id,
+        min_amount_minor: p.p_min_amount_minor ?? null,
+        max_amount_minor: p.p_max_amount_minor ?? null,
+        min_inclusive: p.p_min_inclusive ?? true, max_inclusive: p.p_max_inclusive ?? true,
+        currency: p.p_rule_currency ?? null, active: true,
+      })
+      tables.finance_category_rules.push(rule)
+      ruleCreated = true
+    } else {
+      rule.category_id = category.id
+    }
+
+    const overridden = (id) =>
+      owned(tables.finance_transaction_overrides).some((o) => o.transaction_id === id)
+    const stamp = (row) => {
+      row.merchant_id = merchant.id
+      row.category_id = category.id
+    }
+
+    const target = owned(tables.finance_transactions).find((t) => t.id === p.p_transaction_id)
+    let transactionUpdated = false
+    // The booking in hand: not locked, no override — its merchant_id is not a
+    // condition here, which is the asymmetry the real function has too.
+    if (target && target.manual_lock !== true && !overridden(target.id)) {
+      stamp(target)
+      transactionUpdated = true
+    }
+
+    const requested = p.p_apply_transaction_ids ?? []
+    let applied = 0
+    for (const id of requested) {
+      const row = owned(tables.finance_transactions).find((t) => t.id === id)
+      if (!row || row.id === p.p_transaction_id) continue
+      if (row.merchant_id) continue
+      if (row.manual_lock === true) continue
+      if (overridden(row.id)) continue
+      if (!matches(row)) continue
+      stamp(row)
+      applied += 1
+    }
+
+    return {
+      merchant_id: merchant.id,
+      merchant_created: merchantCreated,
+      pattern_id: pattern.id,
+      pattern_created: patternCreated,
+      rule_id: rule.id,
+      rule_created: ruleCreated,
+      category_id: category.id,
+      transaction_id: p.p_transaction_id,
+      transaction_updated: transactionUpdated,
+      requested_count: requested.length,
+      applied_count: applied,
+    }
+  }
+
+  const backend = {
+    fetch: fetchStub, tables, calls, functionCalls, rpcCalls, rateCalls, auth,
+    session: auth.session,
+  }
+  Object.defineProperty(backend, 'failTable', {
+    get: () => state.failTable,
+    set: (value) => { state.failTable = value },
+    enumerable: true,
+  })
+  return backend
 }

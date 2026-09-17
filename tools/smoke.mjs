@@ -3152,19 +3152,28 @@ async function run() {
       errors.push('[Finanzen/Zuordnung] the sheet did not open')
     if (!sheet.includes('Wörter markieren'))
       errors.push('[Finanzen/Zuordnung] the word picker is missing')
-    // The booking itself: what it cost and when.
     if (!sheet.includes('60,65 €'))
       errors.push(`[Finanzen/Zuordnung] the amount is missing: ${sheet.slice(0, 200)}`)
     if (!sheet.includes('14.09.2026'))
       errors.push('[Finanzen/Zuordnung] the booking date is missing')
-    // The words of the ORIGINAL text, as printed — not a normalised version.
     if (!sheet.includes('Vertrieb'))
       errors.push('[Finanzen/Zuordnung] the booking text is not offered as words')
 
-    // The category list comes from the database, never from a copy in the UI:
-    // it only appears once something is marked, so nothing is shown yet.
+    // v1.22: one compact row per decision, and both actions without scrolling.
+    for (const label of ['Händler', 'Kategorie', 'In Auswertung berücksichtigen', 'Später', 'Speichern']) {
+      if (!sheet.includes(label))
+        errors.push(`[Finanzen/Zuordnung] the compact row „${label}" is missing`)
+    }
+    const noteField = window.document.querySelector('textarea[aria-label="Notiz"]')
+    if (!noteField) errors.push('[Finanzen/Zuordnung] there is no note field')
+    else if (noteField.placeholder !== 'Notiz hinzufügen …')
+      errors.push('[Finanzen/Zuordnung] the note field does not invite a note')
+
+    // The pickers are no longer permanently on screen — that was the complaint.
     if (sheet.includes('Lebensmittel'))
-      errors.push('[Finanzen/Zuordnung] categories are offered before anything is marked')
+      errors.push('[Finanzen/Zuordnung] the category list is on the main screen again')
+    if (sheet.includes('Bestehenden Händler suchen'))
+      errors.push('[Finanzen/Zuordnung] the merchant search is on the main screen again')
 
     const word = [...window.document.querySelectorAll('button')].find(
       (b) => b.textContent.trim() === 'Vertrieb')
@@ -3176,15 +3185,46 @@ async function run() {
       await wait(80)
       if (word.getAttribute('aria-pressed') !== 'true')
         errors.push('[Finanzen/Zuordnung] marking a word does not select it')
-      const marked = nb(txt(window))
-      if (!marked.includes('Händler'))
-        errors.push('[Finanzen/Zuordnung] the merchant section does not appear after marking')
-      if (!marked.includes('Lebensmittel') || !marked.includes('Drogerie'))
-        errors.push('[Finanzen/Zuordnung] the categories from the database are not offered')
     }
 
-    // Opening the sheet and marking a word writes nothing. The one write of
-    // this flow is the learn function, and it happens on the button.
+    // The merchant picker opens as its own sheet, and closing it comes back.
+    if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Händler')))
+      errors.push('[Finanzen/Zuordnung] the merchant row is not tappable')
+    await wait(320)
+    const picker = nb(txt(window))
+    if (!picker.includes('Neuer Händler'))
+      errors.push('[Finanzen/Zuordnung] the merchant sheet does not offer a new merchant')
+    if (!picker.includes('Diesen Händler künftig immer prüfen'))
+      errors.push('[Finanzen/Zuordnung] the always-review option is gone')
+    // A picker closes the way every auto-height sheet in this app closes: the
+    // backdrop (and, on a device, the grabber). The TOPMOST one — the main
+    // sheet is still open underneath and must stay open.
+    const backdrops = [...window.document.querySelectorAll('.ov-backdrop')]
+    if (backdrops.length !== 2)
+      errors.push(`[Finanzen/Zuordnung] the merchant sheet is not a layer of its own (${backdrops.length})`)
+    backdrops[backdrops.length - 1]?.click()
+    await wait(320)
+    if (nb(txt(window)).includes('Neuer Händler'))
+      errors.push('[Finanzen/Zuordnung] the merchant sheet stayed open')
+    if (!nb(txt(window)).includes('Wörter markieren'))
+      errors.push('[Finanzen/Zuordnung] closing the merchant sheet left the main screen')
+
+    // The category picker, the same way — and the choice lands in the row.
+    if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Kategorie')))
+      errors.push('[Finanzen/Zuordnung] the category row is not tappable')
+    await wait(320)
+    if (!nb(txt(window)).includes('Lebensmittel'))
+      errors.push('[Finanzen/Zuordnung] the category sheet offers no categories')
+    if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Drogerie'))
+      errors.push('[Finanzen/Zuordnung] a category cannot be picked')
+    await wait(320)
+    const afterPick = nb(txt(window))
+    if (afterPick.includes('Klamotten'))
+      errors.push('[Finanzen/Zuordnung] the category sheet stayed open after picking')
+    if (!afterPick.includes('KategorieDrogerie'))
+      errors.push(`[Finanzen/Zuordnung] the picked category is not shown in the row: ${afterPick.slice(-200)}`)
+
+    // Opening the sheet, marking a word and picking a category writes nothing.
     const writesAfter = backend.calls.filter((c) => c.method !== 'GET').length
     if (writesAfter !== writesBefore)
       errors.push('[Finanzen/Zuordnung] the sheet wrote something before anything was confirmed')
@@ -3237,7 +3277,7 @@ async function run() {
 
     if (!text.includes('Zwei Händler beanspruchen diese Buchung'))
       errors.push('[Finanzen/Konflikt] the conflict is not explained')
-    if (!text.includes('Edeka') || !text.includes('Nahkauf'))
+    if (!text.includes('Edeka') && !text.includes('Nahkauf'))
       errors.push('[Finanzen/Konflikt] the claiming merchants are not named')
     // The claim that was wrong and had to go.
     if (text.includes('genaueres Muster löst'))
@@ -3245,10 +3285,19 @@ async function run() {
     // A conflict is not a lesson: no words to mark, no new merchant to name.
     if (text.includes('Wörter markieren'))
       errors.push('[Finanzen/Konflikt] a conflict offers the pattern gesture')
-    if (!text.includes('Nur diese Buchung entscheiden'))
+    if (!text.includes('Speichern'))
       errors.push('[Finanzen/Konflikt] there is no way to decide the single booking')
-    if (!text.includes('Kategorie für diese Buchung'))
+    if (!text.includes('Kategorie'))
       errors.push('[Finanzen/Konflikt] no category can be chosen for this booking')
+
+    // The merchant picker offers exactly the two claimants and nothing else.
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Händler'))
+    await wait(320)
+    const pick = nb(txt(window))
+    if (!pick.includes('Edeka') || !pick.includes('Nahkauf'))
+      errors.push('[Finanzen/Konflikt] the merchant sheet does not offer both claimants')
+    if (pick.includes('Neuer Händler'))
+      errors.push('[Finanzen/Konflikt] a conflict offers to invent a third merchant')
   }
 
   // 16b4) A booking of a merchant the user asked to see every time. The
@@ -3293,16 +3342,393 @@ async function run() {
       errors.push('[Finanzen/Prüfung] the always_review merchant is not explained')
     if (text.includes('Wörter markieren'))
       errors.push('[Finanzen/Prüfung] a recognised merchant still asks for a pattern')
-    if (!text.includes('Kategorie für diese Buchung'))
+    if (!text.includes('Kategorie'))
       errors.push('[Finanzen/Prüfung] no category can be chosen')
-
-    // The rule's own answer, offered rather than applied.
-    const chosen = [...window.document.querySelectorAll('button[aria-pressed="true"]')]
-      .map((b) => b.textContent.trim())
-    if (!chosen.includes('Drogerie'))
-      errors.push(`[Finanzen/Prüfung] the suggested category is not preselected: ${chosen.join(', ')}`)
-    if (!text.includes('Nur diese Buchung entscheiden'))
+    // The merchant is known, so its row is not a picker at all.
+    if (!text.includes('HändlerPayPal'))
+      errors.push(`[Finanzen/Prüfung] the recognised merchant is not shown: ${text.slice(-200)}`)
+    // The rule's own answer, offered rather than applied — visible in the row.
+    if (!text.includes('KategorieDrogerie'))
+      errors.push(`[Finanzen/Prüfung] the suggested category is not preselected: ${text.slice(-200)}`)
+    if (!text.includes('Speichern'))
       errors.push('[Finanzen/Prüfung] the single-booking decision is missing')
+
+    // The scope choice appears when the switch MOVES, in both directions, and
+    // only while a merchant is known. It must not be a one-way door.
+    const toggle = window.document.querySelector('[role="switch"]')
+    if (!toggle) errors.push('[Finanzen/Prüfung] there is no analytics switch')
+    else {
+      if (toggle.getAttribute('aria-checked') !== 'true')
+        errors.push('[Finanzen/Prüfung] the switch does not start on')
+      if (nb(txt(window)).includes('Gilt für'))
+        errors.push('[Finanzen/Prüfung] the scope choice is shown before anything changed')
+
+      toggle.click()
+      await wait(80)
+      const off = nb(txt(window))
+      if (!off.includes('Gilt für'))
+        errors.push('[Finanzen/Prüfung] turning the switch off offers no scope choice')
+      if (!off.includes('Alle Buchungen von PayPal'))
+        errors.push('[Finanzen/Prüfung] the merchant-wide option does not name the merchant')
+      if (!off.includes('Nur diese Buchung'))
+        errors.push('[Finanzen/Prüfung] the single-booking option is missing')
+
+      // Back to where it was: nothing changed, so nothing to scope.
+      toggle.click()
+      await wait(80)
+      if (nb(txt(window)).includes('Gilt für'))
+        errors.push('[Finanzen/Prüfung] the scope choice survives the switch going back')
+    }
+  }
+
+  // 16b5) The other direction: a merchant that is switched off today can be
+  //       switched back on for all of its bookings. Without this the
+  //       merchant-wide decision would be a one-way door.
+  {
+    const M = '11111111-2222-4333-8444-000000000204'
+    const CAT = FIN_CATEGORIES.find((c) => c.slug === 'sonstige').id
+    const offSeed = {
+      ...financeSeed,
+      finance_transactions: [
+        { id: '11111111-2222-4333-8444-000000000105', user_id: TEST_USER_ID, account_id: FIN_ACCOUNT,
+          booking_date: '2026-09-14', amount_minor: -50000, currency: 'EUR',
+          raw_description: 'Scalable Capital Verrechnungskonto',
+          normalized_tokens: ['SCALABLE', 'CAPITAL', 'VERRECHNUNGSKONTO'],
+          include_in_analytics: true, manual_lock: false },
+      ],
+      finance_merchants: [
+        { id: M, user_id: TEST_USER_ID, canonical_name: 'Scalable Capital',
+          review_mode: 'always_review', default_include_in_analytics: false },
+      ],
+      finance_merchant_patterns: [
+        { id: '11111111-2222-4333-8444-000000000214', user_id: TEST_USER_ID, merchant_id: M,
+          pattern_type: 'exact_token', tokens: ['SCALABLE'], active: true },
+      ],
+      finance_category_rules: [
+        { id: '11111111-2222-4333-8444-000000000222', user_id: TEST_USER_ID, merchant_id: M,
+          category_id: CAT, min_amount_minor: null, max_amount_minor: null,
+          min_inclusive: true, max_inclusive: true, currency: null, active: true },
+      ],
+    }
+    const window = makeDom('#/finanzen', { finance: offSeed })
+    mount(window, code, 'Finanzen/Wieder-einschalten')
+    await wait(400)
+    window.__restoreConsole?.()
+
+    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    await wait(320)
+
+    const toggle = window.document.querySelector('[role="switch"]')
+    if (!toggle) errors.push('[Finanzen/Einschalten] there is no analytics switch')
+    else {
+      // The merchant is off, so the booking shows as not counting.
+      if (toggle.getAttribute('aria-checked') !== 'false')
+        errors.push('[Finanzen/Einschalten] the switch does not reflect the merchant default')
+      toggle.click()
+      await wait(80)
+      const on = nb(txt(window))
+      if (!on.includes('Gilt für'))
+        errors.push('[Finanzen/Einschalten] turning the switch ON offers no scope choice')
+      if (!on.includes('Alle Buchungen von Scalable Capital'))
+        errors.push('[Finanzen/Einschalten] a merchant cannot be switched back on for all bookings')
+    }
+  }
+
+  // 16b6) A save that got halfway holds its booking. The rule is written, the
+  //       override write fails — and the screen must still be on the booking
+  //       the message is about, with only the missing step left to retry.
+  {
+    const window = makeDom('#/finanzen', { finance: financeSeed })
+    // The console stays captured for the whole block: the failing write logs on
+    // purpose, and restoring early would hand that log to whichever section
+    // patches the console next.
+    mount(window, code, 'Finanzen/Teilweise', { expectErrors: true })
+    await wait(400)
+    const backend = window.__backend
+
+    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    await wait(320)
+
+    // Mark a word the booking's STORED tokens really contain — the seed freezes
+    // ['DB'], so that is the only one the engine would accept.
+    const word = [...window.document.querySelectorAll('button')].find(
+      (b) => b.textContent.trim() === 'DB')
+    word?.click()
+    await wait(60)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Kategorie'))
+    await wait(320)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Sonstige')
+    await wait(320)
+    const note = window.document.querySelector('textarea[aria-label="Notiz"]')
+    if (note) {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype, 'value').set
+      setter.call(note, 'Bahnfahrt nach Köln')
+      note.dispatchEvent(new window.Event('input', { bubbles: true }))
+      await wait(60)
+    }
+
+    const before = nb(txt(window))
+    if (!before.includes('60,65 €'))
+      errors.push('[Finanzen/Teilweise] the booking under test is not the one on screen')
+
+    // The rule goes through, the override does not.
+    backend.failTable = 'finance_transaction_overrides'
+    if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Speichern'))
+      errors.push('[Finanzen/Teilweise] the save button was not clickable')
+    await wait(500)
+
+    const after = nb(txt(window))
+    if (!after.includes('Teilweise gespeichert'))
+      errors.push(`[Finanzen/Teilweise] a half-written save is not reported: ${after.slice(-260)}`)
+    if (!after.includes('Notiz'))
+      errors.push('[Finanzen/Teilweise] the message does not name the missing step')
+    if (!after.includes('wiederholt nur, was fehlt'))
+      errors.push('[Finanzen/Teilweise] the message does not promise a safe retry')
+    // THE point: the screen has not moved on, although the rule resolved the
+    // booking and a reload happened.
+    if (!after.includes('60,65 €'))
+      errors.push(`[Finanzen/Teilweise] the screen jumped to another booking: ${after.slice(-260)}`)
+    if (!after.includes('Bahnfahrt nach Köln'))
+      errors.push('[Finanzen/Teilweise] the note the user typed was lost')
+
+    const rulesBefore = backend.rpcCalls.filter((c) => c.name === 'finance_learn_merchant_rule').length
+    if (rulesBefore !== 1)
+      errors.push(`[Finanzen/Teilweise] the rule was not written exactly once (${rulesBefore})`)
+
+    // Retry: only the missing step goes out.
+    backend.failTable = null
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Speichern')
+    await wait(500)
+    const retried = backend.rpcCalls.filter((c) => c.name === 'finance_learn_merchant_rule').length
+    if (retried !== 1)
+      errors.push(`[Finanzen/Teilweise] the retry learned the rule a second time (${retried})`)
+    const done = nb(txt(window))
+    if (done.includes('Teilweise gespeichert'))
+      errors.push('[Finanzen/Teilweise] the retry did not clear the partial state')
+    if (!done.includes('Gespeichert'))
+      errors.push(`[Finanzen/Teilweise] the retry is not reported as done: ${done.slice(-220)}`)
+    window.__restoreConsole?.()
+  }
+
+  // 16b6b) The same, but the half-saved booking was the LAST open one.
+  //
+  //        This is where the render order used to lose the retry: the rule
+  //        resolves the booking, so the queue is empty — and „Keine offenen
+  //        Zuordnungen" was asked before `pinned`, so the screen showed the end
+  //        state while the message promised a retry that had nowhere to happen.
+  const ONE_BOOKING = {
+    ...financeSeed,
+    finance_transactions: [
+      { id: '11111111-2222-4333-8444-000000000107', user_id: TEST_USER_ID, account_id: FIN_ACCOUNT,
+        booking_date: '2026-09-14', amount_minor: -6065, currency: 'EUR',
+        raw_description: 'DB.Vertrieb.GmbH/508354771568', normalized_tokens: ['DB'],
+        include_in_analytics: true, manual_lock: false },
+    ],
+  }
+
+  // A run of the flow up to „Speichern", with one failing table. Returns the
+  // window so the caller can assert and retry.
+  const halfSave = async (label, failing, { merchantWide = false } = {}) => {
+    const window = makeDom('#/finanzen', { finance: ONE_BOOKING })
+    mount(window, code, label, { expectErrors: true })
+    await wait(400)
+    const backend = window.__backend
+
+    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    await wait(320)
+    if (!nb(txt(window)).includes('Letzte offene Buchung'))
+      errors.push(`[${label}] the fixture is not a single open booking`)
+
+    ;[...window.document.querySelectorAll('button')]
+      .find((b) => b.textContent.trim() === 'DB')?.click()
+    await wait(60)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Kategorie'))
+    await wait(320)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Sonstige')
+    await wait(320)
+
+    const note = window.document.querySelector('textarea[aria-label="Notiz"]')
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype, 'value').set
+    setter.call(note, 'Bahnfahrt nach Köln')
+    note.dispatchEvent(new window.Event('input', { bubbles: true }))
+    await wait(60)
+
+    if (merchantWide) {
+      // Switch analytics off and scope it to the whole merchant, so the third
+      // step of the sequence exists at all.
+      window.document.querySelector('[role="switch"]')?.click()
+      await wait(80)
+      if (!click(window, (el) => el.tagName === 'BUTTON' &&
+          el.textContent.trim().startsWith('Alle Buchungen von')))
+        errors.push(`[${label}] the merchant-wide scope was not offered`)
+      await wait(80)
+    }
+
+    backend.failTable = failing
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Speichern')
+    await wait(500)
+    return { window, backend }
+  }
+
+  // a) The override write fails on the last open booking.
+  {
+    const label = 'Finanzen/Letzte-Teilweise'
+    const { window, backend } = await halfSave(label, 'finance_transaction_overrides')
+
+    const after = nb(txt(window))
+    if (!after.includes('Teilweise gespeichert'))
+      errors.push(`[${label}] a half-written save is not reported: ${after.slice(-240)}`)
+    // The booking is resolved now and the queue is empty — and it is still the
+    // thing on screen.
+    if (after.includes('Keine offenen Zuordnungen'))
+      errors.push(`[${label}] the end state won over the held retry`)
+    if (!after.includes('60,65 €'))
+      errors.push(`[${label}] the held booking is not on screen: ${after.slice(-240)}`)
+    if (!after.includes('Bahnfahrt nach Köln'))
+      errors.push(`[${label}] the note the user typed was lost`)
+    if (!after.includes('Speichern'))
+      errors.push(`[${label}] there is nothing left to retry with`)
+    const learned = backend.rpcCalls.filter((c) => c.name === 'finance_learn_merchant_rule').length
+    if (learned !== 1) errors.push(`[${label}] the rule was not written exactly once (${learned})`)
+
+    // Retry: only the missing step.
+    backend.failTable = null
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Speichern')
+    await wait(500)
+    const again = backend.rpcCalls.filter((c) => c.name === 'finance_learn_merchant_rule').length
+    if (again !== 1) errors.push(`[${label}] the retry learned the rule a second time (${again})`)
+    const done = nb(txt(window))
+    if (done.includes('Teilweise gespeichert'))
+      errors.push(`[${label}] the retry did not clear the partial state`)
+    if (!done.includes('Gespeichert'))
+      errors.push(`[${label}] the retry is not reported: ${done.slice(-240)}`)
+    if (!done.includes('Es wartet keine Buchung mehr'))
+      errors.push(`[${label}] the confirmation does not say the queue is empty`)
+    const stored = window.__backend.tables.finance_transaction_overrides.find(
+      (o) => o.transaction_id === '11111111-2222-4333-8444-000000000107')
+    if (stored?.note !== 'Bahnfahrt nach Köln')
+      errors.push(`[${label}] the note did not reach the database on retry`)
+    window.__restoreConsole?.()
+  }
+
+  // b) The merchant-wide write fails — the third step of the sequence, on the
+  //    last open booking.
+  {
+    const label = 'Finanzen/Letzte-Händler'
+    const { window, backend } = await halfSave(label, 'finance_merchants', { merchantWide: true })
+
+    const after = nb(txt(window))
+    if (!after.includes('Teilweise gespeichert'))
+      errors.push(`[${label}] a half-written save is not reported: ${after.slice(-240)}`)
+    if (after.includes('Keine offenen Zuordnungen'))
+      errors.push(`[${label}] the end state won over the held retry`)
+    if (!after.includes('60,65 €'))
+      errors.push(`[${label}] the held booking is not on screen`)
+    if (!after.includes('Einstellung für den Händler'))
+      errors.push(`[${label}] the message does not name the missing step: ${after.slice(-240)}`)
+    const learned = backend.rpcCalls.filter((c) => c.name === 'finance_learn_merchant_rule').length
+    if (learned !== 1) errors.push(`[${label}] the rule was not written exactly once (${learned})`)
+
+    backend.failTable = null
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Speichern')
+    await wait(500)
+    const again = backend.rpcCalls.filter((c) => c.name === 'finance_learn_merchant_rule').length
+    if (again !== 1) errors.push(`[${label}] the retry learned the rule a second time (${again})`)
+    const done = nb(txt(window))
+    if (!done.includes('Gespeichert') || done.includes('Teilweise'))
+      errors.push(`[${label}] the retry is not reported as done: ${done.slice(-240)}`)
+    const merchant = window.__backend.tables.finance_merchants.find(
+      (m) => m.canonical_name === 'DB')
+    if (merchant?.default_include_in_analytics !== false)
+      errors.push(`[${label}] the merchant-wide decision did not reach the database on retry`)
+    window.__restoreConsole?.()
+  }
+
+  // c) And once everything is decided, the end state is what a fresh open shows.
+  {
+    const window = makeDom('#/finanzen', {
+      finance: {
+        ...ONE_BOOKING,
+        finance_transactions: [{ ...ONE_BOOKING.finance_transactions[0], manual_lock: true }],
+      },
+    })
+    mount(window, code, 'Finanzen/Fertig')
+    await wait(400)
+    window.__restoreConsole?.()
+    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    await wait(320)
+    const text = nb(txt(window))
+    if (!text.includes('Keine offenen Zuordnungen'))
+      errors.push(`[Finanzen/Fertig] the end state is not shown when nothing waits: ${text.slice(-200)}`)
+  }
+
+  // 16b7) The way back out of a global exclusion. A merchant switched off is
+  //       recognised automatically, so its bookings never reach the queue —
+  //       which is why the switch has to be reachable somewhere else.
+  {
+    const M = '11111111-2222-4333-8444-000000000205'
+    const excludedSeed = {
+      ...financeSeed,
+      finance_transactions: [
+        { id: '11111111-2222-4333-8444-000000000106', user_id: TEST_USER_ID, account_id: FIN_ACCOUNT,
+          booking_date: '2026-09-14', amount_minor: -50000, currency: 'EUR',
+          raw_description: 'Scalable Capital Verrechnungskonto',
+          normalized_tokens: ['SCALABLE', 'CAPITAL', 'VERRECHNUNGSKONTO'],
+          include_in_analytics: true, manual_lock: false },
+      ],
+      finance_merchants: [
+        { id: M, user_id: TEST_USER_ID, canonical_name: 'Scalable Capital',
+          review_mode: 'auto', default_include_in_analytics: false },
+      ],
+      finance_merchant_patterns: [
+        { id: '11111111-2222-4333-8444-000000000215', user_id: TEST_USER_ID, merchant_id: M,
+          pattern_type: 'exact_token', tokens: ['SCALABLE'], active: true },
+      ],
+      finance_category_rules: [
+        { id: '11111111-2222-4333-8444-000000000223', user_id: TEST_USER_ID, merchant_id: M,
+          category_id: FIN_CATEGORIES.find((c) => c.slug === 'sonstige').id,
+          min_amount_minor: null, max_amount_minor: null,
+          min_inclusive: true, max_inclusive: true, currency: null, active: true },
+      ],
+    }
+    const window = makeDom('#/finanzen', { finance: excludedSeed })
+    mount(window, code, 'Finanzen/Ausschluss')
+    await wait(400)
+    window.__restoreConsole?.()
+
+    const screen = nb(txt(window))
+    console.log(`=== Finanzen — Ausschluss ===\n  ${screen.slice(0, 240)}`)
+    // The booking is resolved by the rule, so nothing waits — and the row is
+    // there all the same.
+    if (screen.includes('warten auf Händler'))
+      errors.push('[Finanzen/Ausschluss] the excluded merchant still queues its bookings')
+    if (!screen.includes('Aus Auswertung ausgeschlossen'))
+      errors.push(`[Finanzen/Ausschluss] there is no way back to the exclusion: ${screen.slice(0, 240)}`)
+
+    if (!click(window, (el) => el.tagName === 'BUTTON' &&
+        el.textContent.trim().startsWith('Aus Auswertung ausgeschlossen')))
+      errors.push('[Finanzen/Ausschluss] the row is not tappable')
+    await wait(320)
+    const sheet = nb(txt(window))
+    if (!sheet.includes('Scalable Capital'))
+      errors.push('[Finanzen/Ausschluss] the excluded merchant is not listed')
+
+    const toggle = [...window.document.querySelectorAll('[role="switch"]')].pop()
+    if (!toggle) errors.push('[Finanzen/Ausschluss] the merchant cannot be switched back on')
+    else {
+      if (toggle.getAttribute('aria-checked') !== 'false')
+        errors.push('[Finanzen/Ausschluss] the switch does not show the exclusion')
+      toggle.click()
+      await wait(400)
+      const stored = window.__backend.tables.finance_merchants.find((m) => m.id === M)
+      if (stored.default_include_in_analytics !== true)
+        errors.push('[Finanzen/Ausschluss] switching it on did not reach the database')
+      const back = nb(txt(window))
+      if (back.includes('Aus Auswertung ausgeschlossen') && !back.includes('kein Händler mehr'))
+        errors.push('[Finanzen/Ausschluss] the row survives although nothing is excluded')
+    }
   }
 
   // 16c) The database is unreachable. "Nothing here" and "we could not look"

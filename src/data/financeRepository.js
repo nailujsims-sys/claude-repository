@@ -172,18 +172,66 @@ export const financeRepository = {
 
   // One deliberate decision per booking, so this is an upsert on
   // `transaction_id` rather than an insert that a second click would duplicate.
-  async saveOverride(userId, transactionId, decision) {
+  /**
+   * One booking's manual decision — merchant, category, note, whether it counts.
+   *
+   * WHY `current` EXISTS. This is an upsert on `transaction_id`, and a partial
+   * payload therefore relies on the server merging it into the row that is
+   * already there. PostgREST does do that — it only writes the columns the
+   * payload names — but a screen that saves a note must not depend on that
+   * being true, in this version of PostgREST, for this shape of request. The
+   * failure mode is silent and bad: a note is added and the merchant the user
+   * picked last week disappears from the row.
+   *
+   * So the merge happens HERE, where it can be read and tested: the caller
+   * passes the override it already holds, and the payload always carries every
+   * writable column with its intended value. The result is then the same
+   * whether the backend merges or replaces — which is the property worth
+   * having. `null` stays a legitimate value (that is how a note is cleared);
+   * only keys absent from BOTH sides are absent from the payload.
+   *
+   * @param {string} userId
+   * @param {string} transactionId
+   * @param {object} patch      the fields this save decides
+   * @param {object|null} current the override as last read, or null if none
+   */
+  async saveOverride(userId, transactionId, patch, current = null) {
+    const merged = {
+      ...pickWritableFinanceOverride(current ?? {}),
+      ...pickWritableFinanceOverride(patch ?? {}),
+    }
     const { data: row, error } = await requireSupabase()
       .from('finance_transaction_overrides')
       .upsert(
         {
-          ...pickWritableFinanceOverride(decision),
+          ...merged,
           transaction_id: transactionId,
           user_id: requireUser(userId),
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'transaction_id' }
       )
+      .select()
+      .single()
+    if (error) throw error
+    return row
+  },
+
+  /**
+   * „Buchungen dieses Händlers zählen nicht." — one column, on purpose.
+   *
+   * Not a general merchant update: the only thing a screen may change about a
+   * merchant from here is this default. `review_mode` is set when a merchant is
+   * created, by the learning function, and `canonical_name` is what every
+   * pattern hangs under; neither has any business in a switch about analytics.
+   */
+  async setMerchantAnalyticsDefault(userId, merchantId, include) {
+    if (typeof include !== 'boolean') throw new Error('finance: Wert muss true oder false sein.')
+    const { data: row, error } = await requireSupabase()
+      .from('finance_merchants')
+      .update({ default_include_in_analytics: include, updated_at: new Date().toISOString() })
+      .eq('id', merchantId)
+      .eq('user_id', requireUser(userId))
       .select()
       .single()
     if (error) throw error

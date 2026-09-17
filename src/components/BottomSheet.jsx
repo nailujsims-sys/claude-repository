@@ -29,10 +29,15 @@ export default function BottomSheet({
   title,
   full = false,
   headerRight = null,
+  // A sheet opened FROM a sheet — a picker, a detour — sits one layer up. The
+  // prop is passed straight to Overlay, which already takes it; nothing else
+  // about either sheet changes, and the default is the one every existing
+  // caller was already getting.
+  z = undefined,
   children,
 }) {
   return (
-    <Overlay open={open} onClose={onClose}>
+    <Overlay open={open} onClose={onClose} {...(z ? { z } : {})}>
       <Panel
         full={full}
         title={title}
