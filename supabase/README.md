@@ -23,7 +23,7 @@ Durchlauf ändert nichts und zerstört nichts.
 | `0005_google_calendar.sql` | Google-Kalender: `google_connections`, `google_credentials` (für Clients gesperrt), `google_calendars`, `google_channels`, `google_event_tombstones`, die Google-Spalten an `events`, die Sync-Trigger, RLS + Grants |
 | `0006_lists.sql` | Listen: Tabellen `lists` und `list_items` (Vorlage, Icon, Pin, Archiv, Menge/Einheit/Betrag/Kategorie), Indizes, Constraints, RLS + Policies, Realtime |
 | `0007_expenses.sql` | Ausgaben: Tabelle `expenses` (Titel, Originalbetrag, Eingabewährung AUD/EUR, Transaktionsdatum, verwendeter AUD/EUR-Kurs), Indizes, Constraints, RLS + Policies, Realtime |
-| `0011_finance_ai_import.sql` | Manuelle Buchung + KI-Import: `finance_imports.source_type` kennt zusätzlich `ai`, neue Tabelle `finance_transaction_ai_suggestions` (was ein Sprachmodell zu einer Buchung vorgeschlagen hat — getrennt von Regel-Auflösung und Nutzerentscheidung, Händler als *Text*, damit kein Vorschlag einen `finance_merchants`-Eintrag anlegt), die Funktionen `finance_create_manual_transaction` (Buchung + Entscheidung in einer Transaktion, ohne Import-Zeile) und `finance_apply_ai_import` (alles oder nichts, ein zweites Mal wirkungslos), Indizes, Constraints, RLS + Policies |
+| `0011_finance_ai_import.sql` | Manuelle Buchung + KI-Import: `finance_imports.source_type` kennt zusätzlich `ai`, die additive Spalte `finance_transaction_overrides.merchant_name` (der von Hand benannte Händler als *Text*), neue Tabelle `finance_transaction_ai_suggestions` (was ein Sprachmodell zu einer Buchung vorgeschlagen hat — getrennt von Regel-Auflösung und Nutzerentscheidung, Händler ebenfalls als Text, damit weder Vorschlag noch Korrektur einen `finance_merchants`-Eintrag anlegt), die Funktionen `finance_create_manual_transaction` (Buchung + Entscheidung in einer Transaktion, ohne Import-Zeile, und ohne Sperre, wenn der Mensch nichts eingeordnet hat) und `finance_apply_ai_import` (alles oder nichts, ein zweites Mal wirkungslos), Indizes, Constraints, RLS + Policies |
 | `0010_finance_analytics_inclusion.sql` | Auswertungs-Zugehörigkeit: `finance_merchants.default_include_in_analytics`, die Funktionen `finance_unique_merchant` und `finance_effective_include_in_analytics`, die Sicht `finance_analytics_transactions` in ihrer vierstufigen Fassung |
 | `0009_finance_import.sql` | Finanz-Import: `finance_transaction_observations` + `…_observation_sightings` (append-only, Evidenz einmal, Herkunft je Import), `finance_transaction_relations` + `…_relation_members` (Ablösung und Retouren-Vorschlag als Gruppe, 1↔1 bis n↔n, statusbewusst), `finance_import_review_items` + `…_review_item_transactions`, die Sicht `finance_analytics_transactions`, die Spalten `finance_imports.apply_result`/`period_start`/`period_end`, die Funktionen `finance_apply_reconciliation_plan`, `finance_resolve_relation` und `finance_resolve_review_item`, Indizes, Constraints, RLS + Policies |
 | `0008_finance.sql` | Finanzen: `finance_accounts`, `finance_categories` (die fünf MVP-Kategorien, per Trigger pro Konto angelegt), `finance_merchants`, `finance_merchant_patterns`, `finance_category_rules`, `finance_imports`, `finance_transactions`, `finance_transaction_overrides`, die Funktion `finance_learn_merchant_rule`, Indizes, Constraints, RLS + Policies |
@@ -217,6 +217,17 @@ und nur die drei, waren mit dem bestehenden Schema nicht zu machen:
   sondern die Grundlage jeder späteren Frage „woher weiß die App das
   eigentlich". Der Check bekommt einen vierten, ehrlichen Wert; jede Zeile, die
   den alten erfüllte, erfüllt auch den neuen.
+* **Ein korrigierter Händler ist ein Name, kein Eintrag.** Korrigiert ein Mensch
+  im Preview den Händler, gehört das in `finance_transaction_overrides` — nur
+  heißt die Spalte dort `merchant_id` und zeigt auf `finance_merchants`, also auf
+  die Wurzel der Pattern- und Lern-Engine. Einen Eintrag dort anzulegen, weil
+  jemand „REWE" getippt hat, hieße aus einer Korrektur an EINER Zeile eine Regel
+  für alle künftigen zu machen. Also eine zweite, additive Spalte:
+  `merchant_name`. Danach stehen die drei Ebenen nebeneinander —
+  `…ai_suggestions.merchant_name` (was das Modell sagte),
+  `…overrides.merchant_name`/`_id` (was der Mensch sagte) und
+  `finance_merchants` + `…patterns` (die globale Regel) — und bleiben einzeln
+  lesbar.
 * **Ein Vorschlag ist weder Auflösung noch Entscheidung.**
   `finance_transactions` trägt, was die Regel-Engine gerade sagt;
   `finance_transaction_overrides` trägt, was ein Mensch festgelegt hat. Was ein
@@ -235,8 +246,11 @@ und nur die drei, waren mit dem bestehenden Schema nicht zu machen:
   dem Browser hinterlässt jeder Abbruch in der Mitte eine Buchung ohne ihre
   Notiz oder einen halben Auszug. Also zwei Funktionen mit Invoker-Rechten, wie
   `finance_learn_merchant_rule` und `finance_apply_reconciliation_plan`:
-  `finance_create_manual_transaction` (die Buchung bekommt `manual_lock` und
-  **keine** `import_id` — sie stammt aus keiner Datei) und
+  `finance_create_manual_transaction` (die Buchung bekommt **keine**
+  `import_id` — sie stammt aus keiner Datei — und `manual_lock` nur dann, wenn
+  der Mensch Händler oder Kategorie gesetzt hat; hat er beides offen gelassen,
+  entsteht auch kein leerer Override, und die Buchung darf ganz normal in der
+  Zuordnung auftauchen) und
   `finance_apply_ai_import` (sperrt die Import-Zeile; ein bereits angewendeter
   Import liefert sein gespeichertes Ergebnis mit `replayed: true` zurück und
   schreibt nichts). Beide prüfen das Konto selbst und glauben dem Aufrufer

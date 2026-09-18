@@ -89,10 +89,13 @@ export function describeAIApplyResult(result, summary) {
 export function aiPreviewRow(row, categories = []) {
   const category = categories.find((c) => c.id === row.categoryId) ?? null
   const needsReview = row.status === 'new' && row.needsReview && !row.edited
+  // Der Händler, der gilt — der des Modells, bis der Mensch ihn korrigiert hat.
+  const merchant = row.merchantName || null
   return {
     index: row.index,
-    title: row.suggestion.merchantName || firstLine(row.rawDescription),
-    subtitle: row.suggestion.merchantName ? firstLine(row.rawDescription) : null,
+    title: merchant || firstLine(row.rawDescription),
+    subtitle: merchant ? firstLine(row.rawDescription) : null,
+    merchant,
     date: formatBookingDate(row.bookingDate),
     amount: formatAmountMinor(row.amountMinor, row.currency),
     negative: row.amountMinor < 0,

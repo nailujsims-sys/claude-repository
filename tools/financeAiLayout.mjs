@@ -35,7 +35,7 @@ const css = readFileSync(`${cssDir}/${cssFile}`, 'utf-8')
 const RENDER = `
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
-import { PreviewStep } from './src/components/FinanceAiImportSheet.jsx'
+import { MerchantEditor, PreviewStep } from './src/components/FinanceAiImportSheet.jsx'
 import { ChipSelect } from './src/components/FinanceManualSheet.jsx'
 import { parseAIImport, validateAIImport } from './src/lib/finance/ai/parse.js'
 import { buildAIImportPlan } from './src/lib/finance/ai/plan.js'
@@ -117,7 +117,23 @@ const chips = renderToStaticMarkup(
   })
 )
 
-process.stdout.write(JSON.stringify({ markup, chips }))
+// Der Händler-Editor, mit dem eine „Prüfen"-Zeile gelöst wird. Im Preview ist er
+// zugeklappt, also wird er hier einzeln gerendert — samt eines Händlernamens,
+// der länger ist als das Telefon.
+const editor = renderToStaticMarkup(
+  createElement(MerchantEditor, {
+    merchants: [
+      { id: 'm-rewe', canonical_name: 'REWE' },
+      { id: 'm-edeka', canonical_name: 'EDEKA' },
+      { id: 'm-lang', canonical_name: LONG_MERCHANT },
+    ],
+    merchantId: 'm-rewe',
+    merchantName: 'REWE',
+    onChange: () => {},
+  })
+)
+
+process.stdout.write(JSON.stringify({ markup, chips, editor }))
 `
 
 const bundled = await build({
@@ -137,7 +153,7 @@ const cache = `${process.cwd()}/node_modules/.cache`
 mkdirSync(cache, { recursive: true })
 writeFileSync(`${cache}/financeAiLayout.render.mjs`, bundled.outputFiles[0].text)
 
-let rendered = { markup: '', chips: '' }
+let rendered = { markup: '', chips: '', editor: '' }
 {
   const chunks = []
   const original = process.stdout.write.bind(process.stdout)
@@ -159,7 +175,8 @@ const pageFor = (height) => `<!doctype html><html lang="de"><head><meta charset=
 <style>html,body{margin:0;width:${WIDTH}px}</style>
 </head><body class="bg-base">
 <div class="app-frame" id="frame"><div class="px-5 py-5 pb-10" id="sheet">${rendered.markup}</div>
-<div id="chips" class="px-5 py-5">${rendered.chips}</div></div>
+<div id="chips" class="px-5 py-5">${rendered.chips}</div>
+<div id="editor" class="px-5 py-5">${rendered.editor}</div></div>
 <script>
 const VIEWPORT = ${WIDTH}
 const SCREEN = ${height}
@@ -260,6 +277,26 @@ for (const chip of chips) {
 add('jeder Chip ist mindestens 44×44', chipTooSmall === 0, chipTooSmall + ' zu klein')
 add('die Chips bleiben im Rahmen',
     document.getElementById('chips').scrollWidth <= frameRect.width + 1)
+
+// Der Händler-Editor: tippen muss gehen, tippen auf einen Chip auch.
+const editor = document.getElementById('editor')
+const field = editor.querySelector('input')
+add('der Händler lässt sich eintippen', Boolean(field))
+add('… das Feld ist hoch genug für einen Daumen',
+    field.getBoundingClientRect().height >= 44,
+    Math.round(field.getBoundingClientRect().height) + 'px')
+add('… und bleibt im Rahmen',
+    field.getBoundingClientRect().right <= frameRect.right + 0.5)
+let editorTooSmall = 0
+for (const button of editor.querySelectorAll('button')) {
+  const r = button.getBoundingClientRect()
+  if (r.height < 44) editorTooSmall += 1
+}
+add('… und jeder Händler-Chip ist mindestens 44 px hoch', editorTooSmall === 0,
+    editorTooSmall + ' zu klein')
+add('… auch ein Händlername, der länger ist als das Telefon, sprengt nichts',
+    editor.scrollWidth <= frameRect.width + 1,
+    editor.scrollWidth + ' > ' + Math.round(frameRect.width))
 
 const first = rows[0].querySelector('p.shrink-0')
 add('Beträge stehen in Tabellenziffern',

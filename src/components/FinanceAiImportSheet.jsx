@@ -160,6 +160,7 @@ function Sheet({ onClose }) {
             rows={rows}
             summary={summary}
             categories={categories}
+            merchants={merchants}
             busy={step === 'applying'}
             problems={problems}
             onEditRow={onEditRow}
@@ -249,7 +250,7 @@ function SetupStep({
 // kann eine Beschreibung so lang schreiben, wie es will. Siehe
 // tools/financeAiLayout.mjs.
 export function PreviewStep({
-  rows, summary, categories, busy, problems = [], onEditRow, onApply, onBack,
+  rows, summary, categories, merchants = [], busy, problems = [], onEditRow, onApply, onBack,
 }) {
   return (
     <div>
@@ -275,6 +276,7 @@ export function PreviewStep({
             key={row.index}
             row={row}
             categories={categories}
+            merchants={merchants}
             showBorder={i < rows.length - 1}
             onEdit={(patch) => onEditRow(row.index, patch)}
           />
@@ -306,7 +308,7 @@ export function PreviewStep({
 // Eine Zeile, und darunter — aufgeklappt — alles, was man an ihr ändern darf.
 // Datum, Betrag und Text stehen nicht darunter: die sind die Tatsache, und die
 // korrigiert man nicht in einem Import, sondern gar nicht.
-function PreviewRow({ row, categories, showBorder, onEdit }) {
+function PreviewRow({ row, categories, merchants = [], showBorder, onEdit }) {
   const [open, setOpen] = useState(false)
   const view = aiPreviewRow(row, categories)
   const tone =
@@ -356,6 +358,13 @@ function PreviewRow({ row, categories, showBorder, onEdit }) {
 
       {open && view.editable && (
         <div className="space-y-4 border-t border-subtle px-4 py-4">
+          <MerchantEditor
+            merchants={merchants}
+            merchantId={row.merchantId}
+            merchantName={row.merchantName}
+            onChange={onEdit}
+          />
+
           <div>
             <p className="mb-2 text-label font-semibold text-text-secondary">Kategorie</p>
             <ChipSelect
@@ -468,6 +477,69 @@ function Problems({ messages }) {
         </li>
       ))}
     </ul>
+  )
+}
+
+// Den Händler einer Zeile korrigieren.
+//
+// ZWEI WEGE, EIN ERGEBNIS: einen Händler antippen, den es schon gibt, oder den
+// Namen selbst eintippen. Der zweite Weg ist der wichtigere — genau die Zeilen,
+// die zu prüfen sind, sind ja die, bei denen das Modell keinen bekannten
+// Händler getroffen hat.
+//
+// WAS DABEI NICHT ENTSTEHT: ein Händler. „REWE" zu tippen legt keinen Eintrag in
+// `finance_merchants` an und schon gar kein Muster — der Name wird als Text auf
+// dieser einen Buchung gespeichert (`finance_transaction_overrides.merchant_name`,
+// siehe 0011). Eine Korrektur an einer Zeile ist eine Korrektur an einer Zeile;
+// eine Regel für alle künftigen entsteht weiterhin nur in der Zuordnung, mit
+// Muster und Backtest.
+//
+// Das Textfeld steht oben, die Chips darunter: die Chips sind die Abkürzung, das
+// Tippen ist der Weg, der immer funktioniert.
+//
+// Exportiert, damit ein echter Browser sie vermessen kann — sie ist im Preview
+// zugeklappt, und was zugeklappt ist, misst kein statisches Rendering.
+export function MerchantEditor({ merchants, merchantId, merchantName, onChange }) {
+  return (
+    <div>
+      <p className="mb-2 text-label font-semibold text-text-secondary">Händler</p>
+      <input
+        value={merchantName ?? ''}
+        // Ein getippter Name gehört keinem Eintrag mehr — die Verknüpfung fällt
+        // mit dem ersten Tastendruck weg, statt auf einen Namen zu zeigen, der
+        // nicht mehr ihrer ist.
+        onChange={(e) => onChange({ merchantName: e.target.value, merchantId: null })}
+        placeholder="z. B. REWE"
+        maxLength={120}
+        aria-label="Händler"
+        className="w-full rounded-input bg-bg-input px-4 py-3 text-field text-text-primary placeholder:text-text-muted outline-none ring-1 ring-transparent focus:ring-accent"
+      />
+      {merchants.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {merchants.map((merchant) => {
+            const active = merchantId === merchant.id
+            return (
+              <button
+                key={merchant.id}
+                type="button"
+                onClick={() =>
+                  onChange({ merchantId: merchant.id, merchantName: merchant.canonical_name })
+                }
+                aria-pressed={active}
+                className={`press-tint flex min-h-[44px] max-w-full items-center rounded-chip px-3.5 py-2 text-ui transition-colors motion-reduce:transition-none ${
+                  active ? 'bg-accent text-white' : 'bg-bg-input text-text-secondary'
+                }`}
+              >
+                <span className="truncate">{merchant.canonical_name}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+      <p className="mt-2 text-caption text-text-muted">
+        Gilt nur für diese Buchung — an deinen gespeicherten Händlerregeln ändert sich nichts.
+      </p>
+    </div>
   )
 }
 

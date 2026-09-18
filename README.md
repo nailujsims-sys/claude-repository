@@ -790,11 +790,25 @@ dahinter ein Zettel mit genau zwei Optionen.
 **Buchung manuell hinzufügen.** Konto, Betrag, Ausgabe oder Einnahme, Datum
 (heute), Beschreibung, optional Händler, Kategorie und Notiz, dazu der Schalter
 „In Auswertung berücksichtigen". Pflicht ist nur, was ohne Antwort keinen Sinn
-ergibt. Gespeichert wird über `finance_create_manual_transaction` (0011): die
-Buchung und die Entscheidung des Menschen in einer Transaktion, `manual_lock`
-gesetzt, `import_id` leer — eine manuelle Buchung stammt aus keiner Datei, und
-ein Import-Datensatz, der eine vortäuscht, wäre eine Herkunftsangabe, die nicht
-stimmt.
+ergibt. Gespeichert wird über `finance_create_manual_transaction` (0011), und
+zwar in zwei unterscheidbaren Fällen:
+
+- **Händler und/oder Kategorie gesetzt** — das ist eine Einordnung. Sie wird als
+  Entscheidung gespeichert (`finance_transaction_overrides`), die Buchung bekommt
+  `manual_lock`, und die Zuordnung fragt nicht noch einmal nach.
+- **Beide leer** — dann hat der Nutzer eine Ausgabe notiert und über ihre
+  Einordnung *nichts* gesagt. Kein `manual_lock`, kein leerer Override nur wegen
+  der Herkunft „manual", und die Buchung taucht ganz normal in der Zuordnung auf.
+  Genau dafür ist die Zuordnung da.
+
+Notiz und ein ausdrückliches „zählt nicht" werden auch im zweiten Fall
+gespeichert — in einem Override **ohne** Händler und ohne Kategorie. Das hält,
+weil `resolveCategory` an `override.category_id` sperrt und nicht an der Existenz
+der Zeile: eine Notiz sperrt nichts.
+
+`import_id` bleibt in beiden Fällen leer — eine manuelle Buchung stammt aus
+keiner Datei, und ein Import-Datensatz, der eine vortäuscht, wäre eine
+Herkunftsangabe, die nicht stimmt.
 
 **KI-Import.** Bankunabhängig, ohne OpenAI-API und ohne automatische Verbindung
 zu irgendetwas:
@@ -808,8 +822,9 @@ zu irgendetwas:
    kein Prompt Engineering.
 3. Auszug in ChatGPT hochladen, Antwort zurück in die App einfügen, „Prüfen".
 4. Preview: X erkannt, Y neu, Z bereits vorhanden, N prüfen — jede Zeile
-   einzeln, jede „Prüfen"-Zeile aufklappbar und korrigierbar. Keine Buchung
-   wird still verworfen.
+   einzeln, jede „Prüfen"-Zeile aufklappbar und **vollständig lösbar**: Händler
+   (aus der Liste oder selbst getippt), Kategorie, Art, „zählt in der
+   Auswertung", Notiz. Keine Buchung wird still verworfen.
 5. „Importieren" schreibt über `finance_apply_ai_import` (0011) alles oder
    nichts.
 
@@ -875,10 +890,31 @@ Screen dieselbe Frage — „ist dieser Umsatz eingeordnet?" — in dieser Ordnu
    und verschwindet aus der Zuordnung
 5. sonst: offen
 
+Als Entscheidung auf Stufe 1 zählt jede Angabe zur Einordnung: eine Kategorie,
+ein Händler aus der Liste, oder ein Händlername, den der Nutzer selbst getippt
+hat. Wer den Händler benennt und die Kategorie offen lässt, hat trotzdem
+entschieden. Ein Override, der nichts davon trägt — nur eine Notiz, nur „zählt
+nicht" —, ist keine Einordnung und sperrt deshalb auch keine.
+
 Ein so eingeordneter Umsatz bekommt dadurch **keinen Händler, kein Muster und
 keine Regel** — die drei Ebenen (Modellvorschlag ≠ Nutzerentscheidung ≠ globale
 Lernregel) bleiben getrennt und einzeln nachvollziehbar. Was sich ändert, ist
 allein, ob diese eine Buchung noch jemanden beschäftigen muss.
+
+**Der korrigierte Händler ist ein Name, kein Eintrag.** Tippt der Nutzer im
+Preview „REWE", entsteht keine Zeile in `finance_merchants` und schon gar kein
+Muster — der Name landet als Text in
+`finance_transaction_overrides.merchant_name` (0011). Damit stehen die drei
+Ebenen sauber nebeneinander und bleiben einzeln lesbar:
+
+| | |
+|---|---|
+| `finance_transaction_ai_suggestions.merchant_name` | was das Modell sagte |
+| `finance_transaction_overrides.merchant_name` / `.merchant_id` | was der Mensch sagte |
+| `finance_merchants` + `finance_merchant_patterns` | die globale Regel |
+
+Aus der Differenz der ersten beiden lernt v1.24; die dritte entsteht weiterhin
+nur in der Zuordnung, mit Muster und Backtest.
 
 **Was v1.23 nicht anfasst:** keine bestehende Nutzerentscheidung wird
 überschrieben, keine Alt-Daten werden migriert, die Pattern- und Lern-Engine
@@ -886,11 +922,11 @@ bleibt vollständig, und der DKB-Weg bleibt technisch bestehen. Ohne
 KI-Vorschläge verhält sich die Zuordnung exakt wie vor v1.23 — die vierte Stufe
 der Rangfolge existiert für Buchungen, die es vorher nicht gab.
 
-Geprüft in `tools/financeAiLogic.mjs` (289 Assertions, reine Logik),
-`tools/financeAiE2E.mjs` (83, gegen ein echtes Postgres mit den echten
-Migrationen und RPCs) und `tools/financeAiLayout.mjs` (44, der echte Preview in
-Chromium bei 390×844 und 390×667, mit Texten, wie ein Sprachmodell sie
-schreibt). Die Regression aus der Vorgabe — „REWE TROISDORF, merchant=REWE,
+Geprüft in `tools/financeAiLogic.mjs` (326 Assertions, reine Logik),
+`tools/financeAiE2E.mjs` (120, gegen ein echtes Postgres mit den echten
+Migrationen und RPCs) und `tools/financeAiLayout.mjs` (54, der echte Preview und
+der Händler-Editor in Chromium bei 390×844 und 390×667, mit Texten, wie ein
+Sprachmodell sie schreibt). Die Regression aus der Vorgabe — „REWE TROISDORF, merchant=REWE,
 category=lebensmittel, needs_review=false" führt zu einer importierten Buchung
 ohne offene Zuordnung, mit nachlesbarem Vorschlag und ohne globale Regel — läuft
 in allen dreien: als reine Logik, gegen die echte Datenbank und im gemounteten

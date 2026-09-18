@@ -34,6 +34,7 @@ import {
   CLASSIFICATION_SOURCE,
   isUsableSuggestion,
   newestSuggestions,
+  overrideDecidesClassification,
   resolveEffectiveClassification,
 } from './src/lib/finance/effectiveClassification.js'
 import { buildClassificationQueue, needsDecision } from './src/lib/finance/classificationQueue.js'
@@ -870,6 +871,191 @@ const stored = (over = {}) => ({
   const unsicher = { ...savedSuggestion, needs_review: true }
   ok('REGRESSION: dieselbe Zeile mit „Prüfen" bleibt sichtbar',
      buildClassificationQueue({ transactions: [savedTx], aiSuggestions: [unsicher] }).open.length === 1)
+}
+
+
+// ── 15. Der Händler, im Preview korrigiert ──────────────────────────────────
+{
+  const RECORD_ORT = {
+    booking_date: '2026-09-22',
+    amount: -31.4,
+    currency: 'EUR',
+    raw_description: 'REWE TROISDORF SAGT DANKE 8407',
+    // Der Fall aus der Vorgabe: das Modell hält den ORT für den Händler.
+    merchant: 'Troisdorf',
+    category: 'lebensmittel',
+    transaction_type: 'purchase',
+    include_in_analytics: true,
+    note: null,
+    needs_review: false,
+  }
+  const planOf = (over = {}) => {
+    const checked = readValid([{ ...RECORD_ORT, ...over }])
+    return buildAIImportPlan({ entries: checked.entries, existing: [], accountId: ACCOUNT })
+  }
+
+  const row = planOf().rows[0]
+  ok('der Vorschlag des Modells steht in der Zeile', row.merchantName === 'Troisdorf')
+  ok('… und es gibt keine Händler-Verknüpfung', row.merchantId === null)
+
+  // Der Nutzer tippt den richtigen Namen.
+  const fixed = applyRowEdit(row, { merchantName: 'REWE', merchantId: null })
+  ok('der korrigierte Name steht in der Zeile', fixed.merchantName === 'REWE')
+  ok('der Vorschlag bleibt unangetastet', fixed.suggestion.merchantName === 'Troisdorf')
+  ok('die Zeile gilt als angefasst', fixed.edited === true)
+  ok('… und unterscheidet sich vom Vorschlag', rowDiffersFromSuggestion(fixed) === true)
+
+  const payload = buildAIApplyPayload({ importId: IMPORT, accountId: ACCOUNT, rows: [fixed] })
+  ok('der getippte Händler reist als Nutzerentscheidung',
+     payload.bookings[0].user_decision.merchant_name === 'REWE')
+  ok('… ohne auf einen Eintrag zu zeigen', payload.bookings[0].user_decision.merchant_id === null)
+  ok('… und der Vorschlag sagt weiterhin, was das Modell wollte',
+     payload.bookings[0].suggestion.merchant_name === 'Troisdorf')
+  ok('… und ist als korrigiert markiert', payload.bookings[0].suggestion.user_edited === true)
+  ok('REGRESSION: aus der Korrektur entsteht keine Musterregel',
+     JSON.stringify(payload).includes('pattern') === false &&
+     JSON.stringify(payload).includes('tokens') === true)
+
+  // Einen bestehenden Händler wählen: die Verknüpfung reist mit, der Name auch.
+  const linked = applyRowEdit(row, { merchantId: 'm-rewe', merchantName: 'REWE' })
+  const linkedPayload = buildAIApplyPayload({ importId: IMPORT, accountId: ACCOUNT, rows: [linked] })
+  ok('ein gewählter Händler reist als Verknüpfung',
+     linkedPayload.bookings[0].user_decision.merchant_id === 'm-rewe')
+  ok('… und trotzdem als Text, damit die Entscheidung lesbar bleibt',
+     linkedPayload.bookings[0].user_decision.merchant_name === 'REWE')
+
+  // Den Händler leeren nimmt die Verknüpfung mit.
+  const cleared = applyRowEdit(linked, { merchantName: '  ' })
+  ok('ein geleerter Name löscht die Verknüpfung',
+     cleared.merchantName === null && cleared.merchantId === null)
+
+  ok('ein zu langer Name wird beschnitten, nicht abgelehnt',
+     applyRowEdit(row, { merchantName: 'A'.repeat(200) }).merchantName.length === 120)
+
+  // Und was der Nutzer NICHT anfasst, bleibt keine Entscheidung.
+  const untouched = applyRowEdit(row, {})
+  ok('„passt so" allein ist weiterhin keine Nutzerentscheidung',
+     buildAIApplyPayload({ importId: IMPORT, accountId: ACCOUNT, rows: [untouched] })
+       .bookings[0].user_decision === null)
+
+  // ── Wie die Buchung danach eingeordnet ist ──
+  const savedTx = {
+    id: 'tx-korrigiert', account_id: ACCOUNT, booking_date: '2026-09-22', amount_minor: -3140,
+    currency: 'EUR', raw_description: 'REWE TROISDORF SAGT DANKE 8407',
+    normalized_tokens: tokenize('REWE TROISDORF SAGT DANKE 8407'),
+    category_id: 'cat-lebensmittel', manual_lock: true,
+  }
+  const savedOverride = {
+    transaction_id: 'tx-korrigiert', merchant_id: null, merchant_name: 'REWE',
+    category_id: null, include_in_analytics: true, transaction_type: 'purchase', note: null,
+  }
+  const savedSuggestion = {
+    transaction_id: 'tx-korrigiert', merchant_name: 'Troisdorf', category_id: 'cat-lebensmittel',
+    needs_review: false, user_edited: true, created_at: '2026-09-22T12:00:00Z',
+  }
+
+  const queue = buildClassificationQueue({
+    transactions: [savedTx], overrides: [savedOverride], aiSuggestions: [savedSuggestion],
+  })
+  ok('REGRESSION: die korrigierte Buchung fällt nicht in die Wortmarkierung',
+     queue.summary.offen === 0)
+  const entry = queue.entries[0]
+  ok('… sie gilt als vom Menschen entschieden', entry.source === CLASSIFICATION_SOURCE.OVERRIDE)
+  ok('… der Override geht dabei VOR manual_lock', entry.reason === 'manual_override')
+  ok('… der benannte Händler ist ablesbar', entry.merchantName === 'REWE')
+  ok('… und der Vorschlag daneben auch', entry.aiSuggestion.merchant_name === 'Troisdorf')
+
+  // Ein Händlername allein reicht — auch ohne Kategorie und ohne manual_lock.
+  const nurName = buildClassificationQueue({
+    transactions: [{ ...savedTx, manual_lock: false, category_id: null }],
+    overrides: [savedOverride],
+  })
+  ok('ein benannter Händler ohne Kategorie ist trotzdem eine Entscheidung',
+     nurName.summary.offen === 0)
+  ok('… und sie kommt aus dem Override', nurName.entries[0].source === CLASSIFICATION_SOURCE.OVERRIDE)
+
+  ok('overrideDecidesClassification sagt das an einer Stelle',
+     overrideDecidesClassification({ merchant_name: 'REWE' }) === true &&
+     overrideDecidesClassification({ merchant_id: 'm-rewe' }) === true &&
+     overrideDecidesClassification({ category_id: 'cat-x' }) === true &&
+     overrideDecidesClassification({ note: 'nur eine Notiz' }) === false &&
+     overrideDecidesClassification({ merchant_name: '   ' }) === false &&
+     overrideDecidesClassification(null) === false)
+}
+
+// ── 16. Die manuelle Buchung: zwei Fälle ────────────────────────────────────
+{
+  // Der Payload-Builder entscheidet nicht über manual_lock — das tut die
+  // Datenbank aus genau diesen beiden Feldern. Was hier geprüft wird, ist, dass
+  // sie ankommen und dass die Fälle unterscheidbar sind.
+  const base = {
+    accountId: ACCOUNT, amountInput: '24,95', direction: 'out', date: '2026-09-18',
+    description: 'REWE Troisdorf',
+  }
+  const build = (over = {}) => buildManualTransactionPayload({ ...base, ...over }).payload
+
+  const fallA1 = build({ categoryId: 'cat-lebensmittel' })
+  const fallA2 = build({ merchantId: 'm-rewe' })
+  const fallB = build({})
+
+  ok('FALL A: eine Kategorie ist eine Einordnung',
+     fallA1.p_category_id === 'cat-lebensmittel')
+  ok('FALL A: ein Händler auch', fallA2.p_merchant_id === 'm-rewe')
+  ok('FALL B: ohne beides bleiben beide leer',
+     fallB.p_category_id === null && fallB.p_merchant_id === null)
+
+  // Was Fall B trotzdem mitgibt.
+  ok('FALL B: die Notiz reist mit', build({ note: 'Wocheneinkauf' }).p_note === 'Wocheneinkauf')
+  ok('FALL B: „zählt nicht" reist mit',
+     build({ includeInAnalytics: false }).p_include_in_analytics === false)
+  ok('FALL B: die Buchungsart reist mit',
+     build({ direction: 'in' }).p_transaction_type === 'income')
+  ok('der Payload behauptet nirgends selbst eine Sperre',
+     JSON.stringify(fallB).includes('manual_lock') === false)
+}
+
+// ── 17. Die Einordnung, wie sie nach Fall B aussieht ────────────────────────
+{
+  const TX = {
+    id: 'tx-hand', account_id: ACCOUNT, booking_date: '2026-09-18', amount_minor: -2495,
+    currency: 'EUR', raw_description: 'Kiosk am Bahnhof',
+    normalized_tokens: tokenize('Kiosk am Bahnhof'),
+    category_id: null, manual_lock: false,
+  }
+
+  ok('FALL B: eine Handbuchung ohne Einordnung wartet auf die Zuordnung',
+     buildClassificationQueue({ transactions: [TX] }).summary.offen === 1)
+
+  // Ein Override, der NUR eine Notiz trägt, darf daran nichts ändern — das ist
+  // die Stelle, an der die Architektur hält oder eben nicht.
+  const nurNotiz = buildClassificationQueue({
+    transactions: [TX],
+    overrides: [{ transaction_id: 'tx-hand', category_id: null, merchant_id: null,
+                  merchant_name: null, note: 'für Anna ausgelegt', include_in_analytics: null }],
+  })
+  ok('… ein Override mit nur einer Notiz sperrt nichts', nurNotiz.summary.offen === 1)
+  ok('… und behauptet keine Herkunft', nurNotiz.entries[0].source === null)
+
+  const nurZaehltNicht = buildClassificationQueue({
+    transactions: [TX],
+    overrides: [{ transaction_id: 'tx-hand', category_id: null, merchant_id: null,
+                  merchant_name: null, note: null, include_in_analytics: false }],
+  })
+  ok('… ein Override mit nur „zählt nicht" ebenso wenig', nurZaehltNicht.summary.offen === 1)
+
+  // FALL A dagegen: gesperrt, und die Zuordnung fragt nicht noch einmal.
+  ok('FALL A: eine eingeordnete Handbuchung wartet auf niemanden',
+     buildClassificationQueue({
+       transactions: [{ ...TX, manual_lock: true, category_id: 'cat-lebensmittel' }],
+       overrides: [{ transaction_id: 'tx-hand', category_id: 'cat-lebensmittel',
+                     merchant_id: null, merchant_name: null }],
+     }).summary.offen === 0)
+  ok('FALL A: auch wenn nur der Händler gesetzt war',
+     buildClassificationQueue({
+       transactions: [{ ...TX, manual_lock: true }],
+       overrides: [{ transaction_id: 'tx-hand', category_id: null,
+                     merchant_id: 'm-rewe', merchant_name: null }],
+     }).summary.offen === 0)
 }
 
 console.log(\`finance ai logic: \${pass} passed, \${fail} failed\`)

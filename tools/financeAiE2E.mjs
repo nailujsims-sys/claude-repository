@@ -228,7 +228,7 @@ ${sql}`
     `select note, category_id, transaction_type, include_in_analytics
      from public.finance_transaction_overrides where transaction_id = '${ausgabe.transaction_id}'`
   )
-  ok('die Entscheidung des Menschen steht in ihrer eigenen Zeile', ausgabeOverride.length === 1)
+  ok('FALL A: die Entscheidung des Menschen steht in ihrer eigenen Zeile', ausgabeOverride.length === 1)
   ok('… mit der Notiz', ausgabeOverride[0].note === 'Wocheneinkauf')
   ok('… mit der Kategorie', ausgabeOverride[0].category_id === lebensmittel.id)
 
@@ -238,12 +238,37 @@ ${sql}`
   })
   const einnahmeRow = jsonAsUser(
     userId,
-    `select amount_minor, transaction_type, category_id from public.finance_transactions
-     where id = '${einnahme.transaction_id}'`
+    `select amount_minor, transaction_type, category_id, manual_lock
+     from public.finance_transactions where id = '${einnahme.transaction_id}'`
   )[0]
   ok('eine Einnahme wird positiv gespeichert', einnahmeRow.amount_minor === 120000)
   ok('… als Einnahme', einnahmeRow.transaction_type === 'income')
   ok('… und braucht keine Kategorie', einnahmeRow.category_id === null)
+
+  // FALL B: Händler und Kategorie leer. Der Mensch hat eine Ausgabe notiert und
+  // über ihre Einordnung nichts gesagt — also wird auch nichts behauptet.
+  ok('FALL B: ohne Händler und Kategorie wird nicht gesperrt', einnahmeRow.manual_lock === false)
+  ok('… und es entsteht kein leerer Override nur wegen der Herkunft',
+     jsonAsUser(userId, `select id from public.finance_transaction_overrides
+       where transaction_id = '${einnahme.transaction_id}'`).length === 0)
+  ok('… die Funktion sagt selbst, was sie getan hat',
+     einnahme.manual_lock === false && einnahme.override === false)
+  ok('FALL A sagt es ebenso', ausgabe.manual_lock === true && ausgabe.override === true)
+
+  // Ein Händler ALLEIN genügt für Fall A — auch ohne Kategorie.
+  const nurHaendler = jsonAsUser(
+    userId,
+    `insert into public.finance_merchants (user_id, canonical_name)
+     values ('${userId}', 'Bäckerei Schmidt') returning id`
+  )[0].id
+  const mitHaendler = manual({
+    accountId: giro, amountInput: '3,20', direction: 'out', date: '2026-09-17',
+    description: 'Baeckerei', merchantId: nurHaendler,
+  })
+  ok('FALL A gilt auch, wenn nur der Händler gesetzt ist', mitHaendler.manual_lock === true)
+  ok('… und die Entscheidung wird gespeichert',
+     jsonAsUser(userId, `select merchant_id from public.finance_transaction_overrides
+       where transaction_id = '${mitHaendler.transaction_id}'`)[0].merchant_id === nurHaendler)
 
   const andereskonto = manual({
     accountId: karte, amountInput: '9,90', direction: 'out', date: '2026-09-18',
@@ -258,6 +283,23 @@ ${sql}`
   })
   ok('„zählt nicht" wird gespeichert',
      jsonAsUser(userId, `select include_in_analytics from public.finance_transactions where id = '${ausgeschlossen.transaction_id}'`)[0].include_in_analytics === false)
+  // Fall B mit etwas zu sichern: ein Override entsteht, aber einer OHNE
+  // Einordnung — er hält das ausdrückliche „zählt nicht" auf der ersten Stufe
+  // der Auswertungsregel fest und sperrt trotzdem keine Zuordnung.
+  const ausgeschlossenOverride = jsonAsUser(
+    userId,
+    `select merchant_id, merchant_name, category_id, include_in_analytics, transaction_type, note
+     from public.finance_transaction_overrides where transaction_id = '${ausgeschlossen.transaction_id}'`
+  )
+  ok('FALL B sichert „zählt nicht" in einem Override', ausgeschlossenOverride.length === 1)
+  ok('… der keine Einordnung behauptet',
+     ausgeschlossenOverride[0].category_id === null &&
+     ausgeschlossenOverride[0].merchant_id === null &&
+     ausgeschlossenOverride[0].merchant_name === null)
+  ok('… und keine Buchungsart überschreibt', ausgeschlossenOverride[0].transaction_type === null)
+  ok('… und die Buchung bleibt ungesperrt',
+     jsonAsUser(userId, `select manual_lock from public.finance_transactions
+       where id = '${ausgeschlossen.transaction_id}'`)[0].manual_lock === false)
   ok('… und die Auswertung übergeht die Buchung wirklich',
      jsonAsUser(userId, `select id from public.finance_analytics_transactions where id = '${ausgeschlossen.transaction_id}'`).length === 0)
   ok('… während die Ausgabe von vorhin weiter zählt',
@@ -285,10 +327,14 @@ ${sql}`
     )
 
   const afterManual = reload()
-  ok('alle vier manuellen Buchungen überleben den Reload', afterManual.length === 4)
+  ok('alle fünf manuellen Buchungen überleben den Reload', afterManual.length === 5)
   ok('… und tragen ihren Text unverändert',
      afterManual.some((t) => t.raw_description === 'REWE Troisdorf'))
-  ok('… und bleiben entschieden', afterManual.every((t) => t.manual_lock === true))
+  // Genau die, die eine Einordnung mitbekommen haben — und keine andere.
+  ok('… und genau die eingeordneten bleiben entschieden',
+     afterManual.filter((t) => t.manual_lock === true).length === 2)
+  ok('… die ohne Einordnung dagegen nicht',
+     afterManual.filter((t) => t.manual_lock === false).length === 3)
 
   // ── 3. Der KI-Import ──────────────────────────────────────────────────────
   const envelope = (transactions) =>
@@ -358,7 +404,7 @@ ${sql}`
   ok('… und genau eine Nutzerentscheidung', result.decisions === 1)
 
   const afterImport = reload()
-  ok('nach dem Import stehen sechs Buchungen da', afterImport.length === 6)
+  ok('nach dem Import stehen sieben Buchungen da', afterImport.length === 7)
 
   const zalando = afterImport.find((t) => t.raw_description === 'PAYPAL .Zalando SE')
   ok('der Originaltext wird nicht durch den erkannten Händler ersetzt', Boolean(zalando))
@@ -375,7 +421,8 @@ ${sql}`
   ok('… mit seiner Formatversion', zalandoSuggestion.format_version === 1)
   ok('… und ohne Korrektur', zalandoSuggestion.user_edited === false)
   ok('… und der Vorschlag legt keinen Händler in der Lern-Engine an',
-     jsonAsUser(userId, `select id from public.finance_merchants where user_id = '${userId}'`).length === 0)
+     jsonAsUser(userId, `select canonical_name from public.finance_merchants
+       where user_id = '${userId}'`).map((m) => m.canonical_name).join(',') === 'Bäckerei Schmidt')
 
   const loewe = afterImport.find((t) => t.raw_description === 'RESTAURANT ZUM LOEWEN')
   ok('die korrigierte Zeile trägt die Kategorie des Menschen', loewe.category_id === restaurant.id)
@@ -395,7 +442,7 @@ ${sql}`
   // ── 4. Derselbe Block ein zweites Mal ─────────────────────────────────────
   const replay = applyAi(userId, importId, giro, payload.bookings)
   ok('ein zweiter Aufruf desselben Imports ist eine Wiederholung', replay.replayed === true)
-  ok('… und schreibt keine einzige Zeile mehr', reload().length === 6)
+  ok('… und schreibt keine einzige Zeile mehr', reload().length === 7)
 
   const secondPlan = readPlan(giro, reload())
   ok('derselbe Block erneut eingefügt findet nichts Neues', secondPlan.summary.neu === 0)
@@ -420,7 +467,7 @@ ${sql}`
   )[0]
   ok('die Notiz des Menschen steht unverändert da', afterNote.note === beforeNote.note)
   ok('… und seine Kategorie auch', afterNote.category_id === beforeNote.category_id)
-  ok('… und es ist keine Buchung dazugekommen', reload().length === 6)
+  ok('… und es ist keine Buchung dazugekommen', reload().length === 7)
 
   // ── 5b. Die Warteschlange nach einem KI-Import ────────────────────────────
   // Die Regression, um die es v1.23 geht: ein vollständiger, sicherer Vorschlag
@@ -440,7 +487,8 @@ ${sql}`
     )
     const overrideRows = jsonAsUser(
       userId,
-      `select transaction_id, merchant_id, category_id, include_in_analytics, transaction_type, note
+      `select transaction_id, merchant_id, merchant_name, category_id, include_in_analytics,
+              transaction_type, note
        from public.finance_transaction_overrides where user_id = '${userId}'`
     )
     const patternRows = jsonAsUser(
@@ -477,12 +525,25 @@ ${sql}`
      state.queue.entries.find((e) => e.transaction.id === zalando.id).source === 'ai_suggestion')
   ok('… der Vorschlag dazu bleibt nachlesbar',
      state.suggestions.find((s) => s.transaction_id === zalando.id)?.merchant_name === 'Zalando')
-  ok('… und es ist dafür kein Händler entstanden', state.merchants.length === 0)
+  // Ein Händler ist in diesem Lauf nur von Hand angelegt worden (Bäckerei
+  // Schmidt); aus KEINEM Vorschlag ist einer entstanden, und ein Muster gibt es
+  // nirgends.
+  ok('… und es ist dafür kein Händler entstanden', state.merchants.length === 1)
+  ok('… nämlich nur der von Hand angelegte',
+     state.merchants[0].canonical_name === 'Bäckerei Schmidt')
   ok('… und kein Muster', state.patterns.length === 0)
   ok('die vom Menschen korrigierte Zeile ist ebenfalls erledigt', !openIds.includes(loewe.id))
-  ok('die von Hand angelegten Buchungen sowieso', !openIds.includes(ausgabe.transaction_id))
-  ok('nach dem Import wartet keine einzige Buchung auf eine Zuordnung',
-     state.queue.summary.offen === 0)
+  ok('die eingeordnete Handbuchung sowieso', !openIds.includes(ausgabe.transaction_id))
+
+  // Was jetzt noch wartet, sind genau die drei Handbuchungen OHNE Einordnung —
+  // und das ist die neue Semantik, nicht ein Rückfall: der Mensch hat über sie
+  // nichts gesagt, also fragt die Zuordnung.
+  ok('offen sind genau die Handbuchungen ohne Einordnung', state.queue.summary.offen === 3)
+  ok('… und keine davon stammt aus dem Import',
+     state.queue.open.every((entry) => !entry.transaction.raw_description.includes('PAYPAL')))
+  ok('… es ist die Einnahme dabei', openIds.includes(einnahme.transaction_id))
+  ok('… und die Umbuchung, deren Override nur „zählt nicht" trägt',
+     openIds.includes(ausgeschlossen.transaction_id))
 
   // Dieselbe Frage, andersherum: eine unsichere Zeile bleibt sichtbar.
   const unsicherImport = openImport(giro, 'hash-block-review')
@@ -506,9 +567,96 @@ ${sql}`
   ])
   ok('eine unsichere Zeile wird gespeichert', unsicherResult.created === 1)
   const afterReview = queueState()
-  ok('… und bleibt zur Prüfung sichtbar', afterReview.queue.summary.offen === 1)
-  ok('… und zwar genau sie',
-     afterReview.queue.open[0].transaction.raw_description === 'SUMUP *IMBISS')
+  ok('… und bleibt zur Prüfung sichtbar', afterReview.queue.summary.offen === 4)
+  ok('… und zwar sie',
+     afterReview.queue.open.some((e) => e.transaction.raw_description === 'SUMUP *IMBISS'))
+
+  // ── 5c. Der Händler, im Preview korrigiert ────────────────────────────────
+  // Die zweite Lücke, die v1.23 schließt: eine „Prüfen"-Zeile muss im Preview
+  // wirklich lösbar sein — und das heißt, der Händler muss korrigierbar sein.
+  //
+  // Der Fall aus der Vorgabe: das Modell hält den ORT für den Händler.
+  const korrekturImport = openImport(giro, 'hash-block-merchant')
+  const korrekturPlan = (() => {
+    const parsed = parseAIImport([
+      AI_CSV_HEADER,
+      '2026-09-22;REWE TROISDORF SAGT DANKE 8407;-31,40;EUR;Troisdorf;;purchase;true;;true',
+      '2026-09-23;BAECKEREI AM MARKT;-3,90;EUR;;;purchase;true;;true',
+    ].join('\n'))
+    const checked = validateAIImport(parsed.payload, { categories })
+    return buildAIImportPlan({
+      entries: checked.entries, existing: reload(), observations: [], accountId: giro,
+    })
+  })()
+  ok('beide Zeilen wollen geprüft werden', korrekturPlan.summary.pruefen === 2)
+  ok('der Vorschlag hält den Ort für den Händler',
+     korrekturPlan.rows[0].merchantName === 'Troisdorf')
+  ok('und bei der zweiten weiß er gar nichts', korrekturPlan.rows[1].merchantName === null)
+
+  // Der Mensch korrigiert: einmal einen falschen Namen, einmal einen fehlenden.
+  const korrigiert = [
+    applyRowEdit(korrekturPlan.rows[0], { merchantName: 'REWE', merchantId: null }),
+    applyRowEdit(korrekturPlan.rows[1], { merchantName: 'Bäckerei Schmidt', merchantId: nurHaendler }),
+  ]
+  const korrekturPayload = buildAIApplyPayload({
+    importId: korrekturImport, accountId: giro, rows: korrigiert,
+  })
+  ok('beide gelten jetzt als Nutzerentscheidung',
+     korrekturPayload.bookings.every((b) => b.user_decision !== null))
+  ok('… der getippte Name reist als Text',
+     korrekturPayload.bookings[0].user_decision.merchant_name === 'REWE' &&
+     korrekturPayload.bookings[0].user_decision.merchant_id === null)
+  ok('… der gewählte Händler als Verknüpfung UND als Text',
+     korrekturPayload.bookings[1].user_decision.merchant_id === nurHaendler &&
+     korrekturPayload.bookings[1].user_decision.merchant_name === 'Bäckerei Schmidt')
+
+  const korrekturResult = applyAi(userId, korrekturImport, giro, korrekturPayload.bookings)
+  ok('beide werden gespeichert', korrekturResult.created === 2)
+  ok('… mit je einer Entscheidung', korrekturResult.decisions === 2)
+
+  const rewe = reload().find((t) => t.raw_description === 'REWE TROISDORF SAGT DANKE 8407')
+  const reweOverride = jsonAsUser(
+    userId,
+    `select merchant_id, merchant_name, category_id from public.finance_transaction_overrides
+     where transaction_id = '${rewe.id}'`
+  )[0]
+  const reweSuggestion = jsonAsUser(
+    userId,
+    `select merchant_name, needs_review, user_edited from public.finance_transaction_ai_suggestions
+     where transaction_id = '${rewe.id}'`
+  )[0]
+
+  ok('REGRESSION: die Entscheidung des Menschen steht als Name da',
+     reweOverride.merchant_name === 'REWE')
+  ok('… ohne auf einen Händlereintrag zu zeigen', reweOverride.merchant_id === null)
+  ok('… und ohne Kategorie, weil er keine gesetzt hat', reweOverride.category_id === null)
+  ok('REGRESSION: der ursprüngliche Vorschlag bleibt unverändert nachvollziehbar',
+     reweSuggestion.merchant_name === 'Troisdorf')
+  ok('… samt seiner gemeldeten Unsicherheit', reweSuggestion.needs_review === true)
+  ok('… und als korrigiert markiert', reweSuggestion.user_edited === true)
+
+  const afterKorrektur = queueState()
+  const offeneIds = afterKorrektur.queue.open.map((e) => e.transaction.id)
+  ok('REGRESSION: die korrigierte Buchung fällt NICHT in die Wortmarkierung',
+     !offeneIds.includes(rewe.id))
+  ok('… und gilt als vom Menschen entschieden',
+     afterKorrektur.queue.entries.find((e) => e.transaction.id === rewe.id).source === 'override')
+  ok('… der benannte Händler ist dort ablesbar',
+     afterKorrektur.queue.entries.find((e) => e.transaction.id === rewe.id).merchantName === 'REWE')
+
+  const baecker = reload().find((t) => t.raw_description === 'BAECKEREI AM MARKT')
+  ok('REGRESSION: merchant=null + Prüfen, vom Nutzer gesetzt → erledigt',
+     !offeneIds.includes(baecker.id))
+  ok('… mit der Verknüpfung auf den bestehenden Händler',
+     jsonAsUser(userId, `select merchant_id from public.finance_transaction_overrides
+       where transaction_id = '${baecker.id}'`)[0].merchant_id === nurHaendler)
+
+  ok('REGRESSION: aus keiner Korrektur ist ein Muster entstanden',
+     afterKorrektur.patterns.length === 0)
+  ok('REGRESSION: und kein zusätzlicher Händler', afterKorrektur.merchants.length === 1)
+  ok('REGRESSION: auch keine Kategorieregel',
+     jsonAsUser(userId, `select id from public.finance_category_rules
+       where user_id = '${userId}'`).length === 0)
 
   // ── 6. Ein anderes Konto ist ein anderes Konto ────────────────────────────
   // Und diesmal durch die andere Tür: dieselben drei Buchungen, als Tabelle.

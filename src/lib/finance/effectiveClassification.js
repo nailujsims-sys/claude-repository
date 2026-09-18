@@ -14,7 +14,13 @@ import { resolveCategory } from './categoryRules'
 // DIE RANGFOLGE, von oben nach unten:
 //
 //   1. DER OVERRIDE — was der Mensch über GENAU DIESE Buchung entschieden hat.
-//      Schlägt alles, heute und nach jeder künftigen Regeländerung.
+//      Schlägt alles, heute und nach jeder künftigen Regeländerung. Als
+//      Entscheidung zählt dabei jede Angabe zur Einordnung: eine Kategorie, ein
+//      Händler aus der Liste, oder ein Händlername, den er selbst getippt hat.
+//      Wer den Händler benennt und die Kategorie offen lässt, hat trotzdem
+//      entschieden — und wird nicht noch einmal gefragt. Ein Override, der
+//      NICHTS davon trägt (nur eine Notiz, nur „zählt nicht"), ist keine
+//      Einordnung und sperrt deshalb auch keine.
 //   2. `manual_lock` — die Buchung ist von Hand angelegt oder von Hand
 //      entschieden worden. Eine Neuauswertung tritt darüber, nicht hinein.
 //   3. DIE EIGENEN REGELN — Muster und Kategorieregeln, die der Nutzer selbst
@@ -37,6 +43,24 @@ import { resolveCategory } from './categoryRules'
 // ob dieser eine Umsatz noch jemanden beschäftigen muss.
 //
 // Pur, ohne React und ohne Supabase (siehe tools/financeAiLogic.mjs).
+
+/**
+ * Sagt dieser Override etwas über die EINORDNUNG der Buchung?
+ *
+ * Kategorie, Händler-Verknüpfung oder getippter Händlername — eines davon
+ * reicht. Eine Notiz allein reicht nicht, und das ist der Unterschied, an dem
+ * eine von Hand notierte Buchung ohne Einordnung in der Zuordnung bleibt,
+ * während eine im Preview korrigierte daraus verschwindet.
+ *
+ * @param {{category_id?: string|null, merchant_id?: string|null, merchant_name?: string|null}|null} override
+ * @returns {boolean}
+ */
+export function overrideDecidesClassification(override) {
+  if (!override || typeof override !== 'object') return false
+  if (override.category_id) return true
+  if (override.merchant_id) return true
+  return typeof override.merchant_name === 'string' && override.merchant_name.trim() !== ''
+}
 
 /** Woher die gültige Einordnung einer Buchung kommt. */
 export const CLASSIFICATION_SOURCE = Object.freeze({
@@ -133,8 +157,31 @@ export function resolveEffectiveClassification({
     categoryId: category.categoryId ?? null,
     reason: category.reason ?? null,
     source: sourceOf(category),
+    // Der Händler, den ein Mensch benannt hat. Steht hier, weil er sonst
+    // nirgends stünde: er ist kein `finance_merchants`-Eintrag, und genau das
+    // ist Absicht.
+    merchantName: override?.merchant_name ?? null,
     aiSuggestion: suggestion ?? null,
     aiMerchantName: null,
+  }
+
+  // Stufe 1, und sie kommt VOR `manual_lock`. `resolveCategory` sperrt an der
+  // Kategorie — richtig für die Frage, die es beantwortet, und zu wenig für
+  // diese hier: ein Override, der einen Händler benennt und die Kategorie offen
+  // lässt, ist trotzdem eine Entscheidung. Und sie zuerst zu prüfen ist nicht
+  // nur eine Frage der Reihenfolge, sondern der Ehrlichkeit: `manual_lock` ist
+  // der billige Riegel, der Override ist das Protokoll. Wo beides dasteht, soll
+  // die Antwort sagen, WAS entschieden wurde, nicht nur DASS.
+  if (overrideDecidesClassification(override)) {
+    return {
+      ...base,
+      status: base.categoryId ? FINANCE_STATUS.RESOLVED : FINANCE_STATUS.UNRESOLVED,
+      locked: true,
+      merchantId: override.merchant_id ?? base.merchantId,
+      source: CLASSIFICATION_SOURCE.OVERRIDE,
+      reason: 'manual_override',
+      needsDecision: false,
+    }
   }
 
   // Stufen 1–3 haben geantwortet: fertig, so oder so.

@@ -74,6 +74,13 @@ export function buildAIImportPlan({ entries = [], existing = [], observations = 
       },
 
       // Was gespeichert würde, wenn jetzt importiert wird.
+      //
+      // `merchantName` ist ein NAME, kein Fremdschlüssel: solange der Nutzer
+      // nichts korrigiert, ist es der des Modells; korrigiert er, ist es seiner.
+      // `merchantId` ist nur gesetzt, wenn er einen Händler gewählt hat, den es
+      // in dieser App schon gibt — und auch dann entsteht kein Muster.
+      merchantId: null,
+      merchantName: entry.merchantName,
       categoryId: entry.categoryId,
       transactionType: entry.transactionType,
       includeInAnalytics: entry.includeInAnalytics,
@@ -107,8 +114,8 @@ export function summarizeAIPlan(rows = []) {
 /**
  * Eine Zeile, vom Nutzer korrigiert.
  *
- * Nur die Interpretation ist änderbar: Kategorie, Buchungsart, ob sie zählt,
- * die Notiz. Datum, Betrag, Währung und Originaltext stehen nicht in der
+ * Nur die Interpretation ist änderbar: Händler, Kategorie, Buchungsart, ob sie
+ * zählt, die Notiz. Datum, Betrag, Währung und Originaltext stehen nicht in der
  * Patch-Liste und können deshalb aus dem Preview heraus nicht verändert werden —
  * dieselbe Trennung, die die Datenbank seit 0008 mit einem Trigger erzwingt.
  *
@@ -117,6 +124,15 @@ export function summarizeAIPlan(rows = []) {
  */
 export function applyRowEdit(row, patch = {}) {
   const next = { ...row }
+  // Händler: entweder einer aus der Liste (dann reist seine Id mit, damit die
+  // Entscheidung auf den Eintrag zeigt) oder ein Name, den der Nutzer getippt
+  // hat (dann bleibt die Id leer — ein getippter Name legt keinen Händler an).
+  if ('merchantId' in patch) next.merchantId = patch.merchantId ?? null
+  if ('merchantName' in patch) {
+    const name = typeof patch.merchantName === 'string' ? patch.merchantName.trim() : ''
+    next.merchantName = name === '' ? null : name.slice(0, 120)
+    if (next.merchantName === null) next.merchantId = null
+  }
   if ('categoryId' in patch) next.categoryId = patch.categoryId ?? null
   if ('transactionType' in patch && TRANSACTION_TYPES.includes(patch.transactionType)) {
     next.transactionType = patch.transactionType
@@ -135,6 +151,8 @@ export function applyRowEdit(row, patch = {}) {
 /** Hat der Nutzer an dieser Zeile wirklich etwas geändert? */
 export function rowDiffersFromSuggestion(row) {
   return (
+    (row.merchantName ?? null) !== (row.suggestion.merchantName ?? null) ||
+    (row.merchantId ?? null) !== null ||
     (row.categoryId ?? null) !== (row.suggestion.categoryId ?? null) ||
     row.transactionType !== row.suggestion.transactionType ||
     row.includeInAnalytics !== row.suggestion.includeInAnalytics ||
@@ -192,6 +210,8 @@ export function buildAIApplyPayload({ importId, accountId, rows = [] } = {}) {
         // die genau das bedeutet.
         user_decision: decided
           ? {
+              merchant_id: row.merchantId ?? null,
+              merchant_name: row.merchantName ?? null,
               category_id: row.categoryId ?? null,
               transaction_type: row.transactionType,
               include_in_analytics: row.includeInAnalytics,
