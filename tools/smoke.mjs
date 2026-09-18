@@ -3205,6 +3205,63 @@ async function run() {
       errors.push('[Finanzen] the Zuordnung call to action is missing')
   }
 
+  // 16b1) A booking the AI import sorted out completely: no open assignment.
+  //       The whole point of v1.23's second correction — a complete, unflagged
+  //       suggestion is enough for THIS booking, and a flagged one is not.
+  {
+    const kiTx = {
+      id: '11111111-2222-4333-8444-000000000201', user_id: TEST_USER_ID, account_id: FIN_ACCOUNT,
+      booking_date: '2026-09-18', amount_minor: -2495, currency: 'EUR',
+      raw_description: 'REWE TROISDORF SAGT DANKE 8407',
+      normalized_tokens: ['REWE', 'TROISDORF', 'SAGT', 'DANKE', '8407'],
+      category_id: FIN_CATEGORIES[0].id, include_in_analytics: true, manual_lock: false,
+    }
+    const suggestion = (over) => ({
+      id: '11111111-2222-4333-8444-000000000301', user_id: TEST_USER_ID,
+      transaction_id: kiTx.id, merchant_name: 'REWE', category_id: FIN_CATEGORIES[0].id,
+      transaction_type: 'purchase', include_in_analytics: true, note: null,
+      needs_review: false, user_edited: false, format_version: 1,
+      created_at: '2026-09-18T12:00:00.000Z', ...over,
+    })
+
+    {
+      const window = makeDom('#/finanzen', {
+        finance: {
+          finance_accounts: financeSeed.finance_accounts,
+          finance_categories: FIN_CATEGORIES,
+          finance_transactions: [kiTx],
+          finance_transaction_ai_suggestions: [suggestion({})],
+        },
+      })
+      mount(window, code, 'Finanzen/KI-eingeordnet')
+      await wait(400)
+      window.__restoreConsole?.()
+      const text = nb(txt(window))
+      console.log(`=== Finanzen — KI-eingeordnet ===\n  ${text.slice(0, 200)}`)
+      if (!text.includes('Keine offenen Zuordnungen'))
+        errors.push(`[Finanzen/KI] a complete suggestion still leaves an open assignment: ${text.slice(0, 200)}`)
+      if (text.includes('warten auf Händler'))
+        errors.push('[Finanzen/KI] the Zuordnung card is shown for a booking the import sorted out')
+    }
+
+    {
+      const window = makeDom('#/finanzen', {
+        finance: {
+          finance_accounts: financeSeed.finance_accounts,
+          finance_categories: FIN_CATEGORIES,
+          finance_transactions: [kiTx],
+          finance_transaction_ai_suggestions: [suggestion({ needs_review: true })],
+        },
+      })
+      mount(window, code, 'Finanzen/KI-unsicher')
+      await wait(400)
+      window.__restoreConsole?.()
+      const text = nb(txt(window))
+      if (!text.includes('1 Umsatz wartet'))
+        errors.push(`[Finanzen/KI] a flagged suggestion does not ask for a decision: ${text.slice(0, 200)}`)
+    }
+  }
+
   // 16b2) The Zuordnung sheet: the gesture, and what it is allowed to touch.
   {
     const window = makeDom('#/finanzen', { finance: financeSeed })

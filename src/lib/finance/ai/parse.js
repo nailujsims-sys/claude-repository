@@ -1,14 +1,23 @@
 import { TRANSACTION_TYPES } from '../../../config/finance'
 import { tokenize } from '../normalize'
 import { AI_IMPORT_FORMAT, AI_IMPORT_VERSION, REVIEW_REASONS } from './format'
+import { looksLikeSemicolonTable, parseSemicolonTable } from './semicolon'
 
 // Vom eingefügten Text zu geprüften Zeilen — oder zu einer Fehlermeldung.
 //
+// ZWEI EINGÄNGE, EIN MODELL. Seit v1.23 ist das sichtbare Format eine Tabelle
+// mit Semikolons (src/lib/finance/ai/semicolon.js); das JSON aus der ersten
+// Fassung bleibt als kompatibler Nebeneingang bestehen, weil ein Nutzer den
+// Kontext vielleicht vor Wochen kopiert hat. Beide Wege enden in EXAKT
+// denselben Datensätzen, und ab `validateAIImport` gibt es keinen Unterschied
+// mehr — keine zweite Prüfung, kein zweiter Abgleich, keine zweite
+// Datenbankfunktion. Es gibt einen Importer mit zwei Türen.
+//
 // ZWEI SCHRITTE, UND SIE SIND ABSICHTLICH GETRENNT:
 //
-//   parseAIImport    liest Text und gibt den Umschlag zurück (oder sagt, warum
+//   parseAIImport    liest Text und gibt die Datensätze zurück (oder sagt, warum
 //                    nicht). Kennt keine Kategorien, keine Konten, keine
-//                    Datenbank — nur Syntax und Version.
+//                    Datenbank — nur Form und Version.
 //   validateAIImport prüft die Buchungen gegen das, was in dieser App
 //                    existiert: die Kategorien des Nutzers, die erlaubten
 //                    Buchungsarten, die Regeln des Formats.
@@ -91,27 +100,56 @@ export function amountToMinor(value) {
 }
 
 /**
- * Den Umschlag aus dem eingefügten Text lesen.
+ * Den eingefügten Text lesen — Tabelle oder JSON.
  *
  * WAS TOLERIERT WIRD, und warum es kein Raten ist: ChatGPT rahmt seine Antwort
  * oft in einen Markdown-Codeblock und schreibt gelegentlich einen Satz davor
- * („Hier ist das JSON:"). Beides ist Verpackung, kein Inhalt — sie zu entfernen
- * ändert an keiner einzigen Buchung etwas. Alles andere ist ein Fehler.
+ * („Hier ist die Tabelle:"). Beides ist Verpackung, kein Inhalt — sie zu
+ * entfernen ändert an keiner einzigen Buchung etwas. Alles andere ist ein
+ * Fehler.
+ *
+ * `format` sagt, welche Tür benutzt wurde. Kein Aufrufer muss das wissen; es
+ * steht da, damit ein Test beweisen kann, dass beide Türen in denselben Raum
+ * führen.
  *
  * @param {unknown} text
- * @returns {{ok: boolean, payload: object|null, errors: Array<{code: string, message: string}>}}
+ * @returns {{ok: boolean, payload: object|null, format: string|null, errors: Array<{code: string, message: string}>}}
  */
 export function parseAIImport(text) {
   if (typeof text !== 'string' || text.trim() === '') {
-    return { ok: false, payload: null, errors: [error('empty', 'Es wurde nichts eingefügt.')] }
+    return { ok: false, payload: null, format: null, errors: [error('empty', 'Es wurde nichts eingefügt.')] }
   }
 
   const unwrapped = stripCodeFence(text)
+
+  // Die Weiche. Das JSON erkennt man an seiner Klammer oder an seinem
+  // Formatnamen; alles andere wird als Tabelle gelesen — auch kaputter Text,
+  // damit die Fehlermeldung von der Kopfzeile handelt und nicht von einer
+  // geschweiften Klammer, die nie jemand tippen wollte.
+  const trimmed = unwrapped.trim()
+  const looksJson =
+    trimmed.startsWith('{') || trimmed.startsWith('[') || trimmed.includes(AI_IMPORT_FORMAT)
+  if (!looksJson || looksLikeSemicolonTable(unwrapped)) {
+    const table = parseSemicolonTable(unwrapped)
+    if (!table.ok) return { ok: false, payload: null, format: 'semicolon', errors: table.errors }
+    return {
+      ok: true,
+      format: 'semicolon',
+      payload: {
+        format: AI_IMPORT_FORMAT,
+        version: AI_IMPORT_VERSION,
+        transactions: table.records,
+      },
+      errors: [],
+    }
+  }
+
   const parsed = readJson(unwrapped)
   if (parsed === undefined) {
     return {
       ok: false,
       payload: null,
+      format: 'json',
       errors: [
         error(
           'not_json',
@@ -124,6 +162,7 @@ export function parseAIImport(text) {
     return {
       ok: false,
       payload: null,
+      format: 'json',
       errors: [error('not_an_object', 'Die Antwort hat nicht die erwartete Form.')],
     }
   }
@@ -132,6 +171,7 @@ export function parseAIImport(text) {
     return {
       ok: false,
       payload: null,
+      format: 'json',
       errors: [
         error(
           'format_unknown',
@@ -144,6 +184,7 @@ export function parseAIImport(text) {
     return {
       ok: false,
       payload: null,
+      format: 'json',
       errors: [
         error(
           'version_unsupported',
@@ -156,6 +197,7 @@ export function parseAIImport(text) {
     return {
       ok: false,
       payload: null,
+      format: 'json',
       errors: [error('transactions_missing', 'In der Antwort fehlen die Umsätze.')],
     }
   }
@@ -163,6 +205,7 @@ export function parseAIImport(text) {
     return {
       ok: false,
       payload: null,
+      format: 'json',
       errors: [
         error(
           'transactions_empty',
@@ -172,10 +215,10 @@ export function parseAIImport(text) {
     }
   }
 
-  return { ok: true, payload: parsed, errors: [] }
+  return { ok: true, payload: parsed, format: 'json', errors: [] }
 }
 
-/** ```json … ``` und „Hier ist das JSON:" — Verpackung, kein Inhalt. */
+/** ```csv … ``` und „Hier ist die Tabelle:" — Verpackung, kein Inhalt. */
 function stripCodeFence(text) {
   const trimmed = text.trim()
   const fenced = /^```[a-zA-Z]*\s*\n([\s\S]*?)\n?```$/.exec(trimmed)
@@ -240,7 +283,10 @@ export function validateAIImport(payload, { categories = [] } = {}) {
     const amountMinor = amountToMinor(record.amount)
     if (amountMinor === null) {
       errors.push(
-        error('amount_invalid', `Umsatz ${at} hat keinen lesbaren Betrag („${String(record.amount)}").`)
+        error(
+          'amount_invalid',
+          `Umsatz ${at} hat keinen lesbaren Betrag („${String(record.amount)}"). Erwartet wird z. B. -24,95 — Ausgaben negativ, höchstens zwei Nachkommastellen, keine Tausenderzeichen.`
+        )
       )
       return
     }

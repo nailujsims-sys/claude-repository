@@ -247,6 +247,14 @@ Migrationen aus — inklusive „dieselbe Buchung auf einem anderen Konto ist ne
 „derselbe Block zweimal erzeugt keine Zeile mehr", „die Notiz des Menschen
 bleibt unverändert" und „ein anderer Benutzer sieht keinen einzigen Vorschlag".
 
+Dazu kommt die Frage, die das Schema nicht beantwortet, aber ermöglicht: nach
+einem Import werden Buchungen, Vorschläge, Overrides, Muster und Regeln
+zurückgelesen und durch dieselbe Einordnungsregel geschickt, die die App
+benutzt (`src/lib/finance/effectiveClassification.js`). Ein vollständiger,
+unmarkierter Vorschlag lässt den Umsatz aus der Zuordnung verschwinden, ein
+markierter nicht — und in keinem der beiden Fälle entsteht eine Zeile in
+`finance_merchants` oder `finance_merchant_patterns`.
+
 ### Ein Import wird angewendet
 
 `0009_finance_import.sql` legt dazu, was ein zweiter Kontoauszug mit dem

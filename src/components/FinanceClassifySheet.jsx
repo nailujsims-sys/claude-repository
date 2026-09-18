@@ -55,7 +55,7 @@ export default function FinanceClassifySheet() {
 
 function Sheet({ onClose }) {
   const {
-    transactions, patterns, merchants, categories, categoryRules, overrides,
+    transactions, patterns, merchants, categories, categoryRules, overrides, aiSuggestions,
     saveClassification,
   } = useFinance()
 
@@ -72,9 +72,10 @@ function Sheet({ onClose }) {
 
   const { entries, open, queue } = useMemo(
     () => buildClassificationQueue({
-      transactions, patterns, merchants, rules: categoryRules, overrides, skippedIds: skipped,
+      transactions, patterns, merchants, rules: categoryRules, overrides, aiSuggestions,
+      skippedIds: skipped,
     }),
-    [transactions, patterns, merchants, categoryRules, overrides, skipped]
+    [transactions, patterns, merchants, categoryRules, overrides, aiSuggestions, skipped]
   )
 
   const entry = pinned

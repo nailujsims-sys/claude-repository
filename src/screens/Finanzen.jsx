@@ -21,8 +21,8 @@ import { formatBookingDate, plural } from '../lib/finance/importFlow'
 // PDF import is still in the code and still works; it is simply no longer a
 // path this screen offers.
 export default function Finanzen() {
-  const { transactions, account, patterns, merchants, categoryRules, overrides, loading, error } =
-    useFinance()
+  const { transactions, account, patterns, merchants, categoryRules, overrides, aiSuggestions,
+    loading, error } = useFinance()
   const { openFinanceAdd, openFinanceClassify, openFinanceExclusions } = useUI()
 
   // Which bookings still need a human is the engine's answer, asked fresh on
@@ -30,9 +30,9 @@ export default function Finanzen() {
   // into a column at import time.
   const { summary } = useMemo(
     () => buildClassificationQueue({
-      transactions, patterns, merchants, rules: categoryRules, overrides,
+      transactions, patterns, merchants, rules: categoryRules, overrides, aiSuggestions,
     }),
-    [transactions, patterns, merchants, categoryRules, overrides]
+    [transactions, patterns, merchants, categoryRules, overrides, aiSuggestions]
   )
 
   const latest = useMemo(() => {

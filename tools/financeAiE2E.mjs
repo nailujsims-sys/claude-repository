@@ -68,6 +68,8 @@ const bundled = await build({
       export { parseAIImport, validateAIImport } from './src/lib/finance/ai/parse.js'
       export { buildAIImportPlan, buildAIApplyPayload, applyRowEdit } from './src/lib/finance/ai/plan.js'
       export { buildManualTransactionPayload } from './src/lib/finance/manualTransaction.js'
+      export { buildClassificationQueue } from './src/lib/finance/classificationQueue.js'
+      export { AI_CSV_HEADER } from './src/lib/finance/ai/format.js'
     `,
     resolveDir: process.cwd(),
     sourcefile: 'aiE2E.mjs',
@@ -85,7 +87,7 @@ const modulePath = `${process.env.SCRATCH || '/tmp'}/financeAiE2E.bundled.mjs`
 writeFileSync(modulePath, bundled.outputFiles[0].text)
 const {
   parseAIImport, validateAIImport, buildAIImportPlan, buildAIApplyPayload, applyRowEdit,
-  buildManualTransactionPayload,
+  buildManualTransactionPayload, buildClassificationQueue, AI_CSV_HEADER,
 } = await import(pathToFileURL(modulePath).href)
 
 let pass = 0
@@ -420,8 +422,109 @@ ${sql}`
   ok('… und seine Kategorie auch', afterNote.category_id === beforeNote.category_id)
   ok('… und es ist keine Buchung dazugekommen', reload().length === 6)
 
+  // ── 5b. Die Warteschlange nach einem KI-Import ────────────────────────────
+  // Die Regression, um die es v1.23 geht: ein vollständiger, sicherer Vorschlag
+  // ordnet den Umsatz ein — und was das Modell vorschlug, bleibt trotzdem
+  // nachlesbar, ohne dass irgendwo eine globale Regel entstanden wäre.
+  const queueState = () => {
+    const transactions = jsonAsUser(
+      userId,
+      `select id, account_id, booking_date, amount_minor, currency, raw_description,
+              normalized_tokens, category_id, merchant_id, manual_lock, include_in_analytics
+       from public.finance_transactions where user_id = '${userId}'`
+    )
+    const suggestions = jsonAsUser(
+      userId,
+      `select transaction_id, merchant_name, category_id, needs_review, user_edited, created_at
+       from public.finance_transaction_ai_suggestions where user_id = '${userId}'`
+    )
+    const overrideRows = jsonAsUser(
+      userId,
+      `select transaction_id, merchant_id, category_id, include_in_analytics, transaction_type, note
+       from public.finance_transaction_overrides where user_id = '${userId}'`
+    )
+    const patternRows = jsonAsUser(
+      userId,
+      `select id, merchant_id, pattern_type, tokens, active from public.finance_merchant_patterns
+       where user_id = '${userId}'`
+    )
+    const merchantRows = jsonAsUser(
+      userId,
+      `select id, canonical_name, review_mode, default_include_in_analytics
+       from public.finance_merchants where user_id = '${userId}'`
+    )
+    const ruleRows = jsonAsUser(
+      userId,
+      `select id, merchant_id, category_id, min_amount_minor, max_amount_minor, currency, active
+       from public.finance_category_rules where user_id = '${userId}'`
+    )
+    return {
+      queue: buildClassificationQueue({
+        transactions, patterns: patternRows, merchants: merchantRows, rules: ruleRows,
+        overrides: overrideRows, aiSuggestions: suggestions,
+      }),
+      suggestions,
+      merchants: merchantRows,
+      patterns: patternRows,
+    }
+  }
+
+  const state = queueState()
+  const openIds = state.queue.open.map((entry) => entry.transaction.id)
+  ok('der vollständig erkannte Umsatz braucht keine Zuordnung mehr',
+     !openIds.includes(zalando.id))
+  ok('… und gilt als eingeordnet',
+     state.queue.entries.find((e) => e.transaction.id === zalando.id).source === 'ai_suggestion')
+  ok('… der Vorschlag dazu bleibt nachlesbar',
+     state.suggestions.find((s) => s.transaction_id === zalando.id)?.merchant_name === 'Zalando')
+  ok('… und es ist dafür kein Händler entstanden', state.merchants.length === 0)
+  ok('… und kein Muster', state.patterns.length === 0)
+  ok('die vom Menschen korrigierte Zeile ist ebenfalls erledigt', !openIds.includes(loewe.id))
+  ok('die von Hand angelegten Buchungen sowieso', !openIds.includes(ausgabe.transaction_id))
+  ok('nach dem Import wartet keine einzige Buchung auf eine Zuordnung',
+     state.queue.summary.offen === 0)
+
+  // Dieselbe Frage, andersherum: eine unsichere Zeile bleibt sichtbar.
+  const unsicherImport = openImport(giro, 'hash-block-review')
+  const unsicherResult = applyAi(userId, unsicherImport, giro, [
+    {
+      booking_date: '2026-09-21',
+      amount_minor: -1799,
+      currency: 'EUR',
+      raw_description: 'SUMUP *IMBISS',
+      normalized_tokens: ['SUMUP', 'IMBISS'],
+      category_id: null,
+      transaction_type: 'purchase',
+      include_in_analytics: true,
+      suggestion: {
+        merchant_name: null, category_id: null, transaction_type: 'purchase',
+        include_in_analytics: true, note: null, needs_review: true, user_edited: false,
+        format_version: 1,
+      },
+      user_decision: null,
+    },
+  ])
+  ok('eine unsichere Zeile wird gespeichert', unsicherResult.created === 1)
+  const afterReview = queueState()
+  ok('… und bleibt zur Prüfung sichtbar', afterReview.queue.summary.offen === 1)
+  ok('… und zwar genau sie',
+     afterReview.queue.open[0].transaction.raw_description === 'SUMUP *IMBISS')
+
   // ── 6. Ein anderes Konto ist ein anderes Konto ────────────────────────────
-  const cardPlan = readPlan(karte, reload())
+  // Und diesmal durch die andere Tür: dieselben drei Buchungen, als Tabelle.
+  const cardTable = [
+    AI_CSV_HEADER,
+    '2026-09-18;REWE Troisdorf;-24,95;EUR;REWE;lebensmittel;purchase;true;;false',
+    '2026-09-19;RESTAURANT ZUM LOEWEN;-42,50;EUR;;;purchase;true;;true',
+    '2026-09-20;PAYPAL .Zalando SE;-8,99;EUR;Zalando;klamotten;purchase;true;;false',
+  ].join('\n')
+  const cardParsed = parseAIImport(cardTable)
+  ok('die Tabelle kommt als Semikolon-Format an', cardParsed.format === 'semicolon')
+  const cardChecked = validateAIImport(cardParsed.payload, { categories })
+  ok('… und wird ohne Beanstandung geprüft', cardChecked.ok)
+  const cardPlan = buildAIImportPlan({
+    entries: cardChecked.entries, existing: reload(), observations: [], accountId: karte,
+  })
   ok('derselbe Auszug in ein anderes Konto ist vollständig neu', cardPlan.summary.neu === 3)
   const cardImport = openImport(karte, 'hash-block-3')
   const cardResult = applyAi(
@@ -429,6 +532,9 @@ ${sql}`
     buildAIApplyPayload({ importId: cardImport, accountId: karte, rows: cardPlan.rows }).bookings
   )
   ok('… und wird auch so gespeichert', cardResult.created === 3)
+  ok('… mit demselben Betrag, den die Tabelle nannte',
+     jsonAsUser(userId, `select amount_minor from public.finance_transactions
+       where account_id = '${karte}' and raw_description = 'REWE Troisdorf'`)[0].amount_minor === -2495)
   ok('… auf dem Konto, das der Mensch gewählt hat',
      jsonAsUser(userId, `select id from public.finance_transactions
        where account_id = '${karte}' and raw_description = 'REWE Troisdorf'`).length === 1)

@@ -1,7 +1,7 @@
 import { patternMatches } from '../merchantMatching'
 import { patternText, transactionTokens } from '../normalize'
 import { formatAmountMinor } from '../importFlow'
-import { AI_IMPORT_FORMAT, AI_IMPORT_VERSION, formatExampleJson } from './format'
+import { AI_CSV_COLUMNS, AI_CSV_HEADER, formatExampleTable } from './format'
 import { PAYMENT_SERVICE_PROVIDERS, knownProviders } from './providers'
 
 // „KI-Kontext kopieren" — der ganze Prompt, von der App geschrieben.
@@ -141,11 +141,12 @@ export function buildAIContextPrompt({
   // ── 1. Kategorien ─────────────────────────────────────────────────────────
   lines.push('## Erlaubte Kategorien')
   lines.push('')
-  lines.push('Nur diese Werte sind als "category" erlaubt. Erfinde keine neuen Kategorien und')
-  lines.push('benenne keine um. Wenn keine davon passt, schreibe null und setze needs_review.')
+  lines.push('Nur diese Werte sind in der Spalte „Kategorie" erlaubt. Erfinde keine neuen')
+  lines.push('Kategorien und benenne keine um. Wenn keine davon passt, lass die Spalte leer und')
+  lines.push('setze „Prüfen" auf true.')
   lines.push('')
   if (categoryList.length === 0) {
-    lines.push('- (noch keine Kategorien angelegt — schreibe überall null und needs_review: true)')
+    lines.push('- (noch keine Kategorien angelegt — lass die Spalte überall leer und setze „Prüfen" auf true)')
   } else {
     for (const category of categoryList) {
       lines.push(`- ${category.slug} — ${category.label ?? category.slug}`)
@@ -205,8 +206,9 @@ export function buildAIContextPrompt({
   lines.push('')
   lines.push('Ein Zahlungsdienstleister ist nicht der Händler. Steht einer im Text, suche den')
   lines.push('echten Händler im selben Text weiter hinten — "PAYPAL .Zalando SE" ist ein')
-  lines.push('Einkauf bei Zalando, nicht bei PayPal. Findest du ihn nicht eindeutig, schreibe')
-  lines.push('merchant: null und needs_review: true. Trage nie den Dienstleister als Händler ein.')
+  lines.push('Einkauf bei Zalando, nicht bei PayPal. Findest du ihn nicht eindeutig, lass')
+  lines.push('„Händler" leer und setze „Prüfen" auf true. Trage nie den Dienstleister als')
+  lines.push('Händler ein.')
   lines.push('')
   if (seenProviders.length > 0) {
     lines.push(`Auf diesem Konto bereits aufgetaucht: ${seenProviders.join(', ')}.`)
@@ -223,46 +225,59 @@ export function buildAIContextPrompt({
   lines.push('- Ein Ort ist kein Händler. Aus "REWE Troisdorf" wird REWE, nicht Troisdorf.')
   lines.push('- Filialnummern, Terminal-IDs, Kartennummern und Zeitstempel gehören nicht in den Namen.')
   lines.push('- Rechtsformen darfst du weglassen, wenn der Name dadurch eindeutig bleibt.')
-  lines.push('- Bist du dir beim Händler nicht sicher, schreibe null und setze needs_review: true.')
-  lines.push('  Ein leeres Feld ist richtig, ein geratener Name ist falsch.')
+  lines.push('- Bist du dir beim Händler nicht sicher, lass die Spalte leer und setze „Prüfen"')
+  lines.push('  auf true. Ein leeres Feld ist richtig, ein geratener Name ist falsch.')
   lines.push('')
 
   // ── 6. Das Format ─────────────────────────────────────────────────────────
   lines.push('## Antwortformat')
   lines.push('')
-  lines.push('Antworte ausschließlich mit diesem JSON. Kein einleitender Satz, keine Erklärung,')
-  lines.push('keine Zusammenfassung davor oder danach — nur das JSON-Objekt.')
+  lines.push('Antworte ausschließlich mit einer Tabelle: erst genau diese Kopfzeile, dann eine')
+  lines.push('Zeile je Buchung, Felder mit Semikolon getrennt. Kein einleitender Satz, keine')
+  lines.push('Erklärung, keine Summenzeile, nichts davor und nichts danach.')
   lines.push('')
-  lines.push('```json')
-  lines.push(formatExampleJson())
+  lines.push('```')
+  lines.push(formatExampleTable())
   lines.push('```')
   lines.push('')
-  lines.push(`- "format" ist immer "${AI_IMPORT_FORMAT}", "version" immer ${AI_IMPORT_VERSION}.`)
-  lines.push('- booking_date: das Buchungsdatum aus dem Auszug, als YYYY-MM-DD. Nie umgerechnet,')
-  lines.push('  nie geschätzt, nie durch das Wertstellungsdatum ersetzt.')
-  lines.push('- amount: der Betrag aus dem Auszug. Ausgaben negativ, Einnahmen positiv, Punkt als')
-  lines.push('  Dezimaltrennzeichen, höchstens zwei Nachkommastellen, kein Währungszeichen und')
-  lines.push('  keine Tausenderpunkte. Ändere nie einen Betrag, auch nicht zum Runden.')
-  lines.push(`- currency: Pflichtfeld, dreistelliger Code (z. B. ${currency}). Steht im Auszug eine`)
-  lines.push('  Fremdwährung, nimm den Betrag, der dem Konto belastet wurde, und dessen Währung.')
-  lines.push('- raw_description: der Verwendungszweck so originalgetreu wie möglich, in einer Zeile.')
-  lines.push('  Kürze nicht, korrigiere keine Schreibfehler, übersetze nichts.')
-  lines.push('- merchant: der erkannte Händler als Text, oder null.')
-  lines.push('- category: einer der Slugs oben, oder null.')
-  lines.push('- transaction_type: purchase, refund, transfer, income, fee oder other.')
-  lines.push('- include_in_analytics: false, wenn die Buchung keine echte Ausgabe ist —')
-  lines.push('  eine Umbuchung auf ein eigenes Konto, eine Sparrate, eine durchlaufende Zahlung.')
-  lines.push('- note: nur, wenn etwas wirklich erklärungsbedürftig ist, sonst null.')
-  lines.push('- needs_review: true, sobald du dir bei irgendetwas an dieser Buchung unsicher bist.')
-  lines.push('- Vergib keine IDs und keine laufenden Nummern. Die Zuordnung macht die App.')
+  lines.push(`Die Kopfzeile lautet immer exakt: ${AI_CSV_HEADER}`)
+  lines.push('')
+  lines.push(`- ${AI_CSV_COLUMNS[0]}: das Buchungsdatum aus dem Auszug, als YYYY-MM-DD. Nie`)
+  lines.push('  umgerechnet, nie geschätzt, nie durch das Wertstellungsdatum ersetzt.')
+  lines.push(`- ${AI_CSV_COLUMNS[1]}: der Verwendungszweck so originalgetreu wie möglich, in einer`)
+  lines.push('  Zeile. Kürze nicht, korrigiere keine Schreibfehler, übersetze nichts.')
+  lines.push(`- ${AI_CSV_COLUMNS[2]}: der Betrag aus dem Auszug. Ausgaben negativ, Einnahmen positiv,`)
+  lines.push('  Komma als Dezimaltrennzeichen, höchstens zwei Nachkommastellen, kein')
+  lines.push('  Währungszeichen und keine Tausenderpunkte: -1234,56 statt -1.234,56 €.')
+  lines.push('  Ändere nie einen Betrag, auch nicht zum Runden.')
+  lines.push(`- ${AI_CSV_COLUMNS[3]}: Pflichtfeld, dreistelliger Code (z. B. ${currency}). Steht im Auszug`)
+  lines.push('  eine Fremdwährung, nimm den Betrag, der dem Konto belastet wurde, und dessen Währung.')
+  lines.push(`- ${AI_CSV_COLUMNS[4]}: der erkannte Händler. Leer lassen, wenn du ihn nicht eindeutig`)
+  lines.push('  erkennst.')
+  lines.push(`- ${AI_CSV_COLUMNS[5]}: einer der Slugs oben, oder leer.`)
+  lines.push(`- ${AI_CSV_COLUMNS[6]}: purchase, refund, transfer, income, fee oder other.`)
+  lines.push(`- ${AI_CSV_COLUMNS[7]}: false, wenn die Buchung keine echte Ausgabe ist — eine Umbuchung`)
+  lines.push('  auf ein eigenes Konto, eine Sparrate, eine durchlaufende Zahlung. Sonst true.')
+  lines.push(`- ${AI_CSV_COLUMNS[8]}: nur, wenn etwas wirklich erklärungsbedürftig ist, sonst leer.`)
+  lines.push(`- ${AI_CSV_COLUMNS[9]}: true, sobald du dir bei irgendetwas an dieser Buchung unsicher`)
+  lines.push('  bist. Sonst false.')
+  lines.push('')
+  lines.push('Wichtig zum Trennzeichen: das Semikolon trennt die Felder und darf deshalb in')
+  lines.push('keinem Text vorkommen. Steht im Verwendungszweck eines, ersetze es durch ein')
+  lines.push('Komma. Jede Zeile hat genau ' + AI_CSV_COLUMNS.length + ' Felder — auch die leeren')
+  lines.push('Felder werden mitgezählt, zwei Semikolons hintereinander sind ein leeres Feld.')
+  lines.push('Keine Anführungszeichen um die Felder, keine Leerzeile zwischen den Buchungen,')
+  lines.push('keine Zeilenumbrüche innerhalb einer Buchung.')
+  lines.push('')
+  lines.push('Vergib keine IDs und keine laufenden Nummern. Die Zuordnung macht die App.')
   lines.push('')
 
   // ── 7. Unsicherheit ───────────────────────────────────────────────────────
   lines.push('## Im Zweifel')
   lines.push('')
-  lines.push('Lieber needs_review: true als ein geratener Wert. Eine Buchung, die der Nutzer')
+  lines.push('Lieber „Prüfen" auf true als ein geratener Wert. Eine Buchung, die der Nutzer')
   lines.push('kurz prüft, kostet ihn Sekunden; eine falsch einsortierte findet er nie wieder.')
-  lines.push('Lass im Zweifel merchant und category auf null, statt etwas Plausibles einzutragen.')
+  lines.push('Lass im Zweifel „Händler" und „Kategorie" leer, statt etwas Plausibles einzutragen.')
 
   const header =
     accountName && accountName.trim() !== ''

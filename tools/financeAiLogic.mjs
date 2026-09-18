@@ -18,7 +18,26 @@ import { writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
 const TEST = `
-import { AI_IMPORT_FORMAT, AI_IMPORT_VERSION, REVIEW_REASONS } from './src/lib/finance/ai/format.js'
+import {
+  AI_CSV_COLUMNS,
+  AI_CSV_HEADER,
+  AI_IMPORT_FORMAT,
+  AI_IMPORT_VERSION,
+  REVIEW_REASONS,
+} from './src/lib/finance/ai/format.js'
+import {
+  germanAmountToCanonical,
+  parseSemicolonTable,
+  splitSemicolonLine,
+} from './src/lib/finance/ai/semicolon.js'
+import {
+  CLASSIFICATION_SOURCE,
+  isUsableSuggestion,
+  newestSuggestions,
+  resolveEffectiveClassification,
+} from './src/lib/finance/effectiveClassification.js'
+import { buildClassificationQueue, needsDecision } from './src/lib/finance/classificationQueue.js'
+import { FINANCE_STATUS } from './src/lib/finance/merchantMatching.js'
 import { amountToMinor, parseAIImport, validateAIImport } from './src/lib/finance/ai/parse.js'
 import { aiDedupeKey, matchExisting } from './src/lib/finance/ai/dedupe.js'
 import {
@@ -384,7 +403,7 @@ const stored = (over = {}) => ({
 
   ok('der Prompt nennt jede aktuelle Kategorie',
      CATEGORIES.every((c) => prompt.includes(c.slug) && prompt.includes(c.label)))
-  ok('… und verbietet neue', prompt.includes('Erfinde keine neuen Kategorien'))
+  ok('… und verbietet neue', prompt.includes('Erfinde keine neuen'))
   ok('der Prompt nennt die bekannten Händler',
      prompt.includes('REWE') && prompt.includes('Scalable Capital') && prompt.includes('EDEKA'))
   ok('… mit dem Muster, an dem sie erkannt werden', prompt.includes('SCALABLE CAPITAL'))
@@ -404,21 +423,30 @@ const stored = (over = {}) => ({
   ok('der Prompt verbietet, den Ort als Händler zu nehmen',
      prompt.includes('Ein Ort ist kein Händler'))
   ok('… am konkreten Beispiel', prompt.includes('REWE Troisdorf'))
-  ok('der Prompt fordert ausschließlich JSON',
-     prompt.includes('Antworte ausschließlich mit diesem JSON'))
-  ok('… ohne Vor- und Nachrede', prompt.includes('keine Erklärung'))
-  ok('der Prompt nennt Format und Version',
-     prompt.includes(AI_IMPORT_FORMAT) && prompt.includes('"version": ' + AI_IMPORT_VERSION))
-  ok('der Prompt fordert needs_review bei Unsicherheit',
-     prompt.includes('needs_review: true, sobald du dir') && prompt.includes('Lieber needs_review: true'))
+  ok('der Prompt fordert ausschließlich die Tabelle',
+     prompt.includes('Antworte ausschließlich mit einer Tabelle'))
+  ok('… ohne Vor- und Nachrede', prompt.includes('nichts davor und nichts danach'))
+  ok('… und ohne Summenzeile', prompt.includes('keine Summenzeile'))
+  ok('der Prompt nennt die Kopfzeile wörtlich', prompt.includes(AI_CSV_HEADER))
+  ok('… und zeigt sie im Beispiel', prompt.includes('2026-09-18;REWE TROISDORF'))
+  ok('der Prompt erklärt jede Spalte',
+     AI_CSV_COLUMNS.every((column) => prompt.includes('- ' + column + ':')))
+  ok('der Prompt erklärt das Trennzeichen',
+     prompt.includes('das Semikolon trennt die Felder') && prompt.includes('ersetze es durch ein'))
+  ok('… und die feste Feldzahl',
+     prompt.includes('genau ' + AI_CSV_COLUMNS.length + ' Felder'))
+  ok('der Prompt legt das Dezimalformat fest',
+     prompt.includes('Komma als Dezimaltrennzeichen') && prompt.includes('-1234,56 statt -1.234,56'))
+  ok('der Prompt fordert Prüfen bei Unsicherheit',
+     prompt.includes('true, sobald du dir bei irgendetwas') && prompt.includes('Lieber „Prüfen" auf true'))
   ok('… und sagt, was bei unklarem Händler zu tun ist',
-     prompt.includes('schreibe null und setze needs_review: true'))
+     prompt.includes('lass die Spalte leer und setze „Prüfen"'))
   ok('der Prompt verbietet, Buchungen zu erfinden', prompt.includes('erfinde keine dazu'))
   ok('der Prompt fordert, den Auszug vollständig zu lesen',
      prompt.includes('Lies den Auszug vollständig'))
   ok('der Prompt verbietet, Beträge zu ändern', prompt.includes('Ändere nie einen Betrag'))
   ok('der Prompt verbietet, Daten zu ändern', prompt.includes('nie geschätzt'))
-  ok('der Prompt verlangt eine Währung', prompt.includes('currency: Pflichtfeld'))
+  ok('der Prompt verlangt eine Währung', prompt.includes('Währung: Pflichtfeld'))
   ok('der Prompt verbietet erfundene IDs', prompt.includes('Vergib keine IDs'))
   ok('der Prompt entscheidet nicht über das Konto',
      prompt.includes('das Konto ist in der App bereits gewählt'))
@@ -441,7 +469,7 @@ const stored = (over = {}) => ({
 
   const leer = buildAIContextPrompt({ categories: [], merchants: [], patterns: [], categoryRules: [], transactions: [] })
   ok('ein leeres Konto bekommt trotzdem einen vollständigen Prompt',
-     leer.includes(AI_IMPORT_FORMAT) && leer.includes('Zahlungsdienstleister'))
+     leer.includes(AI_CSV_HEADER) && leer.includes('Zahlungsdienstleister'))
   ok('… und sagt ehrlich, dass noch nichts bekannt ist',
      leer.includes('Bisher sind keine Händler hinterlegt'))
 }
@@ -537,6 +565,311 @@ const stored = (over = {}) => ({
      TRANSACTION_TYPES.every((t) => typeof TRANSACTION_TYPE_LABELS[t] === 'string' && TRANSACTION_TYPE_LABELS[t] !== ''))
   ok('und keinen darüber hinaus',
      Object.keys(TRANSACTION_TYPE_LABELS).length === TRANSACTION_TYPES.length)
+}
+
+
+// ── 13. Das sichtbare Format: Semikolon ─────────────────────────────────────
+{
+  const table = (rows) => [AI_CSV_HEADER, ...rows].join('\\n')
+  const ROW = '2026-09-18;REWE TROISDORF SAGT DANKE 8407;-24,95;EUR;REWE;lebensmittel;purchase;true;;false'
+  const readTable = (text) => {
+    const parsed = parseAIImport(text)
+    if (!parsed.ok) return { parsed, checked: null }
+    return { parsed, checked: validateAIImport(parsed.payload, { categories: CATEGORIES }) }
+  }
+
+  const { parsed, checked } = readTable(table([ROW]))
+  ok('eine Tabelle mit fester Kopfzeile wird gelesen', parsed.ok)
+  ok('… und als Semikolon-Format erkannt', parsed.format === 'semicolon')
+  ok('… und ergibt eine geprüfte Zeile', checked.ok && checked.entries.length === 1)
+
+  // DIE Aussage, auf die es ankommt: zwei Türen, ein Raum.
+  const viaJson = readValid([RECORD])
+  ok('Tabelle und JSON erzeugen exakt dasselbe interne Modell',
+     JSON.stringify(checked.entries) === JSON.stringify(viaJson.entries))
+  ok('… und das JSON bleibt als Nebeneingang erkennbar',
+     parseAIImport(envelope([RECORD])).format === 'json')
+
+  // Beträge, deutsch geschrieben.
+  ok('„-24,95" wird exakt gelesen', germanAmountToCanonical('-24,95') === '-24.95')
+  ok('„-24.95" ebenso', germanAmountToCanonical('-24.95') === '-24.95')
+  ok('„1.234,56" ist eindeutig', germanAmountToCanonical('1.234,56') === '1234.56')
+  ok('„1,234.56" auch', germanAmountToCanonical('1,234.56') === '1234.56')
+  ok('„1234" ist ein ganzer Betrag', germanAmountToCanonical('1234') === '1234')
+  ok('„1.234.567" sind Tausendergruppen', germanAmountToCanonical('1.234.567') === '1234567')
+  ok('ein typografisches Minus zählt als Minus', germanAmountToCanonical('−24,95') === '-24.95')
+  ok('ein führendes Plus stört nicht', germanAmountToCanonical('+24,95') === '24.95')
+  ok('Leerzeichen stören nicht', germanAmountToCanonical(' -24,95 ') === '-24.95')
+  ok('„1.234" wird NICHT geraten', germanAmountToCanonical('1.234') === null)
+  ok('„24,999" ist kein Geldbetrag', germanAmountToCanonical('24,999') === null)
+  ok('„-24,95 €" ist kein Betrag', germanAmountToCanonical('-24,95 €') === null)
+  ok('„zwanzig" ist kein Betrag', germanAmountToCanonical('zwanzig') === null)
+  ok('„1.23,45" ist kein Betrag', germanAmountToCanonical('1.23,45') === null)
+
+  const amountOf = (text) =>
+    readTable(table(['2026-09-18;Test;' + text + ';EUR;REWE;lebensmittel;purchase;true;;false']))
+  ok('der Betrag geht exakt durch bis in die Minor-Units',
+     amountOf('-1.234,56').checked.entries[0].amountMinor === -123456)
+  ok('ein Betrag, der nicht lesbar ist, wird gemeldet statt geraten',
+     amountOf('1.234').checked.errors[0].code === 'amount_invalid')
+  ok('… und die Meldung zitiert, was dastand',
+     amountOf('1.234').checked.errors[0].message.includes('1.234'))
+  ok('… und sagt, was erwartet wird',
+     amountOf('1.234').checked.errors[0].message.includes('-24,95'))
+
+  // Leere Felder.
+  const leer = readTable(table(['2026-09-18;Unbekannt;-9,99;EUR;;;;true;;true'])).checked.entries[0]
+  ok('ein leeres Händlerfeld ist erlaubt', leer.merchantName === null)
+  ok('ein leeres Kategoriefeld ist erlaubt', leer.categorySlug === null)
+  ok('ein leeres Notizfeld ist erlaubt', leer.note === null)
+  ok('ein leeres Typfeld wird aus dem Vorzeichen abgeleitet', leer.transactionType === 'purchase')
+  ok('… und die Zeile will geprüft werden', leer.needsReview === true)
+
+  // Wahrheitswerte.
+  const flags = (auswertung, pruefen) =>
+    readTable(table(['2026-09-18;Test;-1,00;EUR;REWE;lebensmittel;purchase;' + auswertung + ';;' + pruefen]))
+  ok('true/false werden gelesen',
+     flags('false', 'true').checked.entries[0].includeInAnalytics === false)
+  ok('ja/nein ebenso', flags('nein', 'ja').checked.entries[0].includeInAnalytics === false)
+  ok('1/0 ebenso', flags('0', '1').checked.entries[0].includeInAnalytics === false)
+  ok('leer heißt: zählt', flags('', '').checked.entries[0].includeInAnalytics === true)
+  ok('leer heißt: nicht zu prüfen', flags('', '').checked.entries[0].needsReview === false)
+  ok('„vielleicht" ist keine Antwort auf „Auswertung"',
+     flags('vielleicht', 'false').parsed.errors[0].code === 'analytics_invalid')
+  ok('… und nennt die Zeile', flags('vielleicht', 'false').parsed.errors[0].message.includes('Umsatz 1'))
+  ok('„vielleicht" ist auch keine Antwort auf „Prüfen"',
+     flags('true', 'vielleicht').parsed.errors[0].code === 'review_invalid')
+
+  // Buchungsart.
+  const typ = (value) =>
+    readTable(table(['2026-09-18;Test;-1,00;EUR;REWE;lebensmittel;' + value + ';true;;false']))
+  ok('ein Slug wird gelesen', typ('refund').checked.entries[0].transactionType === 'refund')
+  ok('der deutsche Name auch', typ('Retoure').checked.entries[0].transactionType === 'refund')
+  ok('Groß-/Kleinschreibung egal', typ('REFUND').checked.entries[0].transactionType === 'refund')
+  ok('ein erfundener Typ wird gemeldet', typ('Kauf am Automaten').checked.errors[0].code === 'type_unknown')
+
+  // Das Trennzeichen im Text.
+  ok('ein Feld in Anführungszeichen darf ein Semikolon enthalten',
+     splitSemicolonLine('a;"b;c";d').join('|') === 'a|b;c|d')
+  ok('ein verdoppeltes Anführungszeichen ist eines',
+     splitSemicolonLine('a;"b""c";d').join('|') === 'a|b"c|d')
+  ok('ein Anführungszeichen mitten im Text ist Text',
+     splitSemicolonLine('a;b"c;d').join('|') === 'a|b"c|d')
+  const quoted = readTable(table(['2026-09-18;"REWE; Troisdorf";-24,95;EUR;REWE;lebensmittel;purchase;true;;false']))
+  ok('… und die Zeile geht durch', quoted.checked.ok)
+  ok('… mit dem Semikolon im Originaltext',
+     quoted.checked.entries[0].rawDescription === 'REWE; Troisdorf')
+
+  const zuviel = readTable(table(['2026-09-18;REWE; Troisdorf;-24,95;EUR;REWE;lebensmittel;purchase;true;;false']))
+  ok('ein unerlaubtes Semikolon im Text wird gemeldet, nicht verschluckt',
+     zuviel.parsed.errors[0].code === 'row_too_many_fields')
+  ok('… und die Meldung erklärt, woran es liegt',
+     zuviel.parsed.errors[0].message.includes('Semikolon'))
+  ok('zu wenige Felder werden ebenso gemeldet',
+     readTable(table(['2026-09-18;REWE;-24,95'])).parsed.errors[0].code === 'row_too_few_fields')
+  ok('nichts wird gespeichert, wenn eine Zeile kaputt ist',
+     readTable(table([ROW, '2026-09-18;REWE;-24,95'])).parsed.payload === null)
+
+  // Kopfzeile und Verpackung.
+  ok('eine fehlende Kopfzeile wird gemeldet',
+     parseAIImport('2026-09-18;REWE;-24,95;EUR;REWE;lebensmittel;purchase;true;;false').errors[0].code === 'header_missing')
+  ok('… und die Meldung nennt die erwartete Kopfzeile',
+     parseAIImport('irgendwas').errors[0].message.includes(AI_CSV_HEADER))
+  ok('eine Kopfzeile ohne Umlaute wird erkannt',
+     readTable(table([ROW]).replace(AI_CSV_HEADER, 'Datum;Beschreibung;Betrag;Waehrung;Haendler;Kategorie;Typ;Auswertung;Notiz;Pruefen')).parsed.ok)
+  ok('eine Kopfzeile in Kleinbuchstaben wird erkannt',
+     readTable(table([ROW]).replace(AI_CSV_HEADER, AI_CSV_HEADER.toLowerCase())).parsed.ok)
+  ok('ein Semikolon am Ende der Kopfzeile stört nicht',
+     readTable(table([ROW]).replace(AI_CSV_HEADER, AI_CSV_HEADER + ';')).parsed.ok)
+  ok('ein Codeblock ist Verpackung',
+     readTable('\`\`\`csv\\n' + table([ROW]) + '\\n\`\`\`').parsed.ok)
+  ok('ein Satz vor der Tabelle ist Verpackung',
+     readTable('Hier ist die Tabelle:\\n\\n' + table([ROW])).parsed.ok)
+  ok('Leerzeilen zwischen den Buchungen stören nicht',
+     readTable(table([ROW, '', ROW])).checked.entries.length === 2)
+  ok('eine Tabelle ohne eine einzige Buchung wird gemeldet',
+     parseAIImport(AI_CSV_HEADER).errors[0].code === 'rows_missing')
+  ok('leerer Text bleibt „nichts eingefügt"', parseAIImport('   ').errors[0].code === 'empty')
+
+  // Auch hier: jede Bank ist nach dem Einfügen dieselbe Bank.
+  const revolut = readTable(table(['2026-09-18;TESCO LONDON;-18,40;GBP;Tesco;lebensmittel;purchase;true;;false']))
+  ok('eine ausländische Bank geht durch die Tabelle genauso',
+     revolut.checked.entries[0].currency === 'GBP' && revolut.checked.entries[0].amountMinor === -1840)
+
+  // Und der Plan danach ist derselbe Plan.
+  const planTable = buildAIImportPlan({
+    entries: checked.entries, existing: [stored()], accountId: ACCOUNT,
+  })
+  ok('der kontobezogene Abgleich arbeitet auf dem Tabellen-Ergebnis unverändert',
+     planTable.rows[0].status === 'duplicate')
+}
+
+// ── 14. Die eine effektive Einordnung ───────────────────────────────────────
+{
+  const REWE_TX = {
+    id: 'tx-rewe', account_id: ACCOUNT, booking_date: '2026-09-18', amount_minor: -2495,
+    currency: 'EUR', raw_description: 'REWE TROISDORF SAGT DANKE 8407',
+    normalized_tokens: tokenize('REWE TROISDORF SAGT DANKE 8407'),
+    category_id: 'cat-lebensmittel', manual_lock: false,
+  }
+  const GOOD = {
+    transaction_id: 'tx-rewe', merchant_name: 'REWE', category_id: 'cat-lebensmittel',
+    needs_review: false, created_at: '2026-09-18T10:00:00Z',
+  }
+  const resolve = (over = {}) =>
+    resolveEffectiveClassification({ transaction: REWE_TX, suggestion: GOOD, ...over })
+
+  ok('ein vollständiger, sicherer Vorschlag ordnet den Umsatz ein',
+     resolve().status === FINANCE_STATUS.RESOLVED)
+  ok('… und er wartet auf niemanden mehr', resolve().needsDecision === false)
+  ok('… und die Herkunft ist ehrlich benannt',
+     resolve().source === CLASSIFICATION_SOURCE.AI_SUGGESTION)
+  ok('… der Händler bleibt ein Name, keine ID',
+     resolve().merchantId === null && resolve().aiMerchantName === 'REWE')
+  ok('… und der Vorschlag bleibt am Ergebnis hängen',
+     resolve().aiSuggestion === GOOD)
+
+  // Was NICHT reicht.
+  ok('needs_review=true bleibt zu prüfen',
+     resolve({ suggestion: { ...GOOD, needs_review: true } }).needsDecision === true)
+  ok('ein fehlender Händler bleibt zu prüfen',
+     resolve({ suggestion: { ...GOOD, merchant_name: null } }).needsDecision === true)
+  ok('ein leerer Händlername ebenso',
+     resolve({ suggestion: { ...GOOD, merchant_name: '   ' } }).needsDecision === true)
+  ok('eine fehlende Kategorie bleibt zu prüfen',
+     resolve({ suggestion: { ...GOOD, category_id: null } }).needsDecision === true)
+  ok('kein Vorschlag bleibt zu prüfen', resolve({ suggestion: null }).needsDecision === true)
+  ok('isUsableSuggestion sagt dasselbe an einer Stelle',
+     isUsableSuggestion(GOOD) === true &&
+     isUsableSuggestion({ ...GOOD, needs_review: true }) === false &&
+     isUsableSuggestion(null) === false)
+
+  // Die eigenen Regeln gehen vor.
+  const merchants = [
+    { id: 'm-rewe', canonical_name: 'REWE', review_mode: 'auto' },
+    { id: 'm-edeka', canonical_name: 'EDEKA', review_mode: 'always_review' },
+    { id: 'm-nah', canonical_name: 'Nahkauf', review_mode: 'auto' },
+  ]
+  const patterns = [
+    { id: 'p1', merchant_id: 'm-rewe', pattern_type: 'exact_token', tokens: ['REWE'], active: true },
+  ]
+  const rules = [
+    { id: 'r1', merchant_id: 'm-rewe', category_id: 'cat-restaurant', active: true,
+      min_amount_minor: null, max_amount_minor: null, currency: null },
+  ]
+  const byRule = resolve({ merchants, patterns, rules })
+  ok('eine eigene Regel gewinnt gegen den Vorschlag',
+     byRule.source === CLASSIFICATION_SOURCE.RULE && byRule.categoryId === 'cat-restaurant')
+  ok('… und der Umsatz ist trotzdem erledigt', byRule.needsDecision === false)
+
+  const byOverride = resolve({
+    merchants, patterns, rules,
+    override: { transaction_id: 'tx-rewe', category_id: 'cat-sonstige' },
+  })
+  ok('die Entscheidung des Menschen gewinnt gegen beide',
+     byOverride.source === CLASSIFICATION_SOURCE.OVERRIDE && byOverride.categoryId === 'cat-sonstige')
+
+  const conflict = resolve({
+    merchants,
+    patterns: [
+      ...patterns,
+      { id: 'p2', merchant_id: 'm-nah', pattern_type: 'exact_token', tokens: ['TROISDORF'], active: true },
+    ],
+    rules,
+  })
+  ok('ein Konflikt zwischen zwei eigenen Händlern bleibt eine Frage an den Menschen',
+     conflict.status === FINANCE_STATUS.CONFLICT && conflict.needsDecision === true)
+
+  const alwaysReview = resolve({
+    merchants,
+    patterns: [{ id: 'p3', merchant_id: 'm-edeka', pattern_type: 'exact_token', tokens: ['REWE'], active: true }],
+    rules: [],
+  })
+  ok('„immer prüfen" lässt sich von keinem Modell wegdrücken',
+     alwaysReview.needsDecision === true)
+
+  const noRule = resolve({ merchants, patterns, rules: [] })
+  ok('ein bekannter Händler ohne eigene Regel bleibt offen — die Regel schreibt kein Modell',
+     noRule.needsDecision === true && noRule.reason === 'no_rule_for_merchant')
+
+  ok('eine von Hand entschiedene Buchung bleibt entschieden',
+     resolve({ transaction: { ...REWE_TX, manual_lock: true }, suggestion: null }).needsDecision === false)
+
+  // Nichts Globales entsteht.
+  const merchantsBefore = JSON.stringify(merchants)
+  const patternsBefore = JSON.stringify(patterns)
+  resolve({ merchants, patterns, rules })
+  ok('das Auflösen legt keinen Händler an', JSON.stringify(merchants) === merchantsBefore)
+  ok('… und kein Muster', JSON.stringify(patterns) === patternsBefore)
+
+  // Mehrere Vorschläge je Buchung.
+  const older = { ...GOOD, category_id: 'cat-sonstige', created_at: '2026-09-01T10:00:00Z' }
+  ok('der jüngste Vorschlag gilt',
+     newestSuggestions([older, GOOD]).get('tx-rewe') === GOOD)
+  ok('… unabhängig von der Reihenfolge, in der sie gelesen wurden',
+     newestSuggestions([GOOD, older]).get('tx-rewe') === GOOD)
+  ok('ein Vorschlag zu einer anderen Buchung gilt nicht hier',
+     newestSuggestions([{ ...GOOD, transaction_id: 'tx-andere' }]).get('tx-rewe') === undefined)
+
+  // Und dasselbe durch die Warteschlange.
+  const queue = buildClassificationQueue({
+    transactions: [REWE_TX], aiSuggestions: [GOOD],
+  })
+  ok('die Warteschlange bleibt leer', queue.open.length === 0)
+  ok('… die Zusammenfassung sagt „nichts offen"', queue.summary.offen === 0)
+  ok('… und sagt, worauf die Einordnung beruht', queue.summary.ki === 1)
+  ok('needsDecision liest die eine Antwort', needsDecision(queue.entries[0]) === false)
+
+  const flagged = buildClassificationQueue({
+    transactions: [REWE_TX], aiSuggestions: [{ ...GOOD, needs_review: true }],
+  })
+  ok('eine unsichere Buchung bleibt sichtbar', flagged.open.length === 1)
+  ok('… und zählt nicht als KI-eingeordnet', flagged.summary.ki === 0)
+
+  ok('ohne Vorschläge verhält sich die Warteschlange wie vor v1.23',
+     buildClassificationQueue({ transactions: [REWE_TX] }).open.length === 1)
+
+  // ── Die Regression aus der Vorgabe, von der Antwort bis zur Warteschlange ──
+  const answer = [
+    AI_CSV_HEADER,
+    '2026-09-18;REWE TROISDORF SAGT DANKE 8407;-24,95;EUR;REWE;lebensmittel;purchase;true;;false',
+  ].join('\\n')
+  const read = parseAIImport(answer)
+  const validated = validateAIImport(read.payload, { categories: CATEGORIES })
+  const plan = buildAIImportPlan({ entries: validated.entries, existing: [], accountId: ACCOUNT })
+  const payload = buildAIApplyPayload({ importId: IMPORT, accountId: ACCOUNT, rows: plan.rows })
+  const booking = payload.bookings[0]
+
+  ok('REGRESSION: die Zeile wird importiert', payload.bookings.length === 1)
+  ok('REGRESSION: … mit der vorgeschlagenen Kategorie', booking.category_id === 'cat-lebensmittel')
+  ok('REGRESSION: … ohne erzwungene Nutzerentscheidung', booking.user_decision === null)
+  ok('REGRESSION: … und der Vorschlag bleibt nachvollziehbar',
+     booking.suggestion.merchant_name === 'REWE' &&
+     booking.suggestion.category_id === 'cat-lebensmittel' &&
+     booking.suggestion.needs_review === false)
+  ok('REGRESSION: … es entsteht keine globale Händler- oder Musterregel',
+     JSON.stringify(payload).includes('merchant_id') === false &&
+     JSON.stringify(payload).includes('pattern') === false)
+
+  // So, wie die Datenbank es speichert, und so, wie es zurückgelesen wird.
+  const savedTx = {
+    id: 'tx-neu', account_id: ACCOUNT, booking_date: booking.booking_date,
+    amount_minor: booking.amount_minor, currency: booking.currency,
+    raw_description: booking.raw_description, normalized_tokens: booking.normalized_tokens,
+    category_id: booking.category_id, manual_lock: false,
+  }
+  const savedSuggestion = {
+    transaction_id: 'tx-neu', ...booking.suggestion, created_at: '2026-09-18T12:00:00Z',
+  }
+  const afterImport = buildClassificationQueue({
+    transactions: [savedTx], aiSuggestions: [savedSuggestion],
+  })
+  ok('REGRESSION: nach dem Import gibt es keine offene Zuordnung', afterImport.summary.offen === 0)
+  ok('REGRESSION: … und der Umsatz gilt als eingeordnet', afterImport.summary.zugeordnet === 1)
+
+  const unsicher = { ...savedSuggestion, needs_review: true }
+  ok('REGRESSION: dieselbe Zeile mit „Prüfen" bleibt sichtbar',
+     buildClassificationQueue({ transactions: [savedTx], aiSuggestions: [unsicher] }).open.length === 1)
 }
 
 console.log(\`finance ai logic: \${pass} passed, \${fail} failed\`)

@@ -1,5 +1,5 @@
-import { FINANCE_STATUS, matchMerchant } from './merchantMatching'
-import { resolveCategory } from './categoryRules'
+import { FINANCE_STATUS } from './merchantMatching'
+import { newestSuggestions, resolveEffectiveClassification } from './effectiveClassification'
 
 // Which bookings still need a human, and which do not.
 //
@@ -16,6 +16,14 @@ import { resolveCategory } from './categoryRules'
 // responsibilities. The importer writes what the bank said. This decides what it
 // means, every time it is asked, from rows the user can see and change.
 //
+// SINCE v1.23 THERE IS A THIRD OPINION — the AI import's suggestion — and it is
+// deliberately NOT resolved here. The whole ladder (override → manual_lock →
+// the user's own rules → a complete, unflagged AI suggestion → open) lives in
+// src/lib/finance/effectiveClassification.js, so that every screen asking "is
+// this booking done?" gets the same answer from the same place. This file is
+// what it always was: the queue built on top of that answer — ordering,
+// skipping, counting.
+//
 // Pure functions over rows — no React, no Supabase. The caller loads.
 
 /**
@@ -27,11 +35,14 @@ import { resolveCategory } from './categoryRules'
  *   merchants?: Array<object>,
  *   rules?: Array<object>,
  *   override?: object|null,
+ *   suggestion?: object|null,
  * }} input
  * @returns {{
  *   transaction: object, merchantMatch: object, category: object,
  *   status: string, merchantStatus: string, locked: boolean,
  *   merchantId: string|null, categoryId: string|null, reason: string|null,
+ *   source: string|null, aiSuggestion: object|null, aiMerchantName: string|null,
+ *   needsDecision: boolean,
  * }}
  */
 export function classifyTransaction({
@@ -40,32 +51,23 @@ export function classifyTransaction({
   merchants = [],
   rules = [],
   override = null,
+  suggestion = null,
 } = {}) {
-  const merchantMatch = matchMerchant({ transaction, patterns, merchants })
-  const category = resolveCategory({ transaction, merchantMatch, rules, override })
-  return {
-    transaction,
-    merchantMatch,
-    category,
-    status: category.status,
-    merchantStatus: merchantMatch.status,
-    locked: category.locked === true,
-    merchantId: category.merchantId ?? merchantMatch.merchantId ?? null,
-    categoryId: category.categoryId ?? null,
-    reason: category.reason ?? null,
-  }
+  return resolveEffectiveClassification({
+    transaction, patterns, merchants, rules, override, suggestion,
+  })
 }
 
 /**
  * Does this booking still need a decision?
  *
- * A locked booking never does — somebody already decided it by hand, and the
- * queue is not a place to ask them again. A resolved booking never does either.
- * What is left is the honest three: nothing matched, two merchants matched, or
- * the merchant is one the user asked to see every time.
+ * One line, and it reads an answer rather than computing one: the ladder in
+ * effectiveClassification.js has already weighed the override, the manual lock,
+ * the user's own rules and the AI suggestion against each other. Re-deriving
+ * "open" from `status` and `locked` here would be a second definition of the
+ * same word, and the two would drift.
  */
-export const needsDecision = (entry) =>
-  !entry.locked && entry.status !== FINANCE_STATUS.RESOLVED
+export const needsDecision = (entry) => entry.needsDecision === true
 
 // Newest first, id as the tiebreak — the order the transaction list already
 // uses, and one that does not change when the database returns rows differently.
@@ -83,7 +85,8 @@ const byDate = (a, b) =>
  *
  * @param {{
  *   transactions?: Array<object>, patterns?: Array<object>, merchants?: Array<object>,
- *   rules?: Array<object>, overrides?: Array<object>, skippedIds?: Array<string>|Set<string>,
+ *   rules?: Array<object>, overrides?: Array<object>, aiSuggestions?: Array<object>,
+ *   skippedIds?: Array<string>|Set<string>,
  * }} input
  */
 export function buildClassificationQueue({
@@ -92,11 +95,13 @@ export function buildClassificationQueue({
   merchants = [],
   rules = [],
   overrides = [],
+  aiSuggestions = [],
   skippedIds = [],
 } = {}) {
   const overrideByTransaction = new Map(
     overrides.filter((o) => o?.transaction_id).map((o) => [o.transaction_id, o])
   )
+  const suggestionByTransaction = newestSuggestions(aiSuggestions)
   const skipped = skippedIds instanceof Set ? skippedIds : new Set(skippedIds)
 
   const entries = transactions.map((transaction) =>
@@ -106,6 +111,7 @@ export function buildClassificationQueue({
       merchants,
       rules,
       override: overrideByTransaction.get(transaction?.id) ?? null,
+      suggestion: suggestionByTransaction.get(transaction?.id) ?? null,
     })
   )
 
@@ -139,5 +145,9 @@ export function summarizeQueue(entries = []) {
     pruefung: open.filter((e) => e.status === FINANCE_STATUS.REVIEW_REQUIRED).length,
     zugeordnet: count((e) => e.status === FINANCE_STATUS.RESOLVED),
     entschieden: count((e) => e.locked),
+    // Wie viele davon der KI-Vorschlag getragen hat. Nicht für die Warteschlange
+    // — die zählt `offen` — sondern damit ein Screen sagen kann, worauf die
+    // Einordnung eigentlich beruht.
+    ki: count((e) => e.source === 'ai_suggestion'),
   }
 }

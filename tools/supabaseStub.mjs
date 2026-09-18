@@ -41,6 +41,12 @@ export const FINANCE_TABLES = [
   'finance_transaction_relation_members',
   'finance_import_review_items',
   'finance_import_review_item_transactions',
+  // Added by 0011. Read on every finance load for the same kind of reason the
+  // observations are: the classification queue asks whether a booking is
+  // already sufficiently sorted, and since v1.23 a complete AI suggestion is
+  // one of the answers. A stub without this table makes the whole module look
+  // like a failed request.
+  'finance_transaction_ai_suggestions',
 ]
 
 // Creating a Supabase client also builds its realtime client, and that one

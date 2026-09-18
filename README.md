@@ -283,13 +283,21 @@ src/
                             calls wired once, and outcomes turned into German
       manualTransaction.js  one booking typed by hand → the atomic RPC's payload
       types.js              the row and result shapes, as JSDoc typedefs
+      effectiveClassification.js
+                            the one ladder every screen asks: override →
+                            manual_lock → the user's own rules → a complete,
+                            unflagged AI suggestion → open
       ai/                   the bank-independent import (v1.23) — everything
                             after ChatGPT has answered:
-        format.js           the versioned import format, written down once
+        format.js           the two written-down formats: the semicolon table
+                            (primary) and the versioned JSON (fallback)
+        semicolon.js        the table: quote-aware splitting, German amounts,
+                            true/false — into the same records as the JSON
         prompt.js           „KI-Kontext kopieren": the whole prompt, built by
                             the app from this account's own data
         providers.js        payment service providers — PayPal is not a merchant
-        parse.js            pasted text → envelope → checked rows, or a refusal
+        parse.js            pasted text → the one record shape → checked rows,
+                            or a refusal
         dedupe.js           account-scoped, exact, multiset — never fuzzy
         plan.js             rows + what is already stored → the preview and the
                             payload the database applies
@@ -805,13 +813,35 @@ zu irgendetwas:
 5. „Importieren" schreibt über `finance_apply_ai_import` (0011) alles oder
    nichts.
 
-**Das Format ist versioniert und der Parser ist streng.** `leben-finance-import`
-v1; eine unbekannte Version wird abgelehnt statt geraten. Ein fehlender Betrag,
-ein fehlendes Datum, eine erfundene Währung oder eine unbekannte Buchungsart
-sind Fehler, bei denen **nichts** gespeichert wird. Eine unbekannte Kategorie
-dagegen wird zu `null` plus `needs_review` — sie auf die ähnlichste abzubilden
-wäre genau das Raten, das dieses Modul nirgends tut. Dasselbe gilt für einen
-Händler, den das Modell nicht eindeutig erkennen konnte.
+**Das sichtbare Format ist eine Tabelle.** Feste Kopfzeile, eine Zeile je
+Buchung, Semikolon als Trenner:
+
+```
+Datum;Beschreibung;Betrag;Währung;Händler;Kategorie;Typ;Auswertung;Notiz;Prüfen
+2026-09-18;REWE TROISDORF SAGT DANKE 8407;-24,95;EUR;REWE;lebensmittel;purchase;true;;false
+```
+
+Eine Tabelle kann ein Mensch überfliegen, bevor er sie einfügt; einen JSON-Baum
+kann er nur glauben. Datum als `YYYY-MM-DD`, Betrag mit Komma und ohne
+Tausenderzeichen, Händler/Kategorie/Notiz dürfen leer sein, Auswertung und
+Prüfen sind `true`/`false`. Das Semikolon trennt die Felder und darf deshalb in
+keinem Text stehen — der Prompt sagt das, und der Parser liest ein Feld in
+Anführungszeichen trotzdem korrekt, statt sich darauf zu verlassen. Das
+versionierte JSON aus der ersten Fassung bleibt als kompatibler Nebeneingang:
+**beide Türen enden in exakt demselben internen Modell**, und danach gibt es
+keinen Unterschied mehr — dieselbe Prüfung, derselbe Abgleich, dieselbe
+Datenbankfunktion.
+
+**Der Parser ist streng.** Ein fehlender Betrag, ein fehlendes Datum, eine
+erfundene Währung, eine unbekannte Buchungsart, eine Zeile mit zu vielen Feldern
+oder ein „vielleicht" in einer Ja/Nein-Spalte sind Fehler, bei denen **nichts**
+gespeichert wird — und die Meldung nennt die Zeile. `1.234` wird abgelehnt statt
+geraten: ein Trennzeichen mit genau drei Ziffern dahinter kann 1234 oder 1,234
+bedeuten, und das ist der eine Fall, in dem Raten den Betrag um Faktor tausend
+verfehlt. Eine unbekannte Kategorie dagegen wird zu `null` plus „prüfen" — sie
+auf die ähnlichste abzubilden wäre genau das Raten, das dieses Modul nirgends
+tut. Dasselbe gilt für einen Händler, den das Modell nicht eindeutig erkennen
+konnte.
 
 **Dedupe ist kontobezogen, exakt und eine Multimenge.** Verglichen werden Konto,
 Buchungsdatum, Betrag, Währung und Originaltext — normalisiert über denselben
@@ -830,15 +860,41 @@ Mensch im Preview korrigiert hat, steht als Entscheidung in
 `finance_transaction_overrides` und setzt `manual_lock`. Aus der Differenz der
 beiden lernt v1.24.
 
+**Eine Meinung mehr braucht eine Rangfolge, und die steht an genau einer
+Stelle.** `src/lib/finance/effectiveClassification.js` beantwortet für jeden
+Screen dieselbe Frage — „ist dieser Umsatz eingeordnet?" — in dieser Ordnung:
+
+1. der **Override** — was ein Mensch über genau diese Buchung entschieden hat
+2. `manual_lock` — von Hand angelegt oder von Hand entschieden
+3. die **eigenen Regeln** — Muster und Kategorieregeln des Nutzers. Sie gehen
+   jedem Modellvorschlag vor, auch wenn sie zu keinem Ergebnis kommen: ein
+   Konflikt zwischen zwei eigenen Händlern und ein Händler auf „immer prüfen"
+   sind Fragen an einen Menschen, und kein Sprachmodell drückt sie weg
+4. der **KI-Vorschlag** — aber nur vollständig (Händler *und* Kategorie) und nur
+   ohne gemeldete Unsicherheit. Dann gilt der Umsatz als ausreichend eingeordnet
+   und verschwindet aus der Zuordnung
+5. sonst: offen
+
+Ein so eingeordneter Umsatz bekommt dadurch **keinen Händler, kein Muster und
+keine Regel** — die drei Ebenen (Modellvorschlag ≠ Nutzerentscheidung ≠ globale
+Lernregel) bleiben getrennt und einzeln nachvollziehbar. Was sich ändert, ist
+allein, ob diese eine Buchung noch jemanden beschäftigen muss.
+
 **Was v1.23 nicht anfasst:** keine bestehende Nutzerentscheidung wird
 überschrieben, keine Alt-Daten werden migriert, die Pattern- und Lern-Engine
-bleibt vollständig, und der DKB-Weg bleibt technisch bestehen.
+bleibt vollständig, und der DKB-Weg bleibt technisch bestehen. Ohne
+KI-Vorschläge verhält sich die Zuordnung exakt wie vor v1.23 — die vierte Stufe
+der Rangfolge existiert für Buchungen, die es vorher nicht gab.
 
-Geprüft in `tools/financeAiLogic.mjs` (184 Assertions, reine Logik),
-`tools/financeAiE2E.mjs` (69, gegen ein echtes Postgres mit den echten
+Geprüft in `tools/financeAiLogic.mjs` (289 Assertions, reine Logik),
+`tools/financeAiE2E.mjs` (83, gegen ein echtes Postgres mit den echten
 Migrationen und RPCs) und `tools/financeAiLayout.mjs` (44, der echte Preview in
 Chromium bei 390×844 und 390×667, mit Texten, wie ein Sprachmodell sie
-schreibt).
+schreibt). Die Regression aus der Vorgabe — „REWE TROISDORF, merchant=REWE,
+category=lebensmittel, needs_review=false" führt zu einer importierten Buchung
+ohne offene Zuordnung, mit nachlesbarem Vorschlag und ohne globale Regel — läuft
+in allen dreien: als reine Logik, gegen die echte Datenbank und im gemounteten
+Screen (`tools/smoke.mjs`).
 
 ---
 

@@ -35,6 +35,11 @@ export function FinanceProvider({ children }) {
   // read back with the bookings.
   const [observations, setObservations] = useState([])
   const [overrides, setOverrides] = useState([])
+  // Was ein KI-Import zu einer Buchung vorgeschlagen hat. Nicht Deko: die
+  // zentrale Einordnungsregel (src/lib/finance/effectiveClassification.js) liest
+  // sie, um zu entscheiden, ob ein Umsatz noch jemanden beschäftigen muss — und
+  // ohne sie stünde nach jedem Reload wieder alles in der Warteschlange.
+  const [aiSuggestions, setAiSuggestions] = useState([])
   // The rule engine's own rows. They are what decides which bookings still need
   // a human — not the `merchant_id` column on the booking — so a screen that
   // asks that question needs all four of them, and needs them again after every
@@ -53,7 +58,7 @@ export function FinanceProvider({ children }) {
       try {
         const [
           accountRows, transactionRows, observationRows, overrideRows,
-          categoryRows, merchantRows, patternRows, ruleRows,
+          categoryRows, merchantRows, patternRows, ruleRows, suggestionRows,
         ] = await Promise.all([
           repo.listAccounts(user.id),
           repo.listTransactions(user.id),
@@ -63,11 +68,13 @@ export function FinanceProvider({ children }) {
           repo.listMerchants(user.id),
           repo.listPatterns(user.id),
           repo.listCategoryRules(user.id),
+          repo.listAiSuggestions(user.id),
         ])
         setAccounts(accountRows)
         setTransactions(transactionRows)
         setObservations(observationRows)
         setOverrides(overrideRows)
+        setAiSuggestions(suggestionRows)
         setCategories(categoryRows)
         setMerchants(merchantRows)
         setPatterns(patternRows)
@@ -311,6 +318,7 @@ export function FinanceProvider({ children }) {
       patterns,
       categoryRules,
       overrides,
+      aiSuggestions,
       overrideTransactionIds: overrides.map((o) => o.transaction_id),
       loading,
       error,
@@ -327,7 +335,7 @@ export function FinanceProvider({ children }) {
       saveClassification,
     }),
     [accounts, account, transactions, observations, categories, merchants, patterns, categoryRules,
-     overrides, loading, error, load, createAccount, findImport, openImport, applyPlan, learnRule,
+     overrides, aiSuggestions, loading, error, load, createAccount, findImport, openImport, applyPlan, learnRule,
      saveOverride, setMerchantAnalytics, saveClassification, createManualTransaction, applyAiImport]
   )
 

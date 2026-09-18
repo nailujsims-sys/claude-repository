@@ -49,7 +49,44 @@ export const AI_IMPORT_EXAMPLE = Object.freeze({
   needs_review: false,
 })
 
-/** Der Umschlag als Text, wie ChatGPT ihn zurückgeben soll. */
+// ── Das sichtbare Format: eine Zeile je Buchung ─────────────────────────────
+// Was ChatGPT seit v1.23 zurückgeben soll. Eine Tabelle kann ein Mensch
+// überfliegen, bevor er sie einfügt; einen JSON-Baum kann er nur glauben.
+// Der JSON-Weg oben bleibt als kompatibler Nebeneingang bestehen — beide enden
+// nach dem Einlesen in exakt demselben internen Modell.
+
+/** Die Spalten, in dieser Reihenfolge. Prompt und Parser lesen dieselbe Liste. */
+export const AI_CSV_COLUMNS = Object.freeze([
+  'Datum',
+  'Beschreibung',
+  'Betrag',
+  'Währung',
+  'Händler',
+  'Kategorie',
+  'Typ',
+  'Auswertung',
+  'Notiz',
+  'Prüfen',
+])
+
+/** Die feste Kopfzeile. */
+export const AI_CSV_HEADER = AI_CSV_COLUMNS.join(';')
+
+/** Der Trenner. Genau einer, und er steht hier, damit ihn niemand neu erfindet. */
+export const AI_CSV_SEPARATOR = ';'
+
+/** Zwei Beispielzeilen für den Prompt — eine sichere, eine unsichere. */
+export const AI_CSV_EXAMPLE_ROWS = Object.freeze([
+  '2026-09-18;REWE TROISDORF SAGT DANKE 8407;-24,95;EUR;REWE;lebensmittel;purchase;true;;false',
+  '2026-09-19;PAYPAL .Zalando SE;-8,99;EUR;;;purchase;true;;true',
+])
+
+/** Kopfzeile plus Beispielzeilen, als ein Block. */
+export function formatExampleTable() {
+  return [AI_CSV_HEADER, ...AI_CSV_EXAMPLE_ROWS].join('\n')
+}
+
+/** Der Umschlag als Text, wie der kompatible JSON-Weg ihn erwartet. */
 export function formatExampleJson() {
   return JSON.stringify(
     {
