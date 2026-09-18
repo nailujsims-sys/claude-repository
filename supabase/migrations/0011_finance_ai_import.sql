@@ -148,9 +148,25 @@ create table if not exists public.finance_transaction_ai_suggestions (
   note                  text,
   -- „Ich bin mir nicht sicher." Vom Modell gesetzt oder vom Parser erzwungen.
   needs_review          boolean not null default false,
-  -- Hat der Mensch diesen Vorschlag im Preview angefasst? Das ist die Spalte,
-  -- aus der v1.24 lernt: Vorschlag + Korrektur = ein Trainingsbeispiel.
-  user_edited           boolean not null default false,
+  -- Was ein Mensch im Preview mit diesem Vorschlag gemacht hat. DREI Werte, und
+  -- sie sind der Grund, warum hier kein Boolean steht:
+  --
+  --   none      niemand hat die Zeile angesehen (sie war sicher genug)
+  --   confirmed angesehen und für richtig befunden, ohne ein Feld zu ändern
+  --   corrected angesehen und geändert
+  --
+  -- WARUM DAS EIN UNTERSCHIED IST. v1.24 soll aus diesen Zeilen lernen, und
+  -- „confirmed" ist das wertvollste Signal, das es gibt: das Modell war
+  -- unsicher UND hatte recht. Mit einem `user_edited boolean` wäre genau das
+  -- nicht ausdrückbar — eine Bestätigung sähe aus wie „nie angefasst", oder,
+  -- schlimmer, man setzt `user_edited` trotzdem und behauptet eine Korrektur,
+  -- die nie stattgefunden hat. Dann lernt v1.24 aus einem Vorschlag, der richtig
+  -- war, dass er falsch war.
+  --
+  -- Ein Textfeld mit Check statt zweier Booleans, weil zwei Booleans vier
+  -- Zustände haben und einer davon (geändert, aber nicht angesehen) keinen Sinn
+  -- ergibt. Was es nicht geben kann, soll man nicht speichern können.
+  human_review          text not null default 'none',
   -- Das Format, in dem der Vorschlag ankam. Versioniert, damit ein später
   -- geändertes Importformat alte Vorschläge nicht stillschweigend uminterpretiert.
   format_version        integer not null default 1,
@@ -163,7 +179,9 @@ create table if not exists public.finance_transaction_ai_suggestions (
   constraint finance_ai_suggestions_type_known check (
     transaction_type in ('purchase', 'refund', 'transfer', 'income', 'fee', 'other')
   ),
-  constraint finance_ai_suggestions_format_version_known check (format_version >= 1)
+  constraint finance_ai_suggestions_format_version_known check (format_version >= 1),
+  constraint finance_ai_suggestions_human_review_known
+    check (human_review in ('none', 'confirmed', 'corrected'))
 );
 
 create unique index if not exists finance_ai_suggestions_tx_import_idx
@@ -172,10 +190,12 @@ create index if not exists finance_ai_suggestions_user_idx
   on public.finance_transaction_ai_suggestions (user_id, created_at desc);
 create index if not exists finance_ai_suggestions_import_idx
   on public.finance_transaction_ai_suggestions (import_id);
--- Die Frage, die v1.24 stellen wird: „wo lag das Modell daneben?"
-create index if not exists finance_ai_suggestions_edited_idx
-  on public.finance_transaction_ai_suggestions (user_id)
-  where user_edited;
+-- Die zwei Fragen, die v1.24 stellen wird: „wo lag das Modell daneben?" und
+-- „wo war es unsicher und hatte trotzdem recht?" Beide lesen diese Spalte, also
+-- indiziert sie beide — alles außer „nie angesehen".
+create index if not exists finance_ai_suggestions_reviewed_idx
+  on public.finance_transaction_ai_suggestions (user_id, human_review)
+  where human_review <> 'none';
 
 comment on table public.finance_transaction_ai_suggestions is
   'Was ein KI-Import zu einer Buchung vorgeschlagen hat — getrennt von der '
@@ -199,8 +219,9 @@ create policy "finance_ai_suggestions_insert_own" on public.finance_transaction_
   );
 
 -- Kein Update-Recht: ein Vorschlag ist eine Aussage von damals. Was der Mensch
--- daraus gemacht hat, steht im Override, nicht hier. `user_edited` wird beim
--- Anlegen gesetzt, weil die Korrektur im Preview passiert — vor dem Speichern.
+-- daraus gemacht hat, steht im Override, nicht hier. `human_review` wird beim
+-- Anlegen gesetzt, weil Prüfung und Korrektur im Preview passieren — vor dem
+-- Speichern.
 drop policy if exists "finance_ai_suggestions_delete_own" on public.finance_transaction_ai_suggestions;
 create policy "finance_ai_suggestions_delete_own" on public.finance_transaction_ai_suggestions
   for delete to authenticated using ((select auth.uid()) = user_id);
@@ -401,6 +422,14 @@ declare
   v_tx          uuid;
   v_type        text;
   v_include     boolean;
+  -- Die Entscheidung des Menschen, aufgeschlüsselt: einmal gelesen, dreimal
+  -- gefragt.
+  v_dec_merchant uuid;
+  v_dec_name     text;
+  v_dec_category uuid;
+  v_dec_note     text;
+  v_dec_include  boolean;
+  v_classifies   boolean;
   v_result      jsonb;
   b             jsonb;
   s             jsonb;
@@ -482,7 +511,7 @@ begin
     -- Der Vorschlag, so wie er ankam.
     insert into public.finance_transaction_ai_suggestions (
       user_id, transaction_id, import_id, merchant_name, category_id,
-      transaction_type, include_in_analytics, note, needs_review, user_edited,
+      transaction_type, include_in_analytics, note, needs_review, human_review,
       format_version
     ) values (
       v_user, v_tx, p_import_id,
@@ -492,39 +521,62 @@ begin
       coalesce((s->>'include_in_analytics')::boolean, v_include),
       nullif(btrim(coalesce(s->>'note', '')), ''),
       coalesce((s->>'needs_review')::boolean, false),
-      coalesce((s->>'user_edited')::boolean, false),
+      case when s->>'human_review' in ('confirmed', 'corrected')
+           then s->>'human_review' else 'none' end,
       coalesce((s->>'format_version')::integer, 1)
     )
     on conflict do nothing;
     get diagnostics v_count = row_count;
     v_suggested := v_suggested + v_count;
 
-    -- Nur wenn der Mensch im Preview wirklich etwas entschieden hat. Ein
-    -- unverändert übernommener Vorschlag ist keine Nutzerentscheidung und
-    -- bekommt deshalb auch keine Zeile in einer Tabelle, die genau das bedeutet.
+    -- Was der Mensch im Preview gesehen und mitgenommen hat. Ob daraus eine
+    -- Override-Zeile wird, entscheidet NICHT der Aufrufer, sondern dieselbe
+    -- Frage wie bei der Handbuchung: sagt diese Entscheidung etwas über die
+    -- Einordnung, oder hält sie etwas fest, das sonst verloren ginge?
     if d is not null then
-      insert into public.finance_transaction_overrides (
-        user_id, transaction_id, merchant_id, merchant_name, category_id,
-        include_in_analytics, transaction_type, note
-      ) values (
-        v_user, v_tx,
-        -- Ein Händler, den es schon gibt, wird verknüpft; einer, den der Mensch
-        -- gerade erst benannt hat, steht als Text daneben. In beiden Fällen
-        -- entsteht kein Muster und keine Regel.
-        nullif(d->>'merchant_id', '')::uuid,
-        nullif(btrim(coalesce(d->>'merchant_name', '')), ''),
-        nullif(d->>'category_id', '')::uuid,
-        (d->>'include_in_analytics')::boolean,
-        nullif(d->>'transaction_type', ''),
-        nullif(btrim(coalesce(d->>'note', '')), '')
-      )
-      on conflict (transaction_id) do nothing;
-      get diagnostics v_count = row_count;
-      v_decided := v_decided + v_count;
+      v_dec_merchant := nullif(d->>'merchant_id', '')::uuid;
+      v_dec_name     := nullif(btrim(coalesce(d->>'merchant_name', '')), '');
+      v_dec_category := nullif(d->>'category_id', '')::uuid;
+      v_dec_note     := nullif(btrim(coalesce(d->>'note', '')), '');
+      v_dec_include  := (d->>'include_in_analytics')::boolean;
+      -- Einordnung heißt: Händler oder Kategorie. Dieselbe Definition wie in
+      -- finance_create_manual_transaction und in
+      -- src/lib/finance/effectiveClassification.js — drei Stellen, eine Regel.
+      v_classifies := v_dec_merchant is not null
+                   or v_dec_name is not null
+                   or v_dec_category is not null;
 
-      -- Eine Zeile, die ein Mensch angefasst hat, ist entschieden. Die
-      -- Regelauswertung tritt nicht mehr darüber.
-      update public.finance_transactions set manual_lock = true where id = v_tx;
+      if v_classifies or v_dec_note is not null or v_dec_include = false then
+        insert into public.finance_transaction_overrides (
+          user_id, transaction_id, merchant_id, merchant_name, category_id,
+          include_in_analytics, transaction_type, note
+        ) values (
+          v_user, v_tx,
+          -- Ein Händler, den es schon gibt, wird verknüpft; einer, den der Mensch
+          -- gerade erst benannt hat, steht als Text daneben. In beiden Fällen
+          -- entsteht kein Muster und keine Regel.
+          v_dec_merchant,
+          v_dec_name,
+          v_dec_category,
+          -- Nur ein ausdrückliches „zählt nicht" gehört auf die erste Stufe der
+          -- Auswertungsregel. Ein bestätigtes „zählt" ist die Voreinstellung und
+          -- steht schon auf der Buchung.
+          case when v_dec_include = false then false else null end,
+          nullif(d->>'transaction_type', ''),
+          v_dec_note
+        )
+        on conflict (transaction_id) do nothing;
+        get diagnostics v_count = row_count;
+        v_decided := v_decided + v_count;
+      end if;
+
+      -- Gesperrt wird nur, was auch eingeordnet wurde. Eine Bestätigung ohne
+      -- Händler und ohne Kategorie ist eine GEPRÜFTE Buchung, keine
+      -- EINGEORDNETE — sie darf weiter in der Zuordnung auftauchen, und dass ein
+      -- Mensch sie angesehen hat, steht im Vorschlag (`human_review`).
+      if v_classifies then
+        update public.finance_transactions set manual_lock = true where id = v_tx;
+      end if;
     end if;
   end loop;
 

@@ -3220,7 +3220,7 @@ async function run() {
       id: '11111111-2222-4333-8444-000000000301', user_id: TEST_USER_ID,
       transaction_id: kiTx.id, merchant_name: 'REWE', category_id: FIN_CATEGORIES[0].id,
       transaction_type: 'purchase', include_in_analytics: true, note: null,
-      needs_review: false, user_edited: false, format_version: 1,
+      needs_review: false, human_review: 'none', format_version: 1,
       created_at: '2026-09-18T12:00:00.000Z', ...over,
     })
 

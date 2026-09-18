@@ -46,6 +46,8 @@ import {
   buildAIApplyPayload,
   buildAIImportPlan,
   rowDiffersFromSuggestion,
+  rowHumanReview,
+  rowIsCorrection,
   summarizeAIPlan,
 } from './src/lib/finance/ai/plan.js'
 import { buildAIContextPrompt, relevantMerchants } from './src/lib/finance/ai/prompt.js'
@@ -317,7 +319,7 @@ const stored = (over = {}) => ({
   ok('ein unveränderter Vorschlag ist keine Nutzerentscheidung',
      payload.bookings[0].user_decision === null)
   ok('… und wird auch nicht als Korrektur markiert',
-     payload.bookings[0].suggestion.user_edited === false)
+     payload.bookings[0].suggestion.human_review === 'none')
 
   throws('ein Payload ohne Import-ID wird verweigert',
          () => buildAIApplyPayload({ accountId: ACCOUNT, rows: plan.rows }))
@@ -347,7 +349,7 @@ const stored = (over = {}) => ({
   ok('die Korrektur greift', fixed.categoryId === 'cat-restaurant')
   ok('die Notiz wird beschnitten', fixed.note === 'Mittagessen')
   ok('der Vorschlag bleibt unangetastet', fixed.suggestion.categoryId === null)
-  ok('die Zeile gilt als angefasst', fixed.edited === true)
+  ok('die Zeile gilt als geprüft', fixed.reviewed === true)
   ok('… und zählt nicht mehr als zu prüfen', summarizeAIPlan([fixed]).pruefen === 0)
   ok('eine Korrektur unterscheidet sich vom Vorschlag', rowDiffersFromSuggestion(fixed) === true)
 
@@ -363,13 +365,16 @@ const stored = (over = {}) => ({
   const payload = buildAIApplyPayload({ importId: IMPORT, accountId: ACCOUNT, rows: [fixed] })
   ok('eine echte Korrektur wird als Nutzerentscheidung geschickt',
      payload.bookings[0].user_decision?.category_id === 'cat-restaurant')
-  ok('… und als solche markiert', payload.bookings[0].suggestion.user_edited === true)
+  ok('… und als Korrektur markiert', payload.bookings[0].suggestion.human_review === 'corrected')
   ok('… während der Vorschlag weiterhin sagt, was das Modell wollte',
      payload.bookings[0].suggestion.category_id === null)
 
   const confirmed = applyRowEdit(plan.rows[0], {})
-  ok('„passt so" ohne Änderung ist keine Nutzerentscheidung',
-     buildAIApplyPayload({ importId: IMPORT, accountId: ACCOUNT, rows: [confirmed] }).bookings[0].user_decision === null)
+  ok('„passt so" ohne Änderung ist eine Bestätigung, keine Korrektur',
+     rowHumanReview(confirmed) === 'confirmed')
+  ok('… und wird als Entscheidung des Menschen mitgeschickt',
+     buildAIApplyPayload({ importId: IMPORT, accountId: ACCOUNT, rows: [confirmed] })
+       .bookings[0].user_decision !== null)
 }
 
 // ── 9. Der Prompt ───────────────────────────────────────────────────────────
@@ -902,7 +907,7 @@ const stored = (over = {}) => ({
   const fixed = applyRowEdit(row, { merchantName: 'REWE', merchantId: null })
   ok('der korrigierte Name steht in der Zeile', fixed.merchantName === 'REWE')
   ok('der Vorschlag bleibt unangetastet', fixed.suggestion.merchantName === 'Troisdorf')
-  ok('die Zeile gilt als angefasst', fixed.edited === true)
+  ok('die Zeile gilt als geprüft', fixed.reviewed === true)
   ok('… und unterscheidet sich vom Vorschlag', rowDiffersFromSuggestion(fixed) === true)
 
   const payload = buildAIApplyPayload({ importId: IMPORT, accountId: ACCOUNT, rows: [fixed] })
@@ -911,7 +916,7 @@ const stored = (over = {}) => ({
   ok('… ohne auf einen Eintrag zu zeigen', payload.bookings[0].user_decision.merchant_id === null)
   ok('… und der Vorschlag sagt weiterhin, was das Modell wollte',
      payload.bookings[0].suggestion.merchant_name === 'Troisdorf')
-  ok('… und ist als korrigiert markiert', payload.bookings[0].suggestion.user_edited === true)
+  ok('… und ist als korrigiert markiert', payload.bookings[0].suggestion.human_review === 'corrected')
   ok('REGRESSION: aus der Korrektur entsteht keine Musterregel',
      JSON.stringify(payload).includes('pattern') === false &&
      JSON.stringify(payload).includes('tokens') === true)
@@ -934,9 +939,8 @@ const stored = (over = {}) => ({
 
   // Und was der Nutzer NICHT anfasst, bleibt keine Entscheidung.
   const untouched = applyRowEdit(row, {})
-  ok('„passt so" allein ist weiterhin keine Nutzerentscheidung',
-     buildAIApplyPayload({ importId: IMPORT, accountId: ACCOUNT, rows: [untouched] })
-       .bookings[0].user_decision === null)
+  ok('„passt so" allein bleibt eine Bestätigung, keine Korrektur',
+     rowHumanReview(untouched) === 'confirmed')
 
   // ── Wie die Buchung danach eingeordnet ist ──
   const savedTx = {
@@ -951,7 +955,7 @@ const stored = (over = {}) => ({
   }
   const savedSuggestion = {
     transaction_id: 'tx-korrigiert', merchant_name: 'Troisdorf', category_id: 'cat-lebensmittel',
-    needs_review: false, user_edited: true, created_at: '2026-09-22T12:00:00Z',
+    needs_review: false, human_review: 'corrected', created_at: '2026-09-22T12:00:00Z',
   }
 
   const queue = buildClassificationQueue({
@@ -1056,6 +1060,123 @@ const stored = (over = {}) => ({
        overrides: [{ transaction_id: 'tx-hand', category_id: null,
                      merchant_id: 'm-rewe', merchant_name: null }],
      }).summary.offen === 0)
+}
+
+
+// ── 18. „Passt so": bestätigen ist nicht korrigieren ────────────────────────
+{
+  // Der Fall aus der Vorgabe: die Zeile ist inhaltlich RICHTIG, das Modell war
+  // sich nur nicht sicher. Der Mensch sieht sie an und sagt: passt.
+  const UNSICHER = {
+    booking_date: '2026-09-24',
+    amount: -18.7,
+    currency: 'EUR',
+    raw_description: 'REWE TROISDORF SAGT DANKE 8407',
+    merchant: 'REWE',
+    category: 'lebensmittel',
+    transaction_type: 'purchase',
+    include_in_analytics: true,
+    note: null,
+    needs_review: true,
+  }
+  const plan = buildAIImportPlan({
+    entries: readValid([UNSICHER]).entries, existing: [], accountId: ACCOUNT,
+  })
+  const row = plan.rows[0]
+
+  ok('die Zeile will geprüft werden, obwohl sie stimmt', row.needsReview === true)
+  ok('… und zählt in der Zusammenfassung', plan.summary.pruefen === 1)
+  ok('… noch hat sie niemand angesehen', rowHumanReview(row) === 'none')
+
+  // Der Nutzer klappt auf, ändert nichts, drückt „Passt so".
+  const bestaetigt = applyRowEdit(row, {})
+
+  ok('REGRESSION: die Zeile gilt danach als geprüft', bestaetigt.reviewed === true)
+  ok('REGRESSION: … als Bestätigung, NICHT als Korrektur',
+     rowHumanReview(bestaetigt) === 'confirmed')
+  ok('… rowIsCorrection sagt dasselbe', rowIsCorrection(bestaetigt) === false)
+  ok('REGRESSION: … und sie zählt nicht mehr als zu prüfen',
+     summarizeAIPlan([bestaetigt]).pruefen === 0)
+  ok('REGRESSION: der Vorschlag bleibt unverändert unsicher',
+     bestaetigt.suggestion.needsReview === true)
+  ok('… und trägt weiterhin, was das Modell sagte',
+     bestaetigt.suggestion.merchantName === 'REWE' &&
+     bestaetigt.suggestion.categoryId === 'cat-lebensmittel')
+  ok('… kein Feld wurde angefasst',
+     rowDiffersFromSuggestion(bestaetigt) === false)
+
+  const payload = buildAIApplyPayload({ importId: IMPORT, accountId: ACCOUNT, rows: [bestaetigt] })
+  const booking = payload.bookings[0]
+  ok('REGRESSION: die Bestätigung reist als Entscheidung mit',
+     booking.user_decision !== null)
+  ok('… mit den sichtbaren Werten', booking.user_decision.merchant_name === 'REWE' &&
+     booking.user_decision.category_id === 'cat-lebensmittel')
+  ok('REGRESSION: und der Vorschlag ist als bestätigt markiert, nicht als korrigiert',
+     booking.suggestion.human_review === 'confirmed')
+  ok('… während sein needs_review unverändert dasteht',
+     booking.suggestion.needs_review === true)
+
+  // Die Buchung, wie die Datenbank sie danach hält.
+  const savedTx = {
+    id: 'tx-bestaetigt', account_id: ACCOUNT, booking_date: '2026-09-24', amount_minor: -1870,
+    currency: 'EUR', raw_description: 'REWE TROISDORF SAGT DANKE 8407',
+    normalized_tokens: tokenize('REWE TROISDORF SAGT DANKE 8407'),
+    category_id: 'cat-lebensmittel', manual_lock: true,
+  }
+  const savedOverride = {
+    transaction_id: 'tx-bestaetigt', merchant_id: null, merchant_name: 'REWE',
+    category_id: 'cat-lebensmittel', include_in_analytics: null,
+    transaction_type: 'purchase', note: null,
+  }
+  const savedSuggestion = {
+    transaction_id: 'tx-bestaetigt', merchant_name: 'REWE', category_id: 'cat-lebensmittel',
+    needs_review: true, human_review: 'confirmed', created_at: '2026-09-24T12:00:00Z',
+  }
+  const queue = buildClassificationQueue({
+    transactions: [savedTx], overrides: [savedOverride], aiSuggestions: [savedSuggestion],
+  })
+  ok('REGRESSION: nach dem Import gibt es keine offene Zuordnung', queue.summary.offen === 0)
+  ok('REGRESSION: … und die Buchung gilt als menschlich bestätigt',
+     queue.entries[0].source === CLASSIFICATION_SOURCE.OVERRIDE)
+
+  // Und das, worum es v1.24 geht: die beiden Fälle sind unterscheidbar.
+  const korrigiert = applyRowEdit(row, { categoryId: 'cat-restaurant' })
+  ok('v1.24 kann „Modell hatte recht" lesen', rowHumanReview(bestaetigt) === 'confirmed')
+  ok('v1.24 kann „Modell lag daneben" lesen', rowHumanReview(korrigiert) === 'corrected')
+  ok('… und beide unterscheiden sich von „nie angesehen"',
+     rowHumanReview(row) === 'none')
+  ok('… die drei Werte sind wirklich drei',
+     new Set([rowHumanReview(row), rowHumanReview(bestaetigt), rowHumanReview(korrigiert)]).size === 3)
+
+  // Eine Bestätigung ohne Händler und ohne Kategorie ist geprüft, aber nicht
+  // eingeordnet — und darf deshalb in der Zuordnung bleiben.
+  const leer = buildAIImportPlan({
+    entries: readValid([{ ...UNSICHER, merchant: null, category: null }]).entries,
+    existing: [], accountId: ACCOUNT,
+  }).rows[0]
+  const leerBestaetigt = applyRowEdit(leer, {})
+  ok('eine Bestätigung ohne Einordnung ist trotzdem eine Bestätigung',
+     rowHumanReview(leerBestaetigt) === 'confirmed')
+  const leerBooking = buildAIApplyPayload({
+    importId: IMPORT, accountId: ACCOUNT, rows: [leerBestaetigt],
+  }).bookings[0]
+  ok('… die Entscheidung trägt nichts, was einordnet',
+     leerBooking.user_decision.merchant_name === null &&
+     leerBooking.user_decision.category_id === null)
+  ok('… die Zeile wäre danach nicht eingeordnet',
+     buildClassificationQueue({
+       transactions: [{ ...savedTx, id: 'tx-leer', manual_lock: false, category_id: null }],
+       overrides: [{ transaction_id: 'tx-leer', merchant_id: null, merchant_name: null,
+                     category_id: null, note: null, include_in_analytics: null }],
+     }).summary.offen === 1)
+
+  // Die Preview-Zeile sagt dem Nutzer, was passiert ist.
+  const view = aiPreviewRow(bestaetigt, CATEGORIES)
+  ok('eine bestätigte Zeile wartet nicht mehr', view.needsReview === false)
+  ok('… und heißt „Neu", nicht „Prüfen"', view.status === 'Neu')
+  ok('… sie ist als bestätigt erkennbar', view.reviewed === true && view.corrected === false)
+  ok('… eine korrigierte dagegen als geändert',
+     aiPreviewRow(korrigiert, CATEGORIES).corrected === true)
 }
 
 console.log(\`finance ai logic: \${pass} passed, \${fail} failed\`)

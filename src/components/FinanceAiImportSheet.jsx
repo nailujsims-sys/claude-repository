@@ -337,7 +337,7 @@ function PreviewRow({ row, categories, merchants = [], showBorder, onEdit }) {
           <p className="mt-0.5 text-caption text-text-muted">
             {view.date} · <span className={tone}>{view.status}</span>
             {view.categoryLabel ? ` · ${view.categoryLabel}` : ''}
-            {view.edited ? ' · geändert' : ''}
+            {view.corrected ? ' · geändert' : view.reviewed ? ' · bestätigt' : ''}
           </p>
           {view.needsReview && view.reviewText && (
             <p className="mt-0.5 text-caption text-text-secondary">{view.reviewText}</p>
@@ -420,9 +420,18 @@ function PreviewRow({ row, categories, merchants = [], showBorder, onEdit }) {
             />
           </label>
 
+          {/* „Passt so" ist keine Geste zum Zuklappen, sondern eine Aussage:
+              ich habe diese Zeile angesehen und sie stimmt. Eine unsichere
+              Buchung, deren Händler und Kategorie schon richtig waren, ist damit
+              geprüft — und wird nach dem Import nicht noch einmal gefragt. Der
+              leere Patch markiert genau das; dass daraus KEINE Korrektur wird,
+              entscheidet rowHumanReview() und nicht dieser Knopf. */}
           <button
             type="button"
-            onClick={() => setOpen(false)}
+            onClick={() => {
+              onEdit({})
+              setOpen(false)
+            }}
             className="press-tint flex min-h-[44px] w-full items-center justify-center gap-2 rounded-btn bg-bg-input py-3 text-body font-semibold text-text-primary"
           >
             <Check size={18} /> Passt so

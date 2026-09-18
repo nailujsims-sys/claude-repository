@@ -1,5 +1,5 @@
 import { formatAmountMinor, formatBookingDate, plural } from '../importFlow'
-import { AI_STATUS_LABELS } from './plan'
+import { AI_STATUS_LABELS, rowIsCorrection } from './plan'
 import { REVIEW_REASONS } from './format'
 
 // Die Worte des KI-Imports, an einer Stelle.
@@ -88,7 +88,7 @@ export function describeAIApplyResult(result, summary) {
  */
 export function aiPreviewRow(row, categories = []) {
   const category = categories.find((c) => c.id === row.categoryId) ?? null
-  const needsReview = row.status === 'new' && row.needsReview && !row.edited
+  const needsReview = row.status === 'new' && row.needsReview && !row.reviewed
   // Der Händler, der gilt — der des Modells, bis der Mensch ihn korrigiert hat.
   const merchant = row.merchantName || null
   return {
@@ -105,7 +105,10 @@ export function aiPreviewRow(row, categories = []) {
     needsReview,
     reviewText: needsReview ? reviewReasonText(row.reviewReasons) : '',
     editable: row.status === 'new',
-    edited: row.edited,
+    reviewed: row.reviewed === true,
+    // „geändert" und „bestätigt" sind zwei verschiedene Nachrichten an den
+    // Nutzer, und die Zeile soll die richtige zeigen.
+    corrected: rowIsCorrection(row),
   }
 }
 

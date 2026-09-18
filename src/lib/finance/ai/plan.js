@@ -88,7 +88,11 @@ export function buildAIImportPlan({ entries = [], existing = [], observations = 
 
       needsReview: entry.needsReview,
       reviewReasons: entry.reviewReasons,
-      edited: false,
+      // Hat ein Mensch diese Zeile angesehen? „Angesehen" heißt hier: er hat sie
+      // aufgeklappt und entweder etwas geändert oder ausdrücklich „Passt so"
+      // gedrückt. Beides ist eine Prüfung; nur das erste ist eine Korrektur, und
+      // rowIsCorrection() unterscheidet sie.
+      reviewed: false,
     }
   })
 
@@ -107,7 +111,7 @@ export function summarizeAIPlan(rows = []) {
     erkannt: rows.length,
     neu: neu.length,
     vorhanden: rows.length - neu.length,
-    pruefen: neu.filter((row) => row.needsReview && !row.edited).length,
+    pruefen: neu.filter((row) => row.needsReview && !row.reviewed).length,
   }
 }
 
@@ -119,8 +123,11 @@ export function summarizeAIPlan(rows = []) {
  * Patch-Liste und können deshalb aus dem Preview heraus nicht verändert werden —
  * dieselbe Trennung, die die Datenbank seit 0008 mit einem Trigger erzwingt.
  *
- * Eine angefasste Zeile gilt als geprüft: der Mensch hat sie gesehen und
- * entschieden, also wartet sie auf niemanden mehr.
+ * JEDER Aufruf markiert die Zeile als geprüft — auch der mit einem leeren Patch,
+ * den „Passt so" auslöst. Das ist der Punkt: eine unsichere Zeile, die ein
+ * Mensch angesehen und für richtig befunden hat, ist geprüft, auch wenn kein
+ * Feld anders aussieht als vorher. Ob daraus eine KORREKTUR wird, entscheidet
+ * rowIsCorrection() — und nicht dieser Aufruf.
  */
 export function applyRowEdit(row, patch = {}) {
   const next = { ...row }
@@ -144,11 +151,11 @@ export function applyRowEdit(row, patch = {}) {
     const note = typeof patch.note === 'string' ? patch.note.trim() : ''
     next.note = note === '' ? null : note.slice(0, 2000)
   }
-  next.edited = true
+  next.reviewed = true
   return next
 }
 
-/** Hat der Nutzer an dieser Zeile wirklich etwas geändert? */
+/** Sieht die Zeile anders aus als der Vorschlag? Rein der Vergleich, ohne Urteil. */
 export function rowDiffersFromSuggestion(row) {
   return (
     (row.merchantName ?? null) !== (row.suggestion.merchantName ?? null) ||
@@ -159,6 +166,33 @@ export function rowDiffersFromSuggestion(row) {
     (row.note ?? null) !== (row.suggestion.note ?? null)
   )
 }
+
+/**
+ * Was ein Mensch mit dem Vorschlag dieser Zeile gemacht hat.
+ *
+ * Drei Werte, und der mittlere ist der, um den es geht:
+ *
+ *   'none'       niemand hat sie angesehen — sie war sicher genug
+ *   'confirmed'  angesehen, für richtig befunden, kein Feld geändert
+ *   'corrected'  angesehen und geändert
+ *
+ * WARUM NICHT EIN BOOLEAN. „Bestätigt" ist für v1.24 das wertvollste Signal
+ * überhaupt: das Modell hat Unsicherheit gemeldet UND hatte recht. Ein
+ * `user_edited`-Boolean könnte das nicht sagen — eine Bestätigung sähe aus wie
+ * „nie angefasst", und sie trotzdem als Korrektur zu buchen hieße, v1.24
+ * beizubringen, ein richtiger Vorschlag sei falsch gewesen. Das ist keine
+ * Kleinigkeit: es ist genau das Gegenteil dessen, was gelernt werden soll.
+ *
+ * @param {object} row
+ * @returns {'none'|'confirmed'|'corrected'}
+ */
+export function rowHumanReview(row) {
+  if (!row?.reviewed) return 'none'
+  return rowDiffersFromSuggestion(row) ? 'corrected' : 'confirmed'
+}
+
+/** Hat der Mensch an dieser Zeile wirklich etwas geändert? */
+export const rowIsCorrection = (row) => rowHumanReview(row) === 'corrected'
 
 /**
  * Der Payload für `finance_apply_ai_import` — nur die neuen Zeilen.
@@ -176,7 +210,7 @@ export function buildAIApplyPayload({ importId, accountId, rows = [] } = {}) {
   const bookings = rows
     .filter((row) => row.status === AI_ROW_STATUS.NEW)
     .map((row) => {
-      const decided = row.edited && rowDiffersFromSuggestion(row)
+      const review = rowHumanReview(row)
       return {
         booking_date: row.bookingDate,
         amount_minor: row.amountMinor,
@@ -201,14 +235,20 @@ export function buildAIApplyPayload({ importId, accountId, rows = [] } = {}) {
           include_in_analytics: row.suggestion.includeInAnalytics,
           note: row.suggestion.note,
           needs_review: row.suggestion.needsReview,
-          user_edited: decided,
+          human_review: review,
           format_version: AI_IMPORT_VERSION,
         },
-        // Nur wenn der Mensch wirklich etwas anderes entschieden hat als das
-        // Modell vorschlug. Ein bestätigter Vorschlag ist keine
-        // Nutzerentscheidung und bekommt deshalb keine Zeile in der Tabelle,
-        // die genau das bedeutet.
-        user_decision: decided
+        // Was der Mensch gesehen und mitgenommen hat — sobald er die Zeile
+        // angesehen hat, auch wenn er nichts geändert hat. „Passt so" ist eine
+        // ausdrückliche Bestätigung, und eine Bestätigung von „REWE ·
+        // Lebensmittel" ist genau die Entscheidung, die den Umsatz einordnet.
+        //
+        // Was daraus tatsächlich gespeichert wird, entscheidet nicht dieser
+        // Payload: die Datenbank schreibt einen Override nur, wenn die
+        // Entscheidung etwas über die Einordnung sagt oder etwas festhält, das
+        // sonst verloren ginge (siehe 0011). Eine Bestätigung von „nichts" ist
+        // deshalb keine leere Zeile, sondern nur ein `human_review`.
+        user_decision: review !== 'none'
           ? {
               merchant_id: row.merchantId ?? null,
               merchant_name: row.merchantName ?? null,

@@ -414,12 +414,13 @@ ${sql}`
 
   const zalandoSuggestion = jsonAsUser(
     userId,
-    `select merchant_name, needs_review, user_edited, format_version
+    `select merchant_name, needs_review, human_review, format_version
      from public.finance_transaction_ai_suggestions where transaction_id = '${zalando.id}'`
   )[0]
   ok('der Händlervorschlag der KI ist gespeichert', zalandoSuggestion.merchant_name === 'Zalando')
   ok('… mit seiner Formatversion', zalandoSuggestion.format_version === 1)
-  ok('… und ohne Korrektur', zalandoSuggestion.user_edited === false)
+  ok('… und ohne dass ein Mensch sie angesehen hätte',
+     zalandoSuggestion.human_review === 'none')
   ok('… und der Vorschlag legt keinen Händler in der Lern-Engine an',
      jsonAsUser(userId, `select canonical_name from public.finance_merchants
        where user_id = '${userId}'`).map((m) => m.canonical_name).join(',') === 'Bäckerei Schmidt')
@@ -429,13 +430,14 @@ ${sql}`
   ok('… und gilt als entschieden', loewe.manual_lock === true)
   const loeweSuggestion = jsonAsUser(
     userId,
-    `select merchant_name, category_id, needs_review, user_edited
+    `select merchant_name, category_id, needs_review, human_review
      from public.finance_transaction_ai_suggestions where transaction_id = '${loewe.id}'`
   )[0]
   ok('der Vorschlag bleibt daneben stehen, so wie er ankam',
      loeweSuggestion.category_id === null && loeweSuggestion.merchant_name === null)
   ok('… mit der Unsicherheit des Modells', loeweSuggestion.needs_review === true)
-  ok('… und der Information, dass der Mensch ihn geändert hat', loeweSuggestion.user_edited === true)
+  ok('… und der Information, dass der Mensch ihn geändert hat',
+     loeweSuggestion.human_review === 'corrected')
   ok('die Korrektur steht als Entscheidung in der Override-Tabelle',
      jsonAsUser(userId, `select note from public.finance_transaction_overrides where transaction_id = '${loewe.id}'`)[0].note === 'Geburtstag')
 
@@ -482,7 +484,7 @@ ${sql}`
     )
     const suggestions = jsonAsUser(
       userId,
-      `select transaction_id, merchant_name, category_id, needs_review, user_edited, created_at
+      `select transaction_id, merchant_name, category_id, needs_review, human_review, created_at
        from public.finance_transaction_ai_suggestions where user_id = '${userId}'`
     )
     const overrideRows = jsonAsUser(
@@ -559,7 +561,7 @@ ${sql}`
       include_in_analytics: true,
       suggestion: {
         merchant_name: null, category_id: null, transaction_type: 'purchase',
-        include_in_analytics: true, note: null, needs_review: true, user_edited: false,
+        include_in_analytics: true, note: null, needs_review: true, human_review: 'none',
         format_version: 1,
       },
       user_decision: null,
@@ -622,7 +624,7 @@ ${sql}`
   )[0]
   const reweSuggestion = jsonAsUser(
     userId,
-    `select merchant_name, needs_review, user_edited from public.finance_transaction_ai_suggestions
+    `select merchant_name, needs_review, human_review from public.finance_transaction_ai_suggestions
      where transaction_id = '${rewe.id}'`
   )[0]
 
@@ -633,7 +635,7 @@ ${sql}`
   ok('REGRESSION: der ursprüngliche Vorschlag bleibt unverändert nachvollziehbar',
      reweSuggestion.merchant_name === 'Troisdorf')
   ok('… samt seiner gemeldeten Unsicherheit', reweSuggestion.needs_review === true)
-  ok('… und als korrigiert markiert', reweSuggestion.user_edited === true)
+  ok('… und als korrigiert markiert', reweSuggestion.human_review === 'corrected')
 
   const afterKorrektur = queueState()
   const offeneIds = afterKorrektur.queue.open.map((e) => e.transaction.id)
@@ -657,6 +659,99 @@ ${sql}`
   ok('REGRESSION: auch keine Kategorieregel',
      jsonAsUser(userId, `select id from public.finance_category_rules
        where user_id = '${userId}'`).length === 0)
+
+  // ── 5d. „Passt so": bestätigen ist nicht korrigieren ──────────────────────
+  // Der Fall, den v1.23 zuletzt geschlossen hat: die Zeile ist inhaltlich
+  // RICHTIG, das Modell war sich nur nicht sicher. Der Mensch sieht sie an und
+  // ändert nichts.
+  const bestaetigtImport = openImport(giro, 'hash-block-confirm')
+  const bestaetigtPlan = (() => {
+    const parsed = parseAIImport([
+      AI_CSV_HEADER,
+      '2026-09-24;REWE TROISDORF SAGT DANKE 8407;-18,70;EUR;REWE;lebensmittel;purchase;true;;true',
+      '2026-09-25;UNBEKANNTER KIOSK;-4,20;EUR;;;purchase;true;;true',
+    ].join('\n'))
+    const checked = validateAIImport(parsed.payload, { categories })
+    return buildAIImportPlan({
+      entries: checked.entries, existing: reload(), observations: [], accountId: giro,
+    })
+  })()
+  ok('die inhaltlich richtige Zeile will trotzdem geprüft werden',
+     bestaetigtPlan.rows[0].needsReview === true)
+  ok('… und hat Händler und Kategorie bereits richtig',
+     bestaetigtPlan.rows[0].merchantName === 'REWE' &&
+     bestaetigtPlan.rows[0].categoryId === lebensmittel.id)
+
+  // „Passt so" auf beiden Zeilen — ohne ein einziges Feld zu ändern.
+  const bestaetigt = bestaetigtPlan.rows.map((row) => applyRowEdit(row, {}))
+  const bestaetigtPayload = buildAIApplyPayload({
+    importId: bestaetigtImport, accountId: giro, rows: bestaetigt,
+  })
+  ok('beide gelten als bestätigt, keine als korrigiert',
+     bestaetigtPayload.bookings.every((b) => b.suggestion.human_review === 'confirmed'))
+
+  const bestaetigtResult = applyAi(userId, bestaetigtImport, giro, bestaetigtPayload.bookings)
+  ok('beide werden gespeichert', bestaetigtResult.created === 2)
+  // Nur die eingeordnete bekommt einen Override — die andere bestätigt nichts,
+  // was gespeichert werden müsste.
+  ok('… aber nur eine bekommt eine Entscheidungszeile', bestaetigtResult.decisions === 1)
+
+  const bestaetigtTx = reload().find((t) => t.booking_date === '2026-09-24')
+  const kioskTx = reload().find((t) => t.raw_description === 'UNBEKANNTER KIOSK')
+  const bestaetigtSuggestion = jsonAsUser(
+    userId,
+    `select merchant_name, category_id, needs_review, human_review
+     from public.finance_transaction_ai_suggestions where transaction_id = '${bestaetigtTx.id}'`
+  )[0]
+
+  ok('REGRESSION: der Vorschlag bleibt als ursprünglich unsicher nachvollziehbar',
+     bestaetigtSuggestion.needs_review === true)
+  ok('REGRESSION: … und ist als bestätigt markiert, nicht als korrigiert',
+     bestaetigtSuggestion.human_review === 'confirmed')
+  ok('… mit dem, was das Modell vorschlug', bestaetigtSuggestion.merchant_name === 'REWE')
+  ok('REGRESSION: die Bestätigung steht als Entscheidung des Menschen da',
+     jsonAsUser(userId, `select merchant_name, category_id from public.finance_transaction_overrides
+       where transaction_id = '${bestaetigtTx.id}'`)[0].category_id === lebensmittel.id)
+  ok('REGRESSION: die Buchung gilt als menschlich bestätigt',
+     jsonAsUser(userId, `select manual_lock from public.finance_transactions
+       where id = '${bestaetigtTx.id}'`)[0].manual_lock === true)
+
+  const afterConfirm = queueState()
+  const confirmOffen = afterConfirm.queue.open.map((e) => e.transaction.id)
+  ok('REGRESSION: danach keine offene Zuordnung für diese Buchung',
+     !confirmOffen.includes(bestaetigtTx.id))
+  ok('… die Herkunft der Einordnung ist der Mensch',
+     afterConfirm.queue.entries.find((e) => e.transaction.id === bestaetigtTx.id).source === 'override')
+
+  // Die Gegenprobe: bestätigt, aber ohne Händler und ohne Kategorie. Geprüft
+  // heißt hier nicht eingeordnet — die Buchung bleibt in der Zuordnung.
+  ok('eine Bestätigung ohne Einordnung sperrt nicht',
+     jsonAsUser(userId, `select manual_lock from public.finance_transactions
+       where id = '${kioskTx.id}'`)[0].manual_lock === false)
+  ok('… und schreibt keinen leeren Override',
+     jsonAsUser(userId, `select id from public.finance_transaction_overrides
+       where transaction_id = '${kioskTx.id}'`).length === 0)
+  ok('… die Buchung bleibt in der Zuordnung', confirmOffen.includes(kioskTx.id))
+  ok('… dass ein Mensch sie angesehen hat, steht trotzdem fest',
+     jsonAsUser(userId, `select human_review from public.finance_transaction_ai_suggestions
+       where transaction_id = '${kioskTx.id}'`)[0].human_review === 'confirmed')
+
+  // Und das, worum es v1.24 geht: die drei Zustände sind in der Datenbank
+  // unterscheidbar.
+  const reviews = jsonAsUser(
+    userId,
+    `select human_review, count(*)::int as n from public.finance_transaction_ai_suggestions
+     where user_id = '${userId}' group by human_review order by human_review`
+  )
+  ok('v1.24 findet alle drei Zustände nebeneinander',
+     reviews.map((r) => r.human_review).join(',') === 'confirmed,corrected,none')
+  ok('… „Modell hatte recht" ist zählbar',
+     reviews.find((r) => r.human_review === 'confirmed').n === 2)
+  ok('… „Modell lag daneben" auch',
+     reviews.find((r) => r.human_review === 'corrected').n >= 1)
+  ok('REGRESSION: und aus keiner Bestätigung ist ein Muster entstanden',
+     afterConfirm.patterns.length === 0)
+  ok('REGRESSION: … und kein zusätzlicher Händler', afterConfirm.merchants.length === 1)
 
   // ── 6. Ein anderes Konto ist ein anderes Konto ────────────────────────────
   // Und diesmal durch die andere Tür: dieselben drei Buchungen, als Tabelle.

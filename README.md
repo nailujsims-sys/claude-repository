@@ -824,7 +824,9 @@ zu irgendetwas:
 4. Preview: X erkannt, Y neu, Z bereits vorhanden, N prüfen — jede Zeile
    einzeln, jede „Prüfen"-Zeile aufklappbar und **vollständig lösbar**: Händler
    (aus der Liste oder selbst getippt), Kategorie, Art, „zählt in der
-   Auswertung", Notiz. Keine Buchung wird still verworfen.
+   Auswertung", Notiz. Und **„Passt so"** ist eine Aussage, keine Geste zum
+   Zuklappen: eine unsichere Zeile, deren Werte schon stimmten, ist damit
+   geprüft. Keine Buchung wird still verworfen.
 5. „Importieren" schreibt über `finance_apply_ai_import` (0011) alles oder
    nichts.
 
@@ -916,14 +918,40 @@ Ebenen sauber nebeneinander und bleiben einzeln lesbar:
 Aus der Differenz der ersten beiden lernt v1.24; die dritte entsteht weiterhin
 nur in der Zuordnung, mit Muster und Backtest.
 
+**Bestätigen ist nicht korrigieren.** Eine Zeile kann unsicher gemeldet und
+trotzdem richtig sein — „REWE · Lebensmittel · needs_review=true". Drückt der
+Nutzer „Passt so", ohne ein Feld anzufassen, ist das eine ausdrückliche
+menschliche Bestätigung, und `finance_transaction_ai_suggestions.human_review`
+hält den Unterschied fest:
+
+| Wert | Was passiert ist |
+|---|---|
+| `none` | Niemand hat die Zeile angesehen — sie war sicher genug |
+| `confirmed` | Angesehen und für richtig befunden, kein Feld geändert |
+| `corrected` | Angesehen und geändert |
+
+Kein `user_edited`-Boolean, und das ist kein Detail: „bestätigt" ist für v1.24
+das wertvollste Signal überhaupt — das Modell hat Unsicherheit gemeldet **und**
+hatte recht. Ein Boolean könnte das nicht sagen; eine Bestätigung sähe aus wie
+„nie angefasst", und sie trotzdem als Korrektur zu buchen hieße, v1.24
+beizubringen, ein richtiger Vorschlag sei falsch gewesen.
+
+**Geprüft heißt nicht eingeordnet.** Eine Bestätigung, die weder Händler noch
+Kategorie trägt, ist eine geprüfte Buchung — sie bekommt keine Sperre, keinen
+leeren Override und bleibt in der Zuordnung. Dass ein Mensch sie angesehen hat,
+steht trotzdem fest. Die Frage „sagt das etwas über die Einordnung?" wird an
+drei Stellen gestellt und ist an allen dreien dieselbe: in
+`finance_create_manual_transaction`, in `finance_apply_ai_import` und in
+`effectiveClassification.js`.
+
 **Was v1.23 nicht anfasst:** keine bestehende Nutzerentscheidung wird
 überschrieben, keine Alt-Daten werden migriert, die Pattern- und Lern-Engine
 bleibt vollständig, und der DKB-Weg bleibt technisch bestehen. Ohne
 KI-Vorschläge verhält sich die Zuordnung exakt wie vor v1.23 — die vierte Stufe
 der Rangfolge existiert für Buchungen, die es vorher nicht gab.
 
-Geprüft in `tools/financeAiLogic.mjs` (326 Assertions, reine Logik),
-`tools/financeAiE2E.mjs` (120, gegen ein echtes Postgres mit den echten
+Geprüft in `tools/financeAiLogic.mjs` (354 Assertions, reine Logik),
+`tools/financeAiE2E.mjs` (141, gegen ein echtes Postgres mit den echten
 Migrationen und RPCs) und `tools/financeAiLayout.mjs` (54, der echte Preview und
 der Händler-Editor in Chromium bei 390×844 und 390×667, mit Texten, wie ein
 Sprachmodell sie schreibt). Die Regression aus der Vorgabe — „REWE TROISDORF, merchant=REWE,
