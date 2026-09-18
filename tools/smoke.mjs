@@ -3016,15 +3016,19 @@ async function run() {
   }
 
   // ── 16) Finanzen ───────────────────────────────────────────────────────
-  // The first productive path of the finance module: a way in, and the import.
+  // The productive paths of the finance module: a way in, and the two things
+  // behind it — a booking by hand, and a statement read through ChatGPT.
   //
-  // WHAT IS ASSERTED HERE AND WHAT IS NOT. Everything up to "a file was picked"
-  // is a real DOM assertion below. Everything after it needs a real PDF through
-  // pdfjs, which jsdom cannot run — and faking the parser to get a green DOM
-  // test would be exactly the "Finance-Logik als UI-Mock" the module is not
-  // allowed to have. Those states are asserted instead in
-  // tools/financeImportFlowLogic.mjs, against the real parser, the real matcher
-  // and the real payload builder.
+  // WHAT IS ASSERTED HERE AND WHAT IS NOT. Everything a person can reach by
+  // tapping is a real DOM assertion below. What happens after a statement has
+  // actually been read — the parsing, the account-scoped matching, the payload —
+  // needs no DOM and is asserted where it belongs: tools/financeAiLogic.mjs
+  // against the real parser and matcher, tools/financeAiE2E.mjs against a real
+  // database. Faking either to get a green DOM test would be exactly the
+  // "Finance-Logik als UI-Mock" this module is not allowed to have.
+  //
+  // The DKB PDF import is no longer a visible path (v1.23). Its sheet is still
+  // mounted and still works; what is asserted here is that it is not offered.
 
   const FIN_ACCOUNT = '11111111-2222-4333-8444-000000000002'
   const FIN_CATEGORIES = [
@@ -3050,7 +3054,7 @@ async function run() {
   }
 
   // 16a) A brand-new account: no finance account, no bookings. The empty state
-  //      invites, and the import is one tap away.
+  //      invites, and „Hinzufügen" is one tap away.
   {
     const window = makeDom('#/finanzen', { finance: {} })
     mount(window, code, 'Finanzen/Leer')
@@ -3061,44 +3065,112 @@ async function run() {
 
     if (!text.includes('Noch keine Umsätze'))
       errors.push('[Finanzen] the empty state is not shown')
-    if (!text.includes('DKB-Umsätze importieren'))
-      errors.push('[Finanzen] the import call to action is missing')
-    if (!text.includes('nur auf diesem Gerät gelesen'))
-      errors.push('[Finanzen] the empty state does not say the file stays on the device')
+    if (!text.includes('Hinzufügen'))
+      errors.push('[Finanzen] the call to action is missing')
+    if (!text.includes('von Hand') || !text.includes('ChatGPT'))
+      errors.push('[Finanzen] the empty state does not name the two ways in')
     // No dashboard, no charts, no numbers to read: an empty account has nothing
     // to summarise and must not pretend otherwise.
-    if (/\d+ importierte/.test(text))
+    if (/\d+ Umsätze ·/.test(text))
       errors.push('[Finanzen] an empty account shows a summary card')
+    // The PDF import is legacy: still in the code, no longer a path.
+    if (/DKB-Umsätze importieren|PDF/.test(text))
+      errors.push('[Finanzen] the PDF import is still offered on the main screen')
 
-    if (!click(window, (el) => el.textContent.trim() === 'DKB-Umsätze importieren'))
-      errors.push('[Finanzen] the import button was not clickable')
+    if (!click(window, (el) => el.textContent.trim() === 'Hinzufügen'))
+      errors.push('[Finanzen] the Hinzufügen button was not clickable')
     await wait(320)
-    const sheet = nb(txt(window))
-    if (!sheet.includes('Umsätze importieren'))
-      errors.push('[Finanzen/Import] the sheet did not open')
-    if (!sheet.includes('PDF auswählen'))
-      errors.push('[Finanzen/Import] the file picker button is missing')
-    if (!sheet.includes('nie das PDF selbst'))
-      errors.push('[Finanzen/Import] the sheet does not promise the PDF is not stored')
+    const add = nb(txt(window))
+    if (!add.includes('Buchung manuell hinzufügen'))
+      errors.push('[Finanzen/Hinzufügen] the manual option is missing')
+    if (!add.includes('KI-Import'))
+      errors.push('[Finanzen/Hinzufügen] the AI option is missing')
+    if (/PDF/.test(add))
+      errors.push('[Finanzen/Hinzufügen] the PDF import is offered as a third way')
 
-    // Only PDFs, and the picker is the native one.
-    const input = window.document.querySelector('input[type="file"]')
-    if (!input) errors.push('[Finanzen/Import] there is no file input')
-    else if (!(input.getAttribute('accept') || '').includes('pdf'))
-      errors.push('[Finanzen/Import] the file input accepts more than PDF')
-
-    // Nothing was written by opening the flow.
-    if (window.__backend.tables.finance_imports.length)
-      errors.push('[Finanzen/Import] opening the sheet created an import row')
+    // ── the manual booking ──
+    if (!click(window, (el) => el.textContent.includes('Buchung manuell hinzufügen')))
+      errors.push('[Finanzen/Hinzufügen] the manual option was not clickable')
+    await wait(340)
+    const manual = nb(txt(window))
+    if (!manual.includes('Buchung hinzufügen'))
+      errors.push('[Finanzen/Buchung] the sheet did not open')
+    for (const label of ['Konto', 'Betrag', 'Ausgabe', 'Einnahme', 'Datum', 'Beschreibung',
+                         'Kategorie', 'Notiz', 'In Auswertung berücksichtigen']) {
+      if (!manual.includes(label))
+        errors.push(`[Finanzen/Buchung] the field „${label}" is missing`)
+    }
+    // Without an account there is nothing to book into, so the sheet offers to
+    // make one rather than showing an empty picker.
+    if (!manual.includes('Neues Konto'))
+      errors.push('[Finanzen/Buchung] an account-less app is not offered a new account')
+    // Nothing is written by opening the form.
+    if (window.__backend.tables.finance_transactions.length)
+      errors.push('[Finanzen/Buchung] opening the sheet wrote a booking')
     if (window.__backend.tables.finance_accounts.length)
-      errors.push('[Finanzen/Import] opening the sheet created an account')
-
-    // And it can be abandoned.
+      errors.push('[Finanzen/Buchung] opening the sheet created an account')
     if (!click(window, (el) => /schlie/i.test(el.getAttribute?.('aria-label') || '')))
-      errors.push('[Finanzen/Import] the sheet has no way out')
+      errors.push('[Finanzen/Buchung] the sheet has no way out')
     await wait(320)
-    if (nb(txt(window)).includes('PDF auswählen'))
-      errors.push('[Finanzen/Import] the sheet stayed open after closing it')
+    if (nb(txt(window)).includes('Buchung hinzufügen'))
+      errors.push('[Finanzen/Buchung] the sheet stayed open after closing it')
+
+    // ── the AI import ──
+    if (!click(window, (el) => el.textContent.trim() === 'Hinzufügen'))
+      errors.push('[Finanzen] Hinzufügen did not reopen')
+    await wait(320)
+    if (!click(window, (el) => el.textContent.includes('KI-Import')))
+      errors.push('[Finanzen/Hinzufügen] the AI option was not clickable')
+    await wait(340)
+    const ai = nb(txt(window))
+    console.log(`=== Finanzen — KI-Import ===\n  ${ai.slice(0, 260)}`)
+    if (!ai.includes('KI-Kontext kopieren'))
+      errors.push('[Finanzen/KI] the copy button is missing')
+    if (!ai.includes('lade dort deinen Kontoauszug hoch'))
+      errors.push('[Finanzen/KI] the explanation is missing')
+    if (!ai.includes('Antwort einfügen'))
+      errors.push('[Finanzen/KI] the paste field is not labelled')
+    if (!ai.includes('Prüfen'))
+      errors.push('[Finanzen/KI] the check button is missing')
+    if (!window.document.querySelector('textarea'))
+      errors.push('[Finanzen/KI] there is no paste field')
+    // The user interface speaks German, not protocol.
+    if (/JSON|Schema|Parser|RPC|Payload/i.test(ai))
+      errors.push(`[Finanzen/KI] technical language on screen: ${ai.slice(0, 200)}`)
+    if (window.__backend.tables.finance_imports.length)
+      errors.push('[Finanzen/KI] opening the sheet created an import row')
+    if (!click(window, (el) => /schlie/i.test(el.getAttribute?.('aria-label') || '')))
+      errors.push('[Finanzen/KI] the sheet has no way out')
+    await wait(320)
+    if (nb(txt(window)).includes('KI-Kontext kopieren'))
+      errors.push('[Finanzen/KI] the sheet stayed open after closing it')
+  }
+
+  // 16a2) With exactly one account, nothing is asked: it is preselected.
+  {
+    const window = makeDom('#/finanzen', { finance: financeSeed })
+    mount(window, code, 'Finanzen/EinKonto')
+    await wait(400)
+    window.__restoreConsole?.()
+    if (!click(window, (el) => el.textContent.trim() === 'Hinzufügen'))
+      errors.push('[Finanzen/Konto] Hinzufügen was not clickable')
+    await wait(320)
+    if (!click(window, (el) => el.textContent.includes('Buchung manuell hinzufügen')))
+      errors.push('[Finanzen/Konto] the manual option was not clickable')
+    await wait(340)
+    const manual = nb(txt(window))
+    if (!manual.includes('DKB Girokonto'))
+      errors.push('[Finanzen/Konto] the only account is not shown')
+    // One account is not a choice, so it is not offered as one.
+    if (manual.includes('Abbrechen'))
+      errors.push('[Finanzen/Konto] the new-account form is open although an account exists')
+    // …but making a second one never leaves the flow.
+    if (!manual.includes('Neues Konto'))
+      errors.push('[Finanzen/Konto] a second account cannot be created from the flow')
+    // Today, already filled in.
+    const heute = new Date(`${localToday()}T12:00:00`)
+    if (!manual.includes(String(heute.getDate())))
+      errors.push('[Finanzen/Konto] the date is not pre-filled with today')
   }
 
   // 16b) An account that already holds bookings: orientation, not analysis.
@@ -3112,12 +3184,12 @@ async function run() {
 
     if (!text.includes('DKB Girokonto'))
       errors.push('[Finanzen] the account is not named')
-    if (!text.includes('2 importierte Umsätze'))
+    if (!text.includes('2 Umsätze'))
       errors.push(`[Finanzen] the booking count is missing: ${text.slice(0, 160)}`)
     if (!text.includes('zuletzt 14.09.2026'))
       errors.push('[Finanzen] the date of the newest booking is missing')
-    if (!text.includes('DKB-Umsätze importieren'))
-      errors.push('[Finanzen] the import stops being reachable once there is data')
+    if (!text.includes('Hinzufügen'))
+      errors.push('[Finanzen] adding stops being reachable once there is data')
     if (text.includes('Noch keine Umsätze'))
       errors.push('[Finanzen] the empty state is shown although there are bookings')
     // Still not a transaction list — that is the next module, not this one.

@@ -104,8 +104,8 @@ nothing (see *Supabase* below).
 Everything else (Morning Briefing, schedule, greeting quote) is intentionally
 static per the spec.
 
-**Not a module yet: Finanzen.** The database model, the classification engine and
-the DKB PDF import
+**Finanzen.** The database model, the classification engine, the DKB PDF import,
+a screen, a manual booking and a bank-independent AI import
 exist (`supabase/migrations/0008_finance.sql`, `src/lib/finance/`), the rules are
 unit-tested, and no screen renders any of it. What is there is the foundation the
 future module stands on: a booking keeps its original text and its original
@@ -281,8 +281,21 @@ src/
       learning.js           one marked token + one chosen category → one request
       importFlow.js         the import as a person reads it: the three pipeline
                             calls wired once, and outcomes turned into German
+      manualTransaction.js  one booking typed by hand → the atomic RPC's payload
       types.js              the row and result shapes, as JSDoc typedefs
-      dkb/                  the DKB Umsatzexport importer, stage 1:
+      ai/                   the bank-independent import (v1.23) — everything
+                            after ChatGPT has answered:
+        format.js           the versioned import format, written down once
+        prompt.js           „KI-Kontext kopieren": the whole prompt, built by
+                            the app from this account's own data
+        providers.js        payment service providers — PayPal is not a merchant
+        parse.js            pasted text → envelope → checked rows, or a refusal
+        dedupe.js           account-scoped, exact, multiset — never fuzzy
+        plan.js             rows + what is already stored → the preview and the
+                            payload the database applies
+        messages.js         the words the preview says, without protocol nouns
+      dkb/                  the DKB Umsatzexport importer, stage 1 (legacy since
+                            v1.23 — kept, no longer a visible path):
         layout.js           the coordinates of the real export, as measured
         lines.js            PDF.js items → printed lines (spaces included)
         amount.js           "-54.80" → -5480, via BigInt and never a float
@@ -756,6 +769,76 @@ writes that bypass the function, the undo path, observation provenance and user
 isolation. `supabase/tests/finance_import_upgrade_*.sql` applies the migration
 to a database that already ran the previous one and holds data, and checks that
 nothing moved.
+
+---
+
+## 🤖 Finanzen v1.23 — KI-Import und manuelle Buchung
+
+Bis v1.22 gab es genau einen Weg, wie Geld in dieses Modul kam: der DKB-PDF-
+Import. Der funktioniert weiter und ist unverändert im Code — nur ist er kein
+sichtbarer Weg mehr. An seiner Stelle steht ein Knopf, **„Hinzufügen"**, und
+dahinter ein Zettel mit genau zwei Optionen.
+
+**Buchung manuell hinzufügen.** Konto, Betrag, Ausgabe oder Einnahme, Datum
+(heute), Beschreibung, optional Händler, Kategorie und Notiz, dazu der Schalter
+„In Auswertung berücksichtigen". Pflicht ist nur, was ohne Antwort keinen Sinn
+ergibt. Gespeichert wird über `finance_create_manual_transaction` (0011): die
+Buchung und die Entscheidung des Menschen in einer Transaktion, `manual_lock`
+gesetzt, `import_id` leer — eine manuelle Buchung stammt aus keiner Datei, und
+ein Import-Datensatz, der eine vortäuscht, wäre eine Herkunftsangabe, die nicht
+stimmt.
+
+**KI-Import.** Bankunabhängig, ohne OpenAI-API und ohne automatische Verbindung
+zu irgendetwas:
+
+1. Zielkonto wählen — **ChatGPT entscheidet das nie**, der Mensch tut es vorher.
+2. „KI-Kontext kopieren" legt einen vollständigen Prompt in die Zwischenablage:
+   die Kategorien dieses Kontos, die bekannten Händler samt ihrer Muster und
+   Regeln, die persönlichen Entscheidungen („Scalable Capital zählt nicht"),
+   die Zahlungsdienstleister, die auf diesem Konto schon aufgetaucht sind, das
+   verbindliche Antwortformat und klare Unsicherheitsregeln. Der Nutzer macht
+   kein Prompt Engineering.
+3. Auszug in ChatGPT hochladen, Antwort zurück in die App einfügen, „Prüfen".
+4. Preview: X erkannt, Y neu, Z bereits vorhanden, N prüfen — jede Zeile
+   einzeln, jede „Prüfen"-Zeile aufklappbar und korrigierbar. Keine Buchung
+   wird still verworfen.
+5. „Importieren" schreibt über `finance_apply_ai_import` (0011) alles oder
+   nichts.
+
+**Das Format ist versioniert und der Parser ist streng.** `leben-finance-import`
+v1; eine unbekannte Version wird abgelehnt statt geraten. Ein fehlender Betrag,
+ein fehlendes Datum, eine erfundene Währung oder eine unbekannte Buchungsart
+sind Fehler, bei denen **nichts** gespeichert wird. Eine unbekannte Kategorie
+dagegen wird zu `null` plus `needs_review` — sie auf die ähnlichste abzubilden
+wäre genau das Raten, das dieses Modul nirgends tut. Dasselbe gilt für einen
+Händler, den das Modell nicht eindeutig erkennen konnte.
+
+**Dedupe ist kontobezogen, exakt und eine Multimenge.** Verglichen werden Konto,
+Buchungsdatum, Betrag, Währung und Originaltext — normalisiert über denselben
+Normalisierer wie der Rest der Engine, nie unscharf. Der Händlervorschlag der KI
+ist ausdrücklich **kein** Bestandteil des Schlüssels: ein Modell, das „REWE"
+sagt, wo „REWE Troisdorf" stand, würde sonst zwei Einkäufe zu einem machen. Die
+bessere Beschreibung, die ein früherer Import als Beobachtung hinterlassen hat
+(0009), zählt als derselbe Umsatz. Dieselbe Buchung auf einem anderen Konto
+bleibt neu.
+
+**Der Vorschlag und die Entscheidung bleiben unterscheidbar.** Was das Modell
+vorgeschlagen hat, steht in `finance_transaction_ai_suggestions` (0011) — als
+Text, ohne dass ein `finance_merchants`-Eintrag entsteht, denn das wäre die
+automatische globale Lernregel, die v1.23 noch nicht erzeugen soll. Was der
+Mensch im Preview korrigiert hat, steht als Entscheidung in
+`finance_transaction_overrides` und setzt `manual_lock`. Aus der Differenz der
+beiden lernt v1.24.
+
+**Was v1.23 nicht anfasst:** keine bestehende Nutzerentscheidung wird
+überschrieben, keine Alt-Daten werden migriert, die Pattern- und Lern-Engine
+bleibt vollständig, und der DKB-Weg bleibt technisch bestehen.
+
+Geprüft in `tools/financeAiLogic.mjs` (184 Assertions, reine Logik),
+`tools/financeAiE2E.mjs` (69, gegen ein echtes Postgres mit den echten
+Migrationen und RPCs) und `tools/financeAiLayout.mjs` (44, der echte Preview in
+Chromium bei 390×844 und 390×667, mit Texten, wie ein Sprachmodell sie
+schreibt).
 
 ---
 

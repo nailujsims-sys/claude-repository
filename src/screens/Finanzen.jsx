@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Check, ChevronRight, Tag, Upload } from 'lucide-react'
+import { Check, ChevronRight, Plus, Tag } from 'lucide-react'
 import TopBar from '../components/TopBar'
 import { SkeletonExpenseList } from '../components/Skeleton'
 import { useFinance } from '../context/FinanceContext'
@@ -13,12 +13,17 @@ import { formatBookingDate, plural } from '../lib/finance/importFlow'
 // Deliberately not a dashboard. There is nothing to summarise yet that the user
 // did not just tell the app — a chart over an empty account is decoration, and a
 // full transaction list is the next module, not this one. What this screen owes
-// the user is that importing a statement is never more than one tap away, which
-// is why the button sits directly under the only number on the page.
+// the user is that adding money is never more than one tap away, which is why
+// the button sits directly under the only number on the page.
+//
+// Since v1.23 that button is „Hinzufügen" and leads to a sheet with two ways —
+// a booking by hand, and a statement of any bank read through ChatGPT. The DKB
+// PDF import is still in the code and still works; it is simply no longer a
+// path this screen offers.
 export default function Finanzen() {
   const { transactions, account, patterns, merchants, categoryRules, overrides, loading, error } =
     useFinance()
-  const { openFinanceImport, openFinanceClassify, openFinanceExclusions } = useUI()
+  const { openFinanceAdd, openFinanceClassify, openFinanceExclusions } = useUI()
 
   // Which bookings still need a human is the engine's answer, asked fresh on
   // every render from rows the user can see — never a counter somebody wrote
@@ -58,18 +63,22 @@ export default function Finanzen() {
               {transactions.length}
             </p>
             <p className="mt-1 text-caption text-text-secondary">
-              {plural(transactions.length, 'importierter Umsatz', 'importierte Umsätze')}
+              {plural(transactions.length, 'Umsatz', 'Umsätze')}
               {latest ? ` · zuletzt ${formatBookingDate(latest)}` : ''}
             </p>
           </section>
         )}
 
+        {/* Ein Knopf, zwei Wege dahinter — was danach passiert, entscheidet der
+            Zettel, nicht dieser Screen. Der direkte PDF-Import ist seit v1.23
+            kein sichtbarer Weg mehr (siehe README → Legacy); der Code dafür ist
+            unangetastet. */}
         {!loading && (
           <button
-            onClick={openFinanceImport}
+            onClick={openFinanceAdd}
             className="press-tint mt-3 flex w-full items-center justify-center gap-2 rounded-btn bg-accent py-3.5 text-body font-semibold text-white"
           >
-            <Upload size={18} /> DKB-Umsätze importieren
+            <Plus size={18} /> Hinzufügen
           </button>
         )}
 
@@ -157,7 +166,7 @@ function EmptyState({ failed = false }) {
       <p className="mt-1 max-w-[280px] text-ui text-text-secondary">
         {failed
           ? 'Sobald die Verbindung wieder steht, sind deine Umsätze da.'
-          : 'Importiere deinen DKB-Umsatzexport — die Datei wird nur auf diesem Gerät gelesen.'}
+          : 'Trage eine Buchung von Hand ein oder lass deinen Kontoauszug über ChatGPT einlesen.'}
       </p>
     </div>
   )

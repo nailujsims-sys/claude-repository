@@ -133,7 +133,7 @@ function Sheet({ onClose }) {
     const name = accountName.trim() || DEFAULT_ACCOUNT_NAME
     setStep('reading')
     try {
-      const row = await createAccount(name)
+      const row = await createAccount({ name, provider: 'DKB', currency: 'EUR' })
       prepare(statement.result, row.id)
     } catch (err) {
       console.error(failureLog('konto', err))

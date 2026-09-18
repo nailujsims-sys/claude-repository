@@ -347,4 +347,47 @@ export const financeRepository = {
     if (error) throw error
     return data
   },
+
+  /**
+   * Eine Buchung von Hand — die Buchung und die Entscheidung, in einer
+   * Transaktion.
+   *
+   * Nicht `createTransaction` plus `saveOverride`: das sind zwei Aufrufe, und
+   * der Abbruch dazwischen hinterlässt eine Buchung ohne die Notiz, die der
+   * Nutzer gerade getippt hat. Die Funktion in 0011 macht beides oder nichts.
+   * Der Payload kommt aus buildManualTransactionPayload
+   * (src/lib/finance/manualTransaction.js), das pur und geprüft ist; hier wird
+   * er nur auf die Leitung gelegt. Die Benutzer-ID reist wie bei den anderen
+   * beiden RPCs nicht mit — die Funktion liest `auth.uid()` selbst.
+   */
+  async createManualTransaction(userId, payload) {
+    requireUser(userId)
+    const { data, error } = await requireSupabase().rpc('finance_create_manual_transaction', payload)
+    if (error) throw error
+    return data
+  },
+
+  /**
+   * Einen KI-Import anwenden — Buchungen, Vorschläge und die Korrekturen des
+   * Nutzers, in einer Transaktion, und ein zweites Mal aufgerufen ohne jede
+   * Wirkung.
+   *
+   * Der Payload kommt aus buildAIApplyPayload (src/lib/finance/ai/plan.js).
+   */
+  async applyAiImport(userId, payload) {
+    requireUser(userId)
+    const { data, error } = await requireSupabase().rpc('finance_apply_ai_import', {
+      p_import_id: payload.import_id,
+      p_account_id: payload.account_id,
+      p_bookings: payload.bookings,
+    })
+    if (error) throw error
+    return data
+  },
+
+  // Was ein KI-Import vorgeschlagen hat. Heute liest das nichts ausser einem
+  // spaeteren Blick von Hand; v1.24 lernt daraus, welche Vorschlaege der
+  // Nutzer korrigiert hat.
+  listAiSuggestions: (userId) =>
+    readAll('finance_transaction_ai_suggestions', userId, [['created_at', false]]),
 }

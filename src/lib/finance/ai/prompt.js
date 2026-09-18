@@ -1,0 +1,273 @@
+import { patternMatches } from '../merchantMatching'
+import { patternText, transactionTokens } from '../normalize'
+import { formatAmountMinor } from '../importFlow'
+import { AI_IMPORT_FORMAT, AI_IMPORT_VERSION, formatExampleJson } from './format'
+import { PAYMENT_SERVICE_PROVIDERS, knownProviders } from './providers'
+
+// „KI-Kontext kopieren" — der ganze Prompt, von der App geschrieben.
+//
+// DER NUTZER MACHT KEIN PROMPT ENGINEERING. Das ist die eigentliche Anforderung
+// hinter dieser Datei, und sie ist strenger, als sie klingt: alles, was ChatGPT
+// wissen muss, um brauchbare Zeilen zu liefern, steht in dieser App und nirgends
+// sonst — welche Kategorien es überhaupt gibt, welche Händler schon bekannt
+// sind, welche persönlichen Regeln gelten, welche Dienstleister auf den Auszügen
+// dieses Kontos auftauchen. Wer das von Hand zusammenstellen müsste, würde es
+// beim dritten Mal weglassen, und die Qualität des Imports hinge daran.
+//
+// WAS DER PROMPT NICHT TUT: er sagt ChatGPT nicht, zu welchem Konto die
+// Buchungen gehören. Das entscheidet der Mensch vor dem Import in der App, und
+// kein Modell soll auch nur die Gelegenheit bekommen, es anders zu sehen.
+//
+// Er ist deterministisch: dieselben Zeilen ergeben denselben Text, jede Liste
+// sortiert. Das ist keine Kosmetik — es macht den Prompt prüfbar
+// (tools/financeAiLogic.mjs) und bedeutet, dass zweimal Kopieren zweimal
+// dasselbe ergibt.
+
+/** Wie viele bekannte Händler höchstens in den Prompt wandern. */
+const MAX_MERCHANTS = 40
+
+/**
+ * Die Händler, die für diesen Auszug wahrscheinlich zählen.
+ *
+ * Gemessen daran, wie oft sie in den gespeicherten Buchungen tatsächlich
+ * vorkommen — und zwar über die Pattern-Engine, nicht über die `merchant_id`
+ * auf der Buchung: die Spalte ist ein Zwischenstand von damals, die Patterns
+ * sind die Antwort von heute. Genau die Unterscheidung, auf der der Rest des
+ * Moduls seit 0008 besteht.
+ */
+export function relevantMerchants({
+  merchants = [],
+  patterns = [],
+  transactions = [],
+  categoryRules = [],
+  categories = [],
+  limit = MAX_MERCHANTS,
+} = {}) {
+  const active = patterns.filter((p) => p?.active !== false)
+  const counts = new Map()
+  for (const transaction of transactions) {
+    const tokens = transactionTokens(transaction)
+    for (const pattern of active) {
+      if (patternMatches(pattern, tokens)) {
+        counts.set(pattern.merchant_id, (counts.get(pattern.merchant_id) ?? 0) + 1)
+      }
+    }
+  }
+
+  const labelById = new Map(categories.filter((c) => c?.id).map((c) => [c.id, c.label ?? c.slug]))
+  const slugById = new Map(categories.filter((c) => c?.id).map((c) => [c.id, c.slug]))
+
+  return merchants
+    .map((merchant) => {
+      const own = active.filter((p) => p.merchant_id === merchant.id)
+      const rules = categoryRules.filter((r) => r?.active !== false && r.merchant_id === merchant.id)
+      return {
+        id: merchant.id,
+        name: merchant.canonical_name ?? '',
+        count: counts.get(merchant.id) ?? 0,
+        patterns: own.map((p) => patternText(p.tokens)).filter(Boolean).sort(),
+        rules: rules
+          .map((rule) => ({
+            categorySlug: slugById.get(rule.category_id) ?? null,
+            categoryLabel: labelById.get(rule.category_id) ?? null,
+            min: Number.isFinite(rule.min_amount_minor) ? rule.min_amount_minor : null,
+            max: Number.isFinite(rule.max_amount_minor) ? rule.max_amount_minor : null,
+            currency: rule.currency ?? 'EUR',
+          }))
+          .filter((rule) => rule.categorySlug)
+          .sort((a, b) => String(a.categorySlug).localeCompare(String(b.categorySlug))),
+        excluded: merchant.default_include_in_analytics === false,
+        alwaysReview: merchant.review_mode === 'always_review',
+      }
+    })
+    .filter((merchant) => merchant.name !== '')
+    // Häufigkeit zuerst, Name als Gleichstand — damit derselbe Datenstand
+    // denselben Prompt ergibt.
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    .slice(0, Math.max(0, limit))
+}
+
+/** Eine Regel als ein Satz: „ab 30,00 € → Restaurant". */
+function ruleSentence(rule) {
+  const bounds = []
+  if (rule.min !== null) bounds.push(`ab ${formatAmountMinor(rule.min, rule.currency)}`)
+  if (rule.max !== null) bounds.push(`bis ${formatAmountMinor(rule.max, rule.currency)}`)
+  const range = bounds.length > 0 ? `${bounds.join(' ')} ` : ''
+  return `${range}→ ${rule.categorySlug}`
+}
+
+/**
+ * Der vollständige Kontext-Prompt.
+ *
+ * @param {{
+ *   categories?: Array<object>,
+ *   merchants?: Array<object>,
+ *   patterns?: Array<object>,
+ *   categoryRules?: Array<object>,
+ *   transactions?: Array<object>,
+ *   accountName?: string|null,
+ *   currency?: string,
+ * }} input
+ * @returns {string}
+ */
+export function buildAIContextPrompt({
+  categories = [],
+  merchants = [],
+  patterns = [],
+  categoryRules = [],
+  transactions = [],
+  accountName = null,
+  currency = 'EUR',
+} = {}) {
+  const categoryList = categories
+    .slice()
+    .sort((a, b) => (a?.sort_order ?? 0) - (b?.sort_order ?? 0) || String(a?.slug).localeCompare(String(b?.slug)))
+    .filter((c) => c?.slug)
+
+  const known = relevantMerchants({ merchants, patterns, transactions, categoryRules, categories })
+  const seenProviders = knownProviders(transactions)
+  const otherProviders = PAYMENT_SERVICE_PROVIDERS.filter((p) => !seenProviders.includes(p))
+
+  const lines = []
+
+  lines.push('Du bekommst einen Kontoauszug. Deine Aufgabe ist es, ihn vollständig zu lesen und')
+  lines.push('jede einzelne Buchung daraus in ein festes Format zu übertragen.')
+  lines.push('')
+  lines.push('Lies den Auszug vollständig, von der ersten bis zur letzten Seite. Übergehe keine')
+  lines.push('Buchung, fasse keine zwei Buchungen zusammen und erfinde keine dazu. Wenn der')
+  lines.push('Auszug eine Anzahl oder eine Summe nennt, prüfe deine Liste dagegen.')
+  lines.push('')
+
+  // ── 1. Kategorien ─────────────────────────────────────────────────────────
+  lines.push('## Erlaubte Kategorien')
+  lines.push('')
+  lines.push('Nur diese Werte sind als "category" erlaubt. Erfinde keine neuen Kategorien und')
+  lines.push('benenne keine um. Wenn keine davon passt, schreibe null und setze needs_review.')
+  lines.push('')
+  if (categoryList.length === 0) {
+    lines.push('- (noch keine Kategorien angelegt — schreibe überall null und needs_review: true)')
+  } else {
+    for (const category of categoryList) {
+      lines.push(`- ${category.slug} — ${category.label ?? category.slug}`)
+    }
+  }
+  lines.push('')
+
+  // ── 2. Bekannte Händler ───────────────────────────────────────────────────
+  lines.push('## Bekannte Händler')
+  lines.push('')
+  if (known.length === 0) {
+    lines.push('Bisher sind keine Händler hinterlegt. Erkenne sie aus dem Auszug selbst.')
+  } else {
+    lines.push('Diese Händler sind bereits bekannt. Wenn eine Buchung zu einem davon gehört,')
+    lines.push('benutze genau diese Schreibweise des Namens.')
+    lines.push('')
+    for (const merchant of known) {
+      const details = []
+      if (merchant.patterns.length > 0) details.push(`erkannt an: ${merchant.patterns.join(', ')}`)
+      if (merchant.rules.length > 0) {
+        details.push(`Kategorie: ${merchant.rules.map(ruleSentence).join('; ')}`)
+      }
+      lines.push(`- ${merchant.name}${details.length > 0 ? ` (${details.join(' · ')})` : ''}`)
+    }
+  }
+  lines.push('')
+
+  // ── 3. Persönliche Regeln ─────────────────────────────────────────────────
+  const personal = []
+  for (const merchant of known) {
+    if (merchant.excluded) {
+      personal.push(`- ${merchant.name} zählt nicht als Ausgabe → include_in_analytics: false`)
+    }
+    if (merchant.alwaysReview) {
+      personal.push(`- ${merchant.name} wird immer von Hand geprüft → needs_review: true`)
+    }
+    for (const rule of merchant.rules) {
+      if (rule.min !== null || rule.max !== null) {
+        personal.push(`- ${merchant.name} ${ruleSentence(rule)}`)
+      }
+    }
+  }
+  lines.push('## Persönliche Regeln')
+  lines.push('')
+  if (personal.length === 0) {
+    lines.push('Es sind noch keine persönlichen Regeln hinterlegt.')
+  } else {
+    lines.push('Diese Entscheidungen hat der Nutzer bereits getroffen. Sie gehen jeder')
+    lines.push('allgemeinen Annahme vor — auch wenn du es anders einsortieren würdest.')
+    lines.push('')
+    lines.push(...personal.sort())
+  }
+  lines.push('')
+
+  // ── 4. Zahlungsdienstleister ──────────────────────────────────────────────
+  lines.push('## Zahlungsdienstleister')
+  lines.push('')
+  lines.push('Ein Zahlungsdienstleister ist nicht der Händler. Steht einer im Text, suche den')
+  lines.push('echten Händler im selben Text weiter hinten — "PAYPAL .Zalando SE" ist ein')
+  lines.push('Einkauf bei Zalando, nicht bei PayPal. Findest du ihn nicht eindeutig, schreibe')
+  lines.push('merchant: null und needs_review: true. Trage nie den Dienstleister als Händler ein.')
+  lines.push('')
+  if (seenProviders.length > 0) {
+    lines.push(`Auf diesem Konto bereits aufgetaucht: ${seenProviders.join(', ')}.`)
+  }
+  if (otherProviders.length > 0) {
+    lines.push(`Weitere Dienstleister: ${otherProviders.join(', ')}.`)
+  }
+  lines.push('')
+
+  // ── 5. Händler erkennen ───────────────────────────────────────────────────
+  lines.push('## Händler erkennen')
+  lines.push('')
+  lines.push('- Erkenne den Händler inhaltlich, nicht buchstäblich. "REWE SAGT DANKE 8407" ist REWE.')
+  lines.push('- Ein Ort ist kein Händler. Aus "REWE Troisdorf" wird REWE, nicht Troisdorf.')
+  lines.push('- Filialnummern, Terminal-IDs, Kartennummern und Zeitstempel gehören nicht in den Namen.')
+  lines.push('- Rechtsformen darfst du weglassen, wenn der Name dadurch eindeutig bleibt.')
+  lines.push('- Bist du dir beim Händler nicht sicher, schreibe null und setze needs_review: true.')
+  lines.push('  Ein leeres Feld ist richtig, ein geratener Name ist falsch.')
+  lines.push('')
+
+  // ── 6. Das Format ─────────────────────────────────────────────────────────
+  lines.push('## Antwortformat')
+  lines.push('')
+  lines.push('Antworte ausschließlich mit diesem JSON. Kein einleitender Satz, keine Erklärung,')
+  lines.push('keine Zusammenfassung davor oder danach — nur das JSON-Objekt.')
+  lines.push('')
+  lines.push('```json')
+  lines.push(formatExampleJson())
+  lines.push('```')
+  lines.push('')
+  lines.push(`- "format" ist immer "${AI_IMPORT_FORMAT}", "version" immer ${AI_IMPORT_VERSION}.`)
+  lines.push('- booking_date: das Buchungsdatum aus dem Auszug, als YYYY-MM-DD. Nie umgerechnet,')
+  lines.push('  nie geschätzt, nie durch das Wertstellungsdatum ersetzt.')
+  lines.push('- amount: der Betrag aus dem Auszug. Ausgaben negativ, Einnahmen positiv, Punkt als')
+  lines.push('  Dezimaltrennzeichen, höchstens zwei Nachkommastellen, kein Währungszeichen und')
+  lines.push('  keine Tausenderpunkte. Ändere nie einen Betrag, auch nicht zum Runden.')
+  lines.push(`- currency: Pflichtfeld, dreistelliger Code (z. B. ${currency}). Steht im Auszug eine`)
+  lines.push('  Fremdwährung, nimm den Betrag, der dem Konto belastet wurde, und dessen Währung.')
+  lines.push('- raw_description: der Verwendungszweck so originalgetreu wie möglich, in einer Zeile.')
+  lines.push('  Kürze nicht, korrigiere keine Schreibfehler, übersetze nichts.')
+  lines.push('- merchant: der erkannte Händler als Text, oder null.')
+  lines.push('- category: einer der Slugs oben, oder null.')
+  lines.push('- transaction_type: purchase, refund, transfer, income, fee oder other.')
+  lines.push('- include_in_analytics: false, wenn die Buchung keine echte Ausgabe ist —')
+  lines.push('  eine Umbuchung auf ein eigenes Konto, eine Sparrate, eine durchlaufende Zahlung.')
+  lines.push('- note: nur, wenn etwas wirklich erklärungsbedürftig ist, sonst null.')
+  lines.push('- needs_review: true, sobald du dir bei irgendetwas an dieser Buchung unsicher bist.')
+  lines.push('- Vergib keine IDs und keine laufenden Nummern. Die Zuordnung macht die App.')
+  lines.push('')
+
+  // ── 7. Unsicherheit ───────────────────────────────────────────────────────
+  lines.push('## Im Zweifel')
+  lines.push('')
+  lines.push('Lieber needs_review: true als ein geratener Wert. Eine Buchung, die der Nutzer')
+  lines.push('kurz prüft, kostet ihn Sekunden; eine falsch einsortierte findet er nie wieder.')
+  lines.push('Lass im Zweifel merchant und category auf null, statt etwas Plausibles einzutragen.')
+
+  const header =
+    accountName && accountName.trim() !== ''
+      ? `Die Buchungen gehören zum Konto „${accountName.trim()}". Du musst darüber nichts entscheiden — das Konto ist in der App bereits gewählt.\n\n`
+      : ''
+
+  return header + lines.join('\n')
+}
