@@ -56,6 +56,21 @@ export const TRANSACTION_TYPES = ['purchase', 'refund', 'transfer', 'income', 'f
 export const DEFAULT_TRANSACTION_TYPE = 'purchase'
 export const isTransactionType = (value) => TRANSACTION_TYPES.includes(value)
 
+// Wie eine Buchungsart heißt, wenn ein Mensch sie liest. Die technischen Werte
+// oben sind, was die Datenbank speichert; diese Zeile ist, was auf dem Bildschirm
+// steht — und beide Listen sind hier nebeneinander, damit keine Oberfläche sich
+// ihre eigene Übersetzung ausdenkt.
+export const TRANSACTION_TYPE_LABELS = Object.freeze({
+  purchase: 'Kauf',
+  refund: 'Retoure',
+  transfer: 'Umbuchung',
+  income: 'Einnahme',
+  fee: 'Gebühr',
+  other: 'Sonstiges',
+})
+
+export const transactionTypeLabel = (value) => TRANSACTION_TYPE_LABELS[value] ?? ''
+
 // Today everything is booked in euros. It is a value, not an assumption: every
 // amount is stored next to its currency, and every amount bound on a rule names
 // the currency it counts in.

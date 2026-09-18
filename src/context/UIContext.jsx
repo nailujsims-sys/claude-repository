@@ -25,10 +25,17 @@ export function UIProvider({ children }) {
   // the app happens to be standing.
   const [expenseForm, setExpenseForm] = useState(null)
   // financeImport: null | true
-  // Global like the forms above, for the same reason and one more: the import
-  // is reachable from the Finanzen screen today and from the Plus sheet the day
-  // it earns a slot there, without the sheet having to move.
+  // The DKB PDF import. Since v1.23 it is no longer a visible path — „Hinzufügen"
+  // offers the manual booking and the AI import, and the PDF route stays as the
+  // legacy fallback it is. The state and the sheet are kept wired on purpose:
+  // bringing it back is one button, not a resurrection.
   const [financeImport, setFinanceImport] = useState(null)
+  // financeAdd: null | true — the one way into the Finanzen module's two writes.
+  const [financeAdd, setFinanceAdd] = useState(null)
+  // financeManual: null | true
+  const [financeManual, setFinanceManual] = useState(null)
+  // financeAiImport: null | true
+  const [financeAiImport, setFinanceAiImport] = useState(null)
   // financeClassify: null | true
   const [financeClassify, setFinanceClassify] = useState(null)
   // financeExclusions: null | true
@@ -63,6 +70,15 @@ export function UIProvider({ children }) {
       financeImport,
       openFinanceImport: () => setFinanceImport(true),
       closeFinanceImport: () => setFinanceImport(null),
+      financeAdd,
+      openFinanceAdd: () => setFinanceAdd(true),
+      closeFinanceAdd: () => setFinanceAdd(null),
+      financeManual,
+      openFinanceManual: () => setFinanceManual(true),
+      closeFinanceManual: () => setFinanceManual(null),
+      financeAiImport,
+      openFinanceAiImport: () => setFinanceAiImport(true),
+      closeFinanceAiImport: () => setFinanceAiImport(null),
       financeClassify,
       openFinanceClassify: () => setFinanceClassify(true),
       closeFinanceClassify: () => setFinanceClassify(null),
@@ -70,7 +86,8 @@ export function UIProvider({ children }) {
       openFinanceExclusions: () => setFinanceExclusions(true),
       closeFinanceExclusions: () => setFinanceExclusions(null),
     }),
-    [sidebarOpen, actionSheetOpen, taskForm, eventForm, listForm, expenseForm, financeImport, financeClassify, financeExclusions]
+    [sidebarOpen, actionSheetOpen, taskForm, eventForm, listForm, expenseForm, financeImport,
+     financeAdd, financeManual, financeAiImport, financeClassify, financeExclusions]
   )
 
   return <UIContext.Provider value={value}>{children}</UIContext.Provider>

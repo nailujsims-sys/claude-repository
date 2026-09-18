@@ -35,6 +35,11 @@ export function FinanceProvider({ children }) {
   // read back with the bookings.
   const [observations, setObservations] = useState([])
   const [overrides, setOverrides] = useState([])
+  // Was ein KI-Import zu einer Buchung vorgeschlagen hat. Nicht Deko: die
+  // zentrale Einordnungsregel (src/lib/finance/effectiveClassification.js) liest
+  // sie, um zu entscheiden, ob ein Umsatz noch jemanden beschäftigen muss — und
+  // ohne sie stünde nach jedem Reload wieder alles in der Warteschlange.
+  const [aiSuggestions, setAiSuggestions] = useState([])
   // The rule engine's own rows. They are what decides which bookings still need
   // a human — not the `merchant_id` column on the booking — so a screen that
   // asks that question needs all four of them, and needs them again after every
@@ -53,7 +58,7 @@ export function FinanceProvider({ children }) {
       try {
         const [
           accountRows, transactionRows, observationRows, overrideRows,
-          categoryRows, merchantRows, patternRows, ruleRows,
+          categoryRows, merchantRows, patternRows, ruleRows, suggestionRows,
         ] = await Promise.all([
           repo.listAccounts(user.id),
           repo.listTransactions(user.id),
@@ -63,11 +68,13 @@ export function FinanceProvider({ children }) {
           repo.listMerchants(user.id),
           repo.listPatterns(user.id),
           repo.listCategoryRules(user.id),
+          repo.listAiSuggestions(user.id),
         ])
         setAccounts(accountRows)
         setTransactions(transactionRows)
         setObservations(observationRows)
         setOverrides(overrideRows)
+        setAiSuggestions(suggestionRows)
         setCategories(categoryRows)
         setMerchants(merchantRows)
         setPatterns(patternRows)
@@ -87,17 +94,26 @@ export function FinanceProvider({ children }) {
     load()
   }, [load])
 
-  // One account for now. The model allows several and the import flow always
-  // names the one it is importing into, so adding a picker later changes this
-  // line and nothing else.
+  // The first account, for every caller that only ever had one. The model
+  // allows several and always names the one it writes into, so this is a
+  // default and never a decision: since v1.23 the sheets that write show a
+  // picker as soon as `accounts` holds more than one row.
   const account = accounts[0] ?? null
 
+  /**
+   * A new account.
+   *
+   * `provider` used to be hard-coded to 'DKB' here, which was true for as long
+   * as the PDF import was the only way in. It is a field now, because the AI
+   * import reads any bank's statement and an account that says "DKB" because
+   * the code said so is a wrong answer to a question the user can answer.
+   */
   const createAccount = useCallback(
-    async (name) => {
+    async ({ name, provider = null, currency = 'EUR' }) => {
       const row = await repo.createAccount(user.id, {
-        name: name.trim(),
-        provider: 'DKB',
-        currency: 'EUR',
+        name: String(name ?? '').trim(),
+        provider: provider && String(provider).trim() !== '' ? String(provider).trim() : null,
+        currency: currency || 'EUR',
       })
       setAccounts((prev) => [...prev, row])
       return row
@@ -119,12 +135,12 @@ export function FinanceProvider({ children }) {
   )
 
   const openImport = useCallback(
-    async ({ accountId, sourceHash, sourceName, periodStart, periodEnd }) => {
+    async ({ accountId, sourceHash, sourceName, periodStart, periodEnd, sourceType = 'pdf' }) => {
       const existing = await repo.findImportBySourceHash(user.id, sourceHash)
       if (existing) return { row: existing, reused: true }
       const row = await repo.createImport(user.id, {
         account_id: accountId,
-        source_type: 'pdf',
+        source_type: sourceType,
         source_name: sourceName ?? null,
         source_hash: sourceHash ?? null,
         status: 'parsed',
@@ -134,6 +150,40 @@ export function FinanceProvider({ children }) {
       return { row, reused: false }
     },
     [user, repo]
+  )
+
+  /**
+   * One booking, entered by hand.
+   *
+   * The booking and the decision behind it are one database function and
+   * therefore one transaction — see financeRepository.createManualTransaction.
+   * Afterwards everything is read back rather than patched from the payload,
+   * for the same reason every other write in here does it: what was stored is
+   * what the database says was stored.
+   */
+  const createManualTransaction = useCallback(
+    async (payload) => {
+      const result = await repo.createManualTransaction(user.id, payload)
+      await load({ silent: true })
+      return result
+    },
+    [user, repo, load]
+  )
+
+  /**
+   * One AI import, applied.
+   *
+   * Same shape as applyPlan and for the same reasons: the whole import or none
+   * of it, decided by the database, and a second call for the same import row
+   * writes nothing at all.
+   */
+  const applyAiImport = useCallback(
+    async (payload) => {
+      const result = await repo.applyAiImport(user.id, payload)
+      await load({ silent: true })
+      return result
+    },
+    [user, repo, load]
   )
 
   // The one write that matters, and it is somebody else's transaction: the
@@ -268,6 +318,7 @@ export function FinanceProvider({ children }) {
       patterns,
       categoryRules,
       overrides,
+      aiSuggestions,
       overrideTransactionIds: overrides.map((o) => o.transaction_id),
       loading,
       error,
@@ -276,14 +327,16 @@ export function FinanceProvider({ children }) {
       findImport,
       openImport,
       applyPlan,
+      createManualTransaction,
+      applyAiImport,
       learnRule,
       saveOverride,
       setMerchantAnalytics,
       saveClassification,
     }),
     [accounts, account, transactions, observations, categories, merchants, patterns, categoryRules,
-     overrides, loading, error, load, createAccount, findImport, openImport, applyPlan, learnRule,
-     saveOverride, setMerchantAnalytics, saveClassification]
+     overrides, aiSuggestions, loading, error, load, createAccount, findImport, openImport, applyPlan, learnRule,
+     saveOverride, setMerchantAnalytics, saveClassification, createManualTransaction, applyAiImport]
   )
 
   return <FinanceContext.Provider value={value}>{children}</FinanceContext.Provider>

@@ -17,9 +17,12 @@ import TaskForm from './components/TaskForm'
 import EventForm from './components/EventForm'
 import ListForm from './components/ListForm'
 import ExpenseForm from './components/ExpenseForm'
+import FinanceAddSheet from './components/FinanceAddSheet'
+import FinanceAiImportSheet from './components/FinanceAiImportSheet'
 import FinanceClassifySheet from './components/FinanceClassifySheet'
 import FinanceExclusionsSheet from './components/FinanceExclusionsSheet'
 import FinanceImportSheet from './components/FinanceImportSheet'
+import FinanceManualSheet from './components/FinanceManualSheet'
 import ToastHost from './components/ToastHost'
 import ErrorBanner from './components/ErrorBanner'
 
@@ -150,6 +153,11 @@ function AppShell() {
       <EventForm />
       <ListForm />
       <ExpenseForm />
+      <FinanceAddSheet />
+      <FinanceManualSheet />
+      <FinanceAiImportSheet />
+      {/* Legacy: kein sichtbarer Einstieg mehr, aber unverändert eingehängt —
+          der DKB-PDF-Weg bleibt als Fallback bestehen (v1.23, Abschnitt 11). */}
       <FinanceImportSheet />
       <FinanceClassifySheet />
       <FinanceExclusionsSheet />

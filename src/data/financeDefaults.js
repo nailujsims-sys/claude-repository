@@ -119,6 +119,11 @@ export const WRITABLE_FINANCE_TRANSACTION_PATCH_FIELDS = [
 export const WRITABLE_FINANCE_OVERRIDE_FIELDS = [
   'transaction_id',
   'merchant_id',
+  // The merchant a human NAMED, as text. Added by 0011 because a merchant the
+  // user typed into the AI preview is a decision about one booking, and
+  // creating a `finance_merchants` row for it would turn that into a rule for
+  // every future booking — the one thing this module does not do on its own.
+  'merchant_name',
   'category_id',
   'include_in_analytics',
   'transaction_type',

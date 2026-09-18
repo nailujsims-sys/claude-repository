@@ -104,8 +104,8 @@ nothing (see *Supabase* below).
 Everything else (Morning Briefing, schedule, greeting quote) is intentionally
 static per the spec.
 
-**Not a module yet: Finanzen.** The database model, the classification engine and
-the DKB PDF import
+**Finanzen.** The database model, the classification engine, the DKB PDF import,
+a screen, a manual booking and a bank-independent AI import
 exist (`supabase/migrations/0008_finance.sql`, `src/lib/finance/`), the rules are
 unit-tested, and no screen renders any of it. What is there is the foundation the
 future module stands on: a booking keeps its original text and its original
@@ -281,8 +281,29 @@ src/
       learning.js           one marked token + one chosen category → one request
       importFlow.js         the import as a person reads it: the three pipeline
                             calls wired once, and outcomes turned into German
+      manualTransaction.js  one booking typed by hand → the atomic RPC's payload
       types.js              the row and result shapes, as JSDoc typedefs
-      dkb/                  the DKB Umsatzexport importer, stage 1:
+      effectiveClassification.js
+                            the one ladder every screen asks: override →
+                            manual_lock → the user's own rules → a complete,
+                            unflagged AI suggestion → open
+      ai/                   the bank-independent import (v1.23) — everything
+                            after ChatGPT has answered:
+        format.js           the two written-down formats: the semicolon table
+                            (primary) and the versioned JSON (fallback)
+        semicolon.js        the table: quote-aware splitting, German amounts,
+                            true/false — into the same records as the JSON
+        prompt.js           „KI-Kontext kopieren": the whole prompt, built by
+                            the app from this account's own data
+        providers.js        payment service providers — PayPal is not a merchant
+        parse.js            pasted text → the one record shape → checked rows,
+                            or a refusal
+        dedupe.js           account-scoped, exact, multiset — never fuzzy
+        plan.js             rows + what is already stored → the preview and the
+                            payload the database applies
+        messages.js         the words the preview says, without protocol nouns
+      dkb/                  the DKB Umsatzexport importer, stage 1 (legacy since
+                            v1.23 — kept, no longer a visible path):
         layout.js           the coordinates of the real export, as measured
         lines.js            PDF.js items → printed lines (spaces included)
         amount.js           "-54.80" → -5480, via BigInt and never a float
@@ -756,6 +777,188 @@ writes that bypass the function, the undo path, observation provenance and user
 isolation. `supabase/tests/finance_import_upgrade_*.sql` applies the migration
 to a database that already ran the previous one and holds data, and checks that
 nothing moved.
+
+---
+
+## 🤖 Finanzen v1.23 — KI-Import und manuelle Buchung
+
+Bis v1.22 gab es genau einen Weg, wie Geld in dieses Modul kam: der DKB-PDF-
+Import. Der funktioniert weiter und ist unverändert im Code — nur ist er kein
+sichtbarer Weg mehr. An seiner Stelle steht ein Knopf, **„Hinzufügen"**, und
+dahinter ein Zettel mit genau zwei Optionen.
+
+**Buchung manuell hinzufügen.** Konto, Betrag, Ausgabe oder Einnahme, Datum
+(heute), Beschreibung, optional Händler, Kategorie und Notiz, dazu der Schalter
+„In Auswertung berücksichtigen". Pflicht ist nur, was ohne Antwort keinen Sinn
+ergibt. Gespeichert wird über `finance_create_manual_transaction` (0011), und
+zwar in zwei unterscheidbaren Fällen:
+
+- **Händler und/oder Kategorie gesetzt** — das ist eine Einordnung. Sie wird als
+  Entscheidung gespeichert (`finance_transaction_overrides`), die Buchung bekommt
+  `manual_lock`, und die Zuordnung fragt nicht noch einmal nach.
+- **Beide leer** — dann hat der Nutzer eine Ausgabe notiert und über ihre
+  Einordnung *nichts* gesagt. Kein `manual_lock`, kein leerer Override nur wegen
+  der Herkunft „manual", und die Buchung taucht ganz normal in der Zuordnung auf.
+  Genau dafür ist die Zuordnung da.
+
+Notiz und ein ausdrückliches „zählt nicht" werden auch im zweiten Fall
+gespeichert — in einem Override **ohne** Händler und ohne Kategorie. Das hält,
+weil `resolveCategory` an `override.category_id` sperrt und nicht an der Existenz
+der Zeile: eine Notiz sperrt nichts.
+
+`import_id` bleibt in beiden Fällen leer — eine manuelle Buchung stammt aus
+keiner Datei, und ein Import-Datensatz, der eine vortäuscht, wäre eine
+Herkunftsangabe, die nicht stimmt.
+
+**KI-Import.** Bankunabhängig, ohne OpenAI-API und ohne automatische Verbindung
+zu irgendetwas:
+
+1. Zielkonto wählen — **ChatGPT entscheidet das nie**, der Mensch tut es vorher.
+2. „KI-Kontext kopieren" legt einen vollständigen Prompt in die Zwischenablage:
+   die Kategorien dieses Kontos, die bekannten Händler samt ihrer Muster und
+   Regeln, die persönlichen Entscheidungen („Scalable Capital zählt nicht"),
+   die Zahlungsdienstleister, die auf diesem Konto schon aufgetaucht sind, das
+   verbindliche Antwortformat und klare Unsicherheitsregeln. Der Nutzer macht
+   kein Prompt Engineering.
+3. Auszug in ChatGPT hochladen, Antwort zurück in die App einfügen, „Prüfen".
+4. Preview: X erkannt, Y neu, Z bereits vorhanden, N prüfen — jede Zeile
+   einzeln, jede „Prüfen"-Zeile aufklappbar und **vollständig lösbar**: Händler
+   (aus der Liste oder selbst getippt), Kategorie, Art, „zählt in der
+   Auswertung", Notiz. Und **„Passt so"** ist eine Aussage, keine Geste zum
+   Zuklappen: eine unsichere Zeile, deren Werte schon stimmten, ist damit
+   geprüft. Keine Buchung wird still verworfen.
+5. „Importieren" schreibt über `finance_apply_ai_import` (0011) alles oder
+   nichts.
+
+**Das sichtbare Format ist eine Tabelle.** Feste Kopfzeile, eine Zeile je
+Buchung, Semikolon als Trenner:
+
+```
+Datum;Beschreibung;Betrag;Währung;Händler;Kategorie;Typ;Auswertung;Notiz;Prüfen
+2026-09-18;REWE TROISDORF SAGT DANKE 8407;-24,95;EUR;REWE;lebensmittel;purchase;true;;false
+```
+
+Eine Tabelle kann ein Mensch überfliegen, bevor er sie einfügt; einen JSON-Baum
+kann er nur glauben. Datum als `YYYY-MM-DD`, Betrag mit Komma und ohne
+Tausenderzeichen, Händler/Kategorie/Notiz dürfen leer sein, Auswertung und
+Prüfen sind `true`/`false`. Das Semikolon trennt die Felder und darf deshalb in
+keinem Text stehen — der Prompt sagt das, und der Parser liest ein Feld in
+Anführungszeichen trotzdem korrekt, statt sich darauf zu verlassen. Das
+versionierte JSON aus der ersten Fassung bleibt als kompatibler Nebeneingang:
+**beide Türen enden in exakt demselben internen Modell**, und danach gibt es
+keinen Unterschied mehr — dieselbe Prüfung, derselbe Abgleich, dieselbe
+Datenbankfunktion.
+
+**Der Parser ist streng.** Ein fehlender Betrag, ein fehlendes Datum, eine
+erfundene Währung, eine unbekannte Buchungsart, eine Zeile mit zu vielen Feldern
+oder ein „vielleicht" in einer Ja/Nein-Spalte sind Fehler, bei denen **nichts**
+gespeichert wird — und die Meldung nennt die Zeile. `1.234` wird abgelehnt statt
+geraten: ein Trennzeichen mit genau drei Ziffern dahinter kann 1234 oder 1,234
+bedeuten, und das ist der eine Fall, in dem Raten den Betrag um Faktor tausend
+verfehlt. Eine unbekannte Kategorie dagegen wird zu `null` plus „prüfen" — sie
+auf die ähnlichste abzubilden wäre genau das Raten, das dieses Modul nirgends
+tut. Dasselbe gilt für einen Händler, den das Modell nicht eindeutig erkennen
+konnte.
+
+**Dedupe ist kontobezogen, exakt und eine Multimenge.** Verglichen werden Konto,
+Buchungsdatum, Betrag, Währung und Originaltext — normalisiert über denselben
+Normalisierer wie der Rest der Engine, nie unscharf. Der Händlervorschlag der KI
+ist ausdrücklich **kein** Bestandteil des Schlüssels: ein Modell, das „REWE"
+sagt, wo „REWE Troisdorf" stand, würde sonst zwei Einkäufe zu einem machen. Die
+bessere Beschreibung, die ein früherer Import als Beobachtung hinterlassen hat
+(0009), zählt als derselbe Umsatz. Dieselbe Buchung auf einem anderen Konto
+bleibt neu.
+
+**Der Vorschlag und die Entscheidung bleiben unterscheidbar.** Was das Modell
+vorgeschlagen hat, steht in `finance_transaction_ai_suggestions` (0011) — als
+Text, ohne dass ein `finance_merchants`-Eintrag entsteht, denn das wäre die
+automatische globale Lernregel, die v1.23 noch nicht erzeugen soll. Was der
+Mensch im Preview korrigiert hat, steht als Entscheidung in
+`finance_transaction_overrides` und setzt `manual_lock`. Aus der Differenz der
+beiden lernt v1.24.
+
+**Eine Meinung mehr braucht eine Rangfolge, und die steht an genau einer
+Stelle.** `src/lib/finance/effectiveClassification.js` beantwortet für jeden
+Screen dieselbe Frage — „ist dieser Umsatz eingeordnet?" — in dieser Ordnung:
+
+1. der **Override** — was ein Mensch über genau diese Buchung entschieden hat
+2. `manual_lock` — von Hand angelegt oder von Hand entschieden
+3. die **eigenen Regeln** — Muster und Kategorieregeln des Nutzers. Sie gehen
+   jedem Modellvorschlag vor, auch wenn sie zu keinem Ergebnis kommen: ein
+   Konflikt zwischen zwei eigenen Händlern und ein Händler auf „immer prüfen"
+   sind Fragen an einen Menschen, und kein Sprachmodell drückt sie weg
+4. der **KI-Vorschlag** — aber nur vollständig (Händler *und* Kategorie) und nur
+   ohne gemeldete Unsicherheit. Dann gilt der Umsatz als ausreichend eingeordnet
+   und verschwindet aus der Zuordnung
+5. sonst: offen
+
+Als Entscheidung auf Stufe 1 zählt jede Angabe zur Einordnung: eine Kategorie,
+ein Händler aus der Liste, oder ein Händlername, den der Nutzer selbst getippt
+hat. Wer den Händler benennt und die Kategorie offen lässt, hat trotzdem
+entschieden. Ein Override, der nichts davon trägt — nur eine Notiz, nur „zählt
+nicht" —, ist keine Einordnung und sperrt deshalb auch keine.
+
+Ein so eingeordneter Umsatz bekommt dadurch **keinen Händler, kein Muster und
+keine Regel** — die drei Ebenen (Modellvorschlag ≠ Nutzerentscheidung ≠ globale
+Lernregel) bleiben getrennt und einzeln nachvollziehbar. Was sich ändert, ist
+allein, ob diese eine Buchung noch jemanden beschäftigen muss.
+
+**Der korrigierte Händler ist ein Name, kein Eintrag.** Tippt der Nutzer im
+Preview „REWE", entsteht keine Zeile in `finance_merchants` und schon gar kein
+Muster — der Name landet als Text in
+`finance_transaction_overrides.merchant_name` (0011). Damit stehen die drei
+Ebenen sauber nebeneinander und bleiben einzeln lesbar:
+
+| | |
+|---|---|
+| `finance_transaction_ai_suggestions.merchant_name` | was das Modell sagte |
+| `finance_transaction_overrides.merchant_name` / `.merchant_id` | was der Mensch sagte |
+| `finance_merchants` + `finance_merchant_patterns` | die globale Regel |
+
+Aus der Differenz der ersten beiden lernt v1.24; die dritte entsteht weiterhin
+nur in der Zuordnung, mit Muster und Backtest.
+
+**Bestätigen ist nicht korrigieren.** Eine Zeile kann unsicher gemeldet und
+trotzdem richtig sein — „REWE · Lebensmittel · needs_review=true". Drückt der
+Nutzer „Passt so", ohne ein Feld anzufassen, ist das eine ausdrückliche
+menschliche Bestätigung, und `finance_transaction_ai_suggestions.human_review`
+hält den Unterschied fest:
+
+| Wert | Was passiert ist |
+|---|---|
+| `none` | Niemand hat die Zeile angesehen — sie war sicher genug |
+| `confirmed` | Angesehen und für richtig befunden, kein Feld geändert |
+| `corrected` | Angesehen und geändert |
+
+Kein `user_edited`-Boolean, und das ist kein Detail: „bestätigt" ist für v1.24
+das wertvollste Signal überhaupt — das Modell hat Unsicherheit gemeldet **und**
+hatte recht. Ein Boolean könnte das nicht sagen; eine Bestätigung sähe aus wie
+„nie angefasst", und sie trotzdem als Korrektur zu buchen hieße, v1.24
+beizubringen, ein richtiger Vorschlag sei falsch gewesen.
+
+**Geprüft heißt nicht eingeordnet.** Eine Bestätigung, die weder Händler noch
+Kategorie trägt, ist eine geprüfte Buchung — sie bekommt keine Sperre, keinen
+leeren Override und bleibt in der Zuordnung. Dass ein Mensch sie angesehen hat,
+steht trotzdem fest. Die Frage „sagt das etwas über die Einordnung?" wird an
+drei Stellen gestellt und ist an allen dreien dieselbe: in
+`finance_create_manual_transaction`, in `finance_apply_ai_import` und in
+`effectiveClassification.js`.
+
+**Was v1.23 nicht anfasst:** keine bestehende Nutzerentscheidung wird
+überschrieben, keine Alt-Daten werden migriert, die Pattern- und Lern-Engine
+bleibt vollständig, und der DKB-Weg bleibt technisch bestehen. Ohne
+KI-Vorschläge verhält sich die Zuordnung exakt wie vor v1.23 — die vierte Stufe
+der Rangfolge existiert für Buchungen, die es vorher nicht gab.
+
+Geprüft in `tools/financeAiLogic.mjs` (354 Assertions, reine Logik),
+`tools/financeAiE2E.mjs` (141, gegen ein echtes Postgres mit den echten
+Migrationen und RPCs) und `tools/financeAiLayout.mjs` (54, der echte Preview und
+der Händler-Editor in Chromium bei 390×844 und 390×667, mit Texten, wie ein
+Sprachmodell sie schreibt). Die Regression aus der Vorgabe — „REWE TROISDORF, merchant=REWE,
+category=lebensmittel, needs_review=false" führt zu einer importierten Buchung
+ohne offene Zuordnung, mit nachlesbarem Vorschlag und ohne globale Regel — läuft
+in allen dreien: als reine Logik, gegen die echte Datenbank und im gemounteten
+Screen (`tools/smoke.mjs`).
 
 ---
 
