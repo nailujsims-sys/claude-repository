@@ -72,6 +72,22 @@ one wins. That is a change to the shared row, checked against three modules, for
 a fix nobody has reported needing — §26 material, and Rule 0 says it waits until
 `TaskRow` is being edited for its own reasons.
 
+### G24 · The calendar's view switch is a second copy of `Segmented` — §2, Rule 2
+`src/components/Segmented.jsx` (v1.26) is the app's segmented control: the
+Finanzen dashboard uses it for its two tabs and for the 3M/6M/1J/3J/Max range.
+Its markup is, deliberately, the one `Kalender.jsx` already had inline for
+Tag/Woche/Monat — same `rounded-chip bg-bg-input p-1` shell, same
+`bg-accent text-white` active segment, same `.press-tint`.
+
+The calendar was **not** migrated. Rule 0: it works, it looks identical, and
+changing it would be a refactor nobody asked for in a file whose view switch is
+wired into the swipe direction and the `cal-enter-*` remount key. Two call sites
+render the same ten classes; that is a duplication, not a divergence.
+
+*Fix it when `Kalender.jsx`'s header is being edited for its own reasons* — swap
+the inline block for `<Segmented>`, check Tag/Woche/Monat at 320–430px, and
+close this entry. Never as a task of its own.
+
 ## Explicitly conformant (do not "fix")
 
 - `src/screens/calendar/useTimedGesture.js` — long-press grab, pointer capture,

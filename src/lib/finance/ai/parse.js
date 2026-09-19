@@ -2,6 +2,7 @@ import { TRANSACTION_TYPES } from '../../../config/finance'
 import { tokenize } from '../normalize'
 import { AI_IMPORT_FORMAT, AI_IMPORT_VERSION, REVIEW_REASONS } from './format'
 import { looksLikeSemicolonTable, parseSemicolonTable } from './semicolon'
+import { assignableCategories } from '../categories'
 
 // Vom eingefügten Text zu geprüften Zeilen — oder zu einer Fehlermeldung.
 //
@@ -250,7 +251,15 @@ function readJson(text) {
  */
 export function validateAIImport(payload, { categories = [] } = {}) {
   const list = Array.isArray(payload?.transactions) ? payload.transactions : []
-  const bySlug = new Map(categories.filter((c) => c?.slug).map((c) => [c.slug, c]))
+  // NUR BLÄTTER. Eine Oberkategorie ist im Prompt eine Überschrift und in der
+  // Datenbank kein zulässiger Wert (0014) — sie hier durchzulassen hieße, einen
+  // Import zu bauen, den das Speichern dann ablehnt. Also steht sie gar nicht
+  // erst in der Nachschlagetabelle, und ein Modell, das sie trotzdem zurückgibt,
+  // landet in derselben Antwort wie eine erfundene Kategorie: Spalte leer,
+  // „zu prüfen".
+  const bySlug = new Map(
+    assignableCategories(categories).filter((c) => c?.slug).map((c) => [c.slug, c])
+  )
 
   const errors = []
   const entries = []

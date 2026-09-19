@@ -22,6 +22,10 @@ import { readFileSync } from 'node:fs'
 import {
   DEFAULT_FINANCE_CURRENCY,
   FINANCE_CATEGORIES,
+  FINANCE_CHILD_CATEGORIES,
+  FINANCE_LEGACY_CATEGORY_SLUGS,
+  FINANCE_PARENT_CATEGORIES,
+  isAssignableCategorySlug,
   FINANCE_CATEGORY_SLUGS,
   PATTERN_TYPES,
   REVIEW_MODES,
@@ -159,8 +163,34 @@ const MERCHANTS = [merchant(REWE), merchant(EDEKA), merchant(MAXMORITZ), merchan
 
 // ── B. The MVP vocabulary, and the one word that is not in it ───────────────
 {
-  ok('exactly the five agreed categories',
-     FINANCE_CATEGORY_SLUGS.join(',') === 'lebensmittel,restaurant,klamotten,drogerie,sonstige')
+  // Seit v1.26 zweistufig. Was hier geprüft wird, ist die Zusage, an der die
+  // Migration hängt: die fünf Slugs von damals sind noch da, sie sind Blätter,
+  // und sie hängen unter der Oberkategorie, die 0014 ihnen gibt.
+  ok('die fünf alten Kategorien gibt es weiterhin',
+     FINANCE_LEGACY_CATEGORY_SLUGS.every((slug) => FINANCE_CATEGORY_SLUGS.includes(slug)))
+  ok('…und sie sind alle zuordenbar, keine davon wurde zur Überschrift',
+     FINANCE_LEGACY_CATEGORY_SLUGS.every(isAssignableCategorySlug))
+  ok('neun Oberkategorien', FINANCE_PARENT_CATEGORIES.length === 9)
+  ok('keine Oberkategorie ist zuordenbar',
+     FINANCE_PARENT_CATEGORIES.every((p) => !isAssignableCategorySlug(p.slug)))
+  ok('jede Unterkategorie kennt ihre Oberkategorie',
+     FINANCE_CHILD_CATEGORIES.every((c) =>
+       FINANCE_PARENT_CATEGORIES.some((p) => p.slug === c.parent_slug)))
+  ok('genau zwei Ebenen — keine Oberkategorie ist zugleich Kind',
+     FINANCE_PARENT_CATEGORIES.every((p) =>
+       !FINANCE_CHILD_CATEGORIES.some((c) => c.slug === p.slug)))
+  ok('jeder Slug kommt genau einmal vor',
+     new Set(FINANCE_CATEGORY_SLUGS).size === FINANCE_CATEGORY_SLUGS.length)
+  ok('jeder Slug passt auf die Form, die die Datenbank verlangt',
+     FINANCE_CATEGORY_SLUGS.every((x) => /^[a-z][a-z0-9_]{0,39}$/.test(x)))
+  ok('die drei beschlossenen Umbenennungen stehen in der Taxonomie',
+     categoryLabel('restaurant') === 'Restaurants & Cafés' &&
+     categoryLabel('klamotten') === 'Kleidung' &&
+     categoryLabel('sonstige') === 'Allgemeines Sonstiges')
+  ok('eine Oberkategorie steht immer vor ihren Kindern (Seed-Reihenfolge)',
+     FINANCE_CATEGORIES.every((c, i) =>
+       c.parent_slug === null ||
+       FINANCE_CATEGORIES.findIndex((q) => q.slug === c.parent_slug) < i))
   ok('„Events" is not a category', !isCategorySlug('events') && !FINANCE_CATEGORY_SLUGS.includes('events'))
   ok('every category has a German label', FINANCE_CATEGORIES.every((c) => c.label.length > 0))
   ok('a label can be looked up by slug',
@@ -176,13 +206,56 @@ const MERCHANTS = [merchant(REWE), merchant(EDEKA), merchant(MAXMORITZ), merchan
   // The database refuses whatever this config does not know, so the two have to
   // say the same thing — a mismatch is a screen that breaks on save.
   const sql = readFileSync('supabase/migrations/0008_finance.sql', 'utf8')
-  const seedStart = sql.indexOf('returns table (slug text')
-  const seed = sql.slice(seedStart, sql.indexOf('$$;', seedStart))
-  const seeded = [...seed.matchAll(/\\('([a-z_]+)',\\s*'([^']+)',\\s*(\\d+)\\)/g)]
-    .map((m) => m[1] + ':' + m[2] + ':' + m[3])
-  ok('the migration seeds exactly the categories this config declares',
-     seeded.join(',') === FINANCE_CATEGORIES.map((c) => c.slug + ':' + c.label + ':' + c.sort_order).join(','))
-  ok('and the migration never mentions an „events" category', !/'events'/.test(sql))
+  const hierarchy = readFileSync('supabase/migrations/0014_finance_category_hierarchy.sql', 'utf8')
+
+  // Die Taxonomie steht seit v1.26 in 0014. Sie wird Zeile für Zeile gegen diese
+  // Konfiguration gelesen: eine Kategorie, die nur auf einer der beiden Seiten
+  // existiert, ist entweder ein Picker, der etwas anbietet, das die Datenbank
+  // ablehnt — oder eine Kategorie, die niemand je zu sehen bekommt.
+  const seedStart = hierarchy.indexOf('returns table (slug text')
+  const seed = hierarchy.slice(seedStart, hierarchy.indexOf('$$;', seedStart))
+  const seeded = [...seed.matchAll(/\\('([a-z_]+)',\\s*'([^']+)',\\s*(\\d+),\\s*(null|'[a-z_]+')\\)/g)]
+    .map((m) => [m[1], m[2], Number(m[3]), m[4] === 'null' ? null : m[4].replace(/'/g, '')].join(':'))
+  const declared = FINANCE_CATEGORIES.map((c) =>
+    [c.slug, c.label, c.sort_order, c.parent_slug].join(':'))
+  ok('0014 legt genau die Kategorien an, die diese Konfiguration nennt',
+     seeded.join(',') === declared.join(','))
+  ok('0008 kennt die fünf alten Slugs noch immer',
+     FINANCE_LEGACY_CATEGORY_SLUGS.every((slug) => sql.includes("'" + slug + "'")))
+  ok('0014 legt keine der fünf alten Kategorien neu an — es hängt sie nur um',
+     !/delete\\s+from\\s+public\\.finance_categories/i.test(hierarchy) &&
+     hierarchy.includes('on conflict (user_id, slug) do nothing'))
+  ok('0014 setzt die drei Umbenennungen nur auf das alte Label',
+     hierarchy.includes("slug = 'restaurant' and label = 'Restaurant'") &&
+     hierarchy.includes("slug = 'klamotten' and label = 'Klamotten'") &&
+     hierarchy.includes("slug = 'sonstige' and label = 'Sonstige'"))
+  ok('0014 verbietet eine dritte Ebene in der Datenbank',
+     /eine dritte Kategorieebene gibt es nicht/.test(hierarchy) &&
+     /create trigger finance_categories_hierarchy/.test(hierarchy))
+  ok('0014 lässt nur Blätter zuordnen, und zwar an jeder Schreibtabelle',
+     /create or replace function public\\.finance_category_is_leaf/.test(hierarchy) &&
+     ['finance_transactions', 'finance_transaction_overrides', 'finance_category_rules',
+      'finance_transaction_ai_suggestions', 'finance_ai_learning_memories']
+       .every((table) => hierarchy.includes(table)))
+  // Aufschiebbar, NICHT restrict: die Pruefung gehoert ans COMMIT, sonst
+  // scheitert eine Transaktion, die Eltern vor Kindern löscht, obwohl am Ende
+  // gar nichts verwaist wäre. Belegt auf einer echten Datenbank in
+  // supabase/tests/finance_category_hierarchy.sql.
+  // Nur die DDL lesen: in den Kommentaren steht das Wort restrict als
+  // Begruendung dafuer, dass der Fremdschluessel eben keiner ist.
+  const ddl = hierarchy.replace(/^\\s*--.*$/gm, '')
+  ok('0014 schützt eine Oberkategorie mit Kindern mit einem aufschiebbaren Fremdschlüssel',
+     /on\\s+delete\\s+no action/.test(ddl) &&
+     /deferrable initially deferred/.test(ddl) &&
+     !/on\\s+delete\\s+restrict/.test(ddl))
+  ok('…und repariert einen früher mit restrict angelegten Fremdschlüssel',
+     /drop constraint if exists finance_categories_parent_id_fkey/.test(ddl) &&
+     /drop constraint if exists finance_categories_parent_fk/.test(ddl))
+  ok('0014 ändert die Signatur von finance_default_categories nicht',
+     !/drop function if exists public\\.finance_default_categories/.test(hierarchy) &&
+     /create or replace function public\\.finance_category_taxonomy/.test(hierarchy))
+  ok('and the migration never mentions an „events" category',
+     !/'events'/.test(sql) && !/'events'/.test(hierarchy))
 
   const listOf = (re) => (sql.match(re)?.[1] ?? '').split(',').map((s) => s.trim().replace(/'/g, ''))
   ok('the review modes in the database are the review modes here',

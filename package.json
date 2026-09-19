@@ -1,7 +1,7 @@
 {
   "name": "mind-whiteboard",
   "private": true,
-  "version": "1.25.0",
+  "version": "1.26.0",
   "type": "module",
   "description": "Mind Whiteboard — a personal productivity app (Startseite, Aufgaben, Kalender mit Google-Synchronisierung, Listen, Ausgaben, Finanzen).",
   "scripts": {
@@ -10,8 +10,8 @@
     "preview": "vite preview",
     "smoke": "node tools/smoke.mjs",
     "verify": "npm run test:logic && npm run smoke && npm run build",
-    "test:logic": "node tools/calendarLogic.mjs && node tools/pressLogic.mjs && node tools/overlayLogic.mjs && node tools/focusLogic.mjs && node tools/sheetLogic.mjs && node tools/restoreLogic.mjs && node tools/homeLogic.mjs && node tools/authLogic.mjs && node tools/dataLogic.mjs && node tools/listLogic.mjs && node tools/expenseLogic.mjs && node tools/financeLogic.mjs && node tools/dkbParserLogic.mjs && node tools/dkbReconcileLogic.mjs && node tools/financeImportLogic.mjs && node tools/financeImportFlowLogic.mjs && node tools/financeImportPdfLogic.mjs && node tools/financeClassifyLogic.mjs && node tools/financeAiLogic.mjs && node tools/financeLearningLogic.mjs && node tools/financeAccountsLogic.mjs && node tools/financeAnalyticsLogic.mjs && node tools/realtimeLogic.mjs && node tools/googleLogic.mjs && node tools/googleSyncLogic.mjs",
-    "test:layout": "node tools/financeImportLayout.mjs && node tools/financeClassifyLayout.mjs && node tools/financeAiLayout.mjs && node tools/financeLearningLayout.mjs && node tools/financeAccountsLayout.mjs",
+    "test:logic": "node tools/calendarLogic.mjs && node tools/pressLogic.mjs && node tools/overlayLogic.mjs && node tools/focusLogic.mjs && node tools/sheetLogic.mjs && node tools/restoreLogic.mjs && node tools/homeLogic.mjs && node tools/authLogic.mjs && node tools/dataLogic.mjs && node tools/listLogic.mjs && node tools/expenseLogic.mjs && node tools/financeLogic.mjs && node tools/dkbParserLogic.mjs && node tools/dkbReconcileLogic.mjs && node tools/financeImportLogic.mjs && node tools/financeImportFlowLogic.mjs && node tools/financeImportPdfLogic.mjs && node tools/financeClassifyLogic.mjs && node tools/financeAiLogic.mjs && node tools/financeLearningLogic.mjs && node tools/financeAccountsLogic.mjs && node tools/financeAnalyticsLogic.mjs && node tools/financeDashboardLogic.mjs && node tools/realtimeLogic.mjs && node tools/googleLogic.mjs && node tools/googleSyncLogic.mjs",
+    "test:layout": "node tools/financeImportLayout.mjs && node tools/financeClassifyLayout.mjs && node tools/financeAiLayout.mjs && node tools/financeLearningLayout.mjs && node tools/financeAccountsLayout.mjs && node tools/financeDashboardLayout.mjs",
     "test:rls": "node tools/rlsTest.mjs && node tools/financeImportE2E.mjs && node tools/financeClassifyE2E.mjs && node tools/financeAnalyticsE2E.mjs && node tools/financeAiE2E.mjs && node tools/financeLearningE2E.mjs && node tools/financeAccountsE2E.mjs"
   },
   "dependencies": {

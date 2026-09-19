@@ -5,7 +5,7 @@ import Toggle from './Toggle'
 import FinanceAccountPicker from './FinanceAccountPicker'
 import FinanceLearningScopeSheet from './FinanceLearningScopeSheet'
 import FinanceMemoriesSheet from './FinanceMemoriesSheet'
-import { ChipSelect } from './FinanceManualSheet'
+import { CategoryChipSelect, ChipSelect } from './FinanceManualSheet'
 import { useFinance } from '../context/FinanceContext'
 import { useUI } from '../context/UIContext'
 import { useToast } from '../context/ToastContext'
@@ -426,8 +426,8 @@ function PreviewRow({ row, categories, merchants = [], showBorder, onEdit }) {
 
           <div>
             <p className="mb-2 text-label font-semibold text-text-secondary">Kategorie</p>
-            <ChipSelect
-              options={categories.map((c) => ({ id: c.id, label: c.label }))}
+            <CategoryChipSelect
+              categories={categories}
               value={row.categoryId}
               onChange={(categoryId) => onEdit({ categoryId })}
               emptyLabel="Keine"

@@ -28,14 +28,16 @@ import { buildLearnRequest } from './src/lib/finance/learning.js'
 import { backtestPattern } from './src/lib/finance/backtest.js'
 import { matchMerchant, FINANCE_STATUS } from './src/lib/finance/merchantMatching.js'
 import { tokenize } from './src/lib/finance/normalize.js'
-import { FINANCE_CATEGORIES } from './src/config/finance.js'
+import { financeCategoryRows } from './tools/fixtures/financeCategories.mjs'
 
 let pass = 0, fail = 0
 const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log('  ✗ ' + name) } }
 
 const uuid = (n) => '11111111-2222-4333-8444-' + String(n).padStart(12, '0')
 const ACCOUNT = uuid(2)
-const CATEGORIES = FINANCE_CATEGORIES.map((c, i) => ({ ...c, id: uuid(900 + i) }))
+// Echte Zeilen mit echter Hierarchie: eine Attrappe ohne parent_id waere
+// lauter Oberkategorien, und die darf man seit 0014 nicht zuordnen.
+const CATEGORIES = financeCategoryRows({ id: (slug, i) => uuid(900 + i) })
 const cat = (slug) => CATEGORIES.find((c) => c.slug === slug).id
 
 // A booking as the database holds it: the tokens are frozen beside the text,

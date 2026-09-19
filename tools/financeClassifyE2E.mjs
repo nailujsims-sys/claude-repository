@@ -207,7 +207,7 @@ ${sql}`
               min_inclusive, max_inclusive, currency, active
        from public.finance_category_rules where user_id = '${userId}' and active`),
     categories: jsonAsUser(userId,
-      `select id, slug, label, sort_order from public.finance_categories
+      `select id, slug, label, sort_order, parent_id from public.finance_categories
        where user_id = '${userId}' order by sort_order`),
     overrides: jsonAsUser(userId,
       `select transaction_id, merchant_id, category_id from public.finance_transaction_overrides
@@ -288,7 +288,13 @@ ${sql}`
   insertBooking('Scalable Capital Verrechnungskonto')
 
   const before = reload()
-  ok('a fresh account has the five seeded categories', before.categories.length === 5)
+  // Seit v1.26 ist die Taxonomie zweistufig — und `parent_id` wird hier
+  // ausdrücklich mitgelesen: ohne die Spalte sähe jede Zeile wie eine
+  // Oberkategorie aus, und keine einzige wäre zuordenbar. Genau das hat dieser
+  // Test gemeldet, als die Abfrage sie noch wegließ.
+  ok('ein frisches Konto hat die vollständige Taxonomie', before.categories.length === 35)
+  ok('…davon 26 zuordenbare Unterkategorien',
+     before.categories.filter((c) => c.parent_id !== null).length === 26)
   ok('nothing is classified yet', buildClassificationQueue({
     transactions: before.transactions, patterns: before.patterns, merchants: before.merchants,
     rules: before.categoryRules, overrides: before.overrides,
