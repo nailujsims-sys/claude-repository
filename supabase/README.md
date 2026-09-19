@@ -116,6 +116,58 @@ hin zu „jede Tabelle aus 0008 hat danach immer noch genau ihre vier Policies".
 
 Nach jeder Migration ausführen.
 
+### Diese Suite fasst die Produktionsdatenbank nicht an
+
+Sie baut ihren eigenen Cluster in einem temporären Verzeichnis, spielt die
+Migrationen dort ein und löscht ihn danach wieder — egal ob sie grün oder rot
+war. Es gibt in diesen Dateien keine Verbindung zu einem Supabase-Projekt, keine
+Anmeldedaten und keinen Schreibzugriff nach außen. Wer sie laufen lässt, riskiert
+nichts.
+
+### Im Deployment ist sie Pflicht
+
+`tools/rlsTest.mjs` und die sechs E2E-Suites **überspringen sich mit Exit 0**,
+wenn die Maschine kein PostgreSQL hat. Auf einem Entwicklungsrechner ist das
+richtig — niemand soll eine Datenbank installieren müssen, um einen Tippfehler
+zu korrigieren. In einem Deployment ist es genau die Art von Grün, die nichts
+bedeutet.
+
+Deshalb setzt `.github/workflows/deploy.yml` im Schritt **Database / RLS tests**
+die Variable `RLS_TEST_REQUIRED=1`. Damit wird aus jedem Überspringen ein
+Fehler:
+
+| Fall | ohne `RLS_TEST_REQUIRED` | mit `RLS_TEST_REQUIRED=1` |
+|---|---|---|
+| kein unterstütztes PostgreSQL (16, 15, 14) | übersprungen, Exit 0 | **Exit 1** |
+| läuft als `root` ohne unprivilegiertes Konto | übersprungen, Exit 0 | **Exit 1** |
+| Cluster startet nicht, Migration, Replay, RLS-Assertion, Upgrade-Probe oder E2E-Suite scheitert | Exit 1 | Exit 1 |
+
+Der Runner bringt PostgreSQL 16 mit (Server deaktiviert — die Suite braucht ihn
+nicht, sie startet ihren eigenen). Der Workflow-Schritt gibt vorher
+`initdb --version` und `psql --version` aus, damit jeder Lauf selbst
+dokumentiert, gegen welche echte Datenbank er gelaufen ist.
+
+### …und schon im Pull Request
+
+`.github/workflows/database-tests.yml` fährt dieselbe Suite bei jedem Pull
+Request gegen den Default-Branch — ohne `github-pages`-Environment, ohne
+Pages-Rechte, ohne Deployment, ohne Supabase-Zugriff, nur mit
+`contents: read`. Der Grund: im Deploy-Workflow hängt die Prüfung hinter jenem
+Environment, und das lässt nur den Default-Branch zu. Ein Migrationsfehler
+fiele dort erst NACH dem Merge auf.
+
+Der Workflow hat bewusst **keinen Path-Filter**. Naheliegend wäre einer auf
+`supabase/**` und `tools/**` — und er wäre falsch: die sechs E2E-Suites bündeln
+mit esbuild echten Anwendungscode aus `src/lib/finance/**` und fahren ihn gegen
+die echte Datenbank. Eine reine `src/`-Änderung kann sie brechen, und ein
+Filter, der die Liste der gebündelten Module nachziehen muss, ist einer, den
+beim nächsten Modul jemand vergisst.
+
+Zusätzlich zum `RLS_TEST_REQUIRED=1` prüft der Schritt sein eigenes Protokoll:
+taucht darin das Wort „übersprungen" auf, oder fehlt die Abschlusszeile einer
+der Suiten, ist der Lauf rot. Das schließt auch einen Skip-Pfad, den es heute
+noch nicht gibt.
+
 ## 5. Echtzeit-Synchronisation
 
 Damit ein zweites geöffnetes Gerät eine Änderung mitbekommt, muss die Tabelle in
