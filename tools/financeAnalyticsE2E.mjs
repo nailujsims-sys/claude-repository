@@ -192,7 +192,7 @@ ${sql}`
               min_inclusive, max_inclusive, currency, active
        from public.finance_category_rules where user_id = '${userId}' and active`),
     categories: jsonAsUser(userId,
-      `select id, slug, label, sort_order from public.finance_categories
+      `select id, slug, label, sort_order, parent_id from public.finance_categories
        where user_id = '${userId}' order by sort_order`),
     overrides: jsonAsUser(userId,
       `select transaction_id, merchant_id, category_id, include_in_analytics, note

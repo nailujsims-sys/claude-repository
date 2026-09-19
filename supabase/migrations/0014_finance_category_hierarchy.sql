@@ -28,18 +28,49 @@
 -- Lauf nichts mehr findet.
 
 -- ── 1. Die Spalte ───────────────────────────────────────────────────────────
--- `on delete restrict`: eine Oberkategorie, an der Unterkategorien hängen, darf
--- nicht verschwinden — sonst blieben Blätter ohne Überschrift zurück und jede
--- Aggregation über `parent_id` hätte eine Lücke. Der Weg zu einer leeren
--- Oberkategorie führt über ihre Kinder, in dieser Reihenfolge, bewusst.
+-- `on delete no action deferrable initially deferred` — und diese Wahl ist
+-- gemessen, nicht geraten.
 --
--- Für das Löschen eines BENUTZERS ist das unkritisch: `user_id` kaskadiert,
--- Eltern und Kinder verschwinden in derselben Anweisung, und die referentielle
--- Prüfung läuft am Ende der Anweisung — da ist kein Kind mehr übrig, das auf
--- eine gelöschte Oberkategorie zeigen könnte.
+-- WAS GEBRAUCHT WIRD, sind drei Zusagen gleichzeitig:
+--   (a) eine einzelne Oberkategorie, an der Kinder hängen, lässt sich nicht
+--       löschen — sonst blieben Blätter ohne Überschrift zurück und jede
+--       Aggregation über `parent_id` hätte eine Lücke;
+--   (b) ein kompletter Benutzer-Delete entfernt Eltern UND Kinder;
+--   (c) ein verwaistes Kind kann nie committet werden.
+--
+-- WARUM NICHT `on delete restrict`. Der erste Entwurf dieser Migration hatte
+-- ihn, mit der Begründung, die referentielle Prüfung laufe ohnehin am Ende der
+-- Anweisung. Auf einer echten Datenbank gemessen (supabase/tests/
+-- finance_category_hierarchy.sql) stimmt das für den Cascade aus `auth.users`
+-- zufällig — und ist als Zusage trotzdem wertlos, weil RESTRICT sich
+-- ausdrücklich NICHT aufschieben lässt: `set constraints all deferred` hat auf
+-- ihn keine Wirkung. Damit scheitert jede Transaktion, die eine Oberkategorie
+-- vor ihren Kindern löscht, auch dann, wenn am Ende gar nichts verwaist wäre.
+-- Eine Zusage, die von der Reihenfolge innerhalb einer Anweisung abhängt, ist
+-- keine.
+--
+-- `no action deferrable initially deferred` verschiebt die Prüfung ans
+-- COMMIT — und genau dort steht die Frage, die beantwortet werden soll: „ist am
+-- Ende dieser Transaktion ein Kind ohne Elternteil übrig?" Eine einzelne
+-- Oberkategorie mit Kindern zu löschen scheitert weiterhin (a), Eltern und
+-- Kinder gemeinsam zu entfernen geht (b), und verwaist committen lässt sich
+-- nichts (c). Alle drei sind in der Testsuite oben einzeln belegt.
 alter table public.finance_categories
-  add column if not exists parent_id uuid references public.finance_categories (id)
-    on delete restrict;
+  add column if not exists parent_id uuid;
+
+-- Der Fremdschlüssel bekommt einen eigenen Namen und wird bei jedem Lauf neu
+-- gesetzt: so repariert ein zweiter Durchlauf auch eine Datenbank, auf der eine
+-- frühere Fassung dieser Datei den Fremdschlüssel noch mit `restrict` angelegt
+-- hatte. Ohne diesen Schritt bliebe die alte, nicht aufschiebbare Regel stehen.
+alter table public.finance_categories
+  drop constraint if exists finance_categories_parent_id_fkey;
+alter table public.finance_categories
+  drop constraint if exists finance_categories_parent_fk;
+alter table public.finance_categories
+  add constraint finance_categories_parent_fk
+  foreign key (parent_id) references public.finance_categories (id)
+  on delete no action
+  deferrable initially deferred;
 
 comment on column public.finance_categories.parent_id is
   'Die Oberkategorie. null = diese Zeile IST eine Oberkategorie. Genau zwei '
@@ -211,13 +242,15 @@ revoke all on function public.finance_category_assignable_guard() from public, a
 -- Elternzeile schon sehen muss. tools/financeLogic.mjs liest beide Listen
 -- gegeneinander und schlägt fehl, sobald sie auseinanderlaufen.
 --
--- `finance_default_categories()` bekommt eine vierte Spalte. Der Rückgabetyp
--- ändert sich damit, und den kann `create or replace` nicht ändern — also erst
--- weg, dann neu. Der einzige Aufrufer ist `finance_seed_categories()`, das
--- gleich darunter ebenfalls neu geschrieben wird.
-drop function if exists public.finance_default_categories();
-
-create or replace function public.finance_default_categories()
+-- SIE HEISST NICHT `finance_default_categories`, und das ist wichtig. Jene
+-- Funktion gehört 0008 und gibt drei Spalten zurück; eine vierte anzuhängen
+-- hieße, ihren Rückgabetyp zu ändern, und das kann `create or replace` nicht —
+-- es bräuchte ein `drop function` davor. Damit wäre die Migrationsreihe nicht
+-- mehr wiederholbar: 0008 ein zweites Mal eingespielt scheitert an
+-- „cannot change return type of existing function", und genau das hat die
+-- Idempotenz-Probe in tools/rlsTest.mjs gemeldet. Ein neuer Name lässt 0008
+-- unangetastet, und beide Dateien laufen beliebig oft.
+create or replace function public.finance_category_taxonomy()
 returns table (slug text, label text, sort_order integer, parent_slug text)
 language sql
 immutable
@@ -281,14 +314,14 @@ begin
   -- 1. Die Oberkategorien. Erst sie, dann die Kinder.
   insert into public.finance_categories (user_id, slug, label, sort_order, is_system, parent_id)
   select p_user, d.slug, d.label, d.sort_order, true, null
-  from public.finance_default_categories() d
+  from public.finance_category_taxonomy() d
   where d.parent_slug is null
   on conflict (user_id, slug) do nothing;
 
   -- 2. Die Unterkategorien, mit aufgelöster Oberkategorie.
   insert into public.finance_categories (user_id, slug, label, sort_order, is_system, parent_id)
   select p_user, d.slug, d.label, d.sort_order, true, p.id
-  from public.finance_default_categories() d
+  from public.finance_category_taxonomy() d
   join public.finance_categories p on p.user_id = p_user and p.slug = d.parent_slug
   where d.parent_slug is not null
   on conflict (user_id, slug) do nothing;
@@ -299,7 +332,7 @@ begin
   update public.finance_categories c
   set parent_id = p.id,
       sort_order = d.sort_order
-  from public.finance_default_categories() d
+  from public.finance_category_taxonomy() d
   join public.finance_categories p on p.user_id = p_user and p.slug = d.parent_slug
   where c.user_id = p_user
     and c.slug = d.slug
@@ -308,7 +341,7 @@ begin
 
   update public.finance_categories c
   set sort_order = d.sort_order
-  from public.finance_default_categories() d
+  from public.finance_category_taxonomy() d
   where c.user_id = p_user
     and c.slug = d.slug
     and d.parent_slug is null
@@ -347,8 +380,17 @@ create trigger on_auth_user_created_finance
   after insert on auth.users
   for each row execute function public.finance_seed_categories();
 
-revoke all on function public.finance_default_categories() from public, anon;
-grant execute on function public.finance_default_categories() to authenticated;
+revoke all on function public.finance_category_taxonomy() from public, anon;
+grant execute on function public.finance_category_taxonomy() to authenticated;
+
+-- Die Funktion aus 0008 bleibt bestehen und wird von niemandem mehr aufgerufen:
+-- `finance_seed_categories` liest seit dieser Datei die Taxonomie oben. Sie zu
+-- löschen wäre der Weg, auf dem ein Replay von 0008 sie als flache Fünferliste
+-- zurückbrächte, ohne dass jemand es merkt — der Kommentar sagt stattdessen,
+-- was gilt.
+comment on function public.finance_default_categories() is
+  'Abgelöst durch finance_category_taxonomy() (0014). Bleibt nur, damit ein '
+  'erneutes Einspielen von 0008 nicht fehlschlägt; kein Aufrufer liest sie mehr.';
 revoke all on function public.finance_apply_category_taxonomy(uuid) from public, anon, authenticated;
 revoke all on function public.finance_seed_categories() from public, anon, authenticated;
 

@@ -5,6 +5,16 @@ import { categoryBreakdown } from './categories'
 import { topMerchants } from './merchants'
 import { biggestExpenses } from './biggest'
 import { DEFAULT_TREND_RANGE, trendSeries } from './trend'
+import { DEFAULT_FINANCE_CURRENCY } from '../../../config/finance'
+
+// Was `categoryBreakdown` zurückgibt, wenn es nichts zurückgeben darf. Eine
+// eigene Konstante, damit „keine Zahlen" überall dieselbe Form hat wie „Zahlen".
+const EMPTY_BREAKDOWN = Object.freeze({
+  parents: [],
+  totalExpenses: null,
+  assignedExpenses: null,
+  unassigned: { amount: null, count: 0, percentage: null },
+})
 
 // Die eine Pipeline. Rohzeilen rein, fertiges Dashboard raus.
 //
@@ -96,31 +106,65 @@ export function buildFinanceDashboard({
     ? entries.filter((e) => rangeContains(comparison, e.bookingDate))
     : []
 
-  // 4. Die Zahlen.
-  const summary = dashboardSummary({ entries: inRange, comparisonEntries: inComparison })
-  const breakdown = categoryBreakdown({ entries: inRange, categories })
-  const merchantRows = topMerchants({ entries: inRange, categories, limit: topMerchantCount })
-  const biggest = biggestExpenses({ entries: inRange, categories, limit: biggestCount })
-
-  // 5. Der Verlauf, über alle Buchungen dieser Konten.
-  const trend = trendSeries({ entries, range: trendRange, today })
-
-  // Die Währung, in der diese Zahlen zu lesen sind — aus den Buchungen, nicht
-  // aus einer Annahme. Heute ist alles EUR (0008: „die Währung ist ein Wert,
-  // keine fest verdrahtete Annahme"), und der Fall, für den diese Zeilen da
-  // sind, ist der Tag, an dem jemand ein zweites Konto in einer anderen Währung
-  // anlegt: dann steht wenigstens das richtige Zeichen an der Zahl.
+  // 3b. WELCHE WÄHRUNG? — und was passiert, wenn es zwei sind.
   //
-  // WAS SIE AUSDRÜCKLICH NICHT TUN: umrechnen. Eine Summe über zwei Währungen
-  // ist keine Summe, und ein Kurs gehört in dieses Modul erst, wenn jemand ihn
-  // bestellt — `mixedCurrency` sagt der Oberfläche, dass sie es mit genau
-  // diesem Fall zu tun hat, statt ihn stillschweigend zu verrechnen.
-  const currencies = new Set(inRange.filter((e) => e.included).map((e) => e.currency))
-  const accountCurrency = accountId
-    ? accounts.find((a) => a?.id === accountId)?.currency ?? null
-    : null
-  const currency =
-    currencies.size === 1 ? [...currencies][0] : accountCurrency ?? accounts[0]?.currency ?? 'EUR'
+  // Beträge liegen in Minor Units, ohne Kurs und ohne Kontext. 2483 EUR-Cent und
+  // 2483 AUD-Cent zu addieren ergibt 4966 von nichts. Eine Summe über zwei
+  // Währungen ist keine Summe — sie ist eine Zahl, die aussieht wie eine.
+  //
+  // UMGERECHNET WIRD NICHT (v1.26). Ein Kurs ist eine eigene Entscheidung mit
+  // eigenen Fragen (welcher Kurs, von wann, gespeichert oder live?), und das
+  // Ausgaben-Modul zeigt, dass sie nicht nebenbei zu beantworten sind. Also wird
+  // hier NICHT gerechnet, sondern gesagt.
+  //
+  // DER MASSSTAB IST DIE KONTENAUSWAHL, nicht der Zeitraum — und das ist die
+  // strengere der beiden möglichen Lesarten, mit Absicht. Ein Dashboard, das im
+  // September rechnet, weil dort zufällig nur Euro liegen, und im August nicht,
+  // wäre eins, dessen Zahlen beim Blättern die Bedeutung wechseln. Vor allem
+  // aber hat der Verlauf seine eigene, längere Zeitachse: er würde sonst
+  // unbemerkt EUR und AUD in einen Balken legen, sobald sie nur weit genug
+  // auseinander liegen. Eine Auswahl, eine Währung, eine Antwort.
+  //
+  // Die Abhilfe steht in der Meldung und ist einen Tipp entfernt: ein einzelnes
+  // Konto wählen. Mehrere Konten in DERSELBEN Währung rechnen normal weiter.
+  const currenciesOf = (list) => {
+    const found = new Set()
+    for (const entry of list) if (entry.included) found.add(entry.currency)
+    return [...found].sort()
+  }
+  // Ohne eine einzige einbezogene Buchung sagen die KONTEN, worin die Null
+  // steht — und wenn die sich uneinig sind, ist das derselbe Fall wie oben:
+  // dieselbe Frage, dieselbe Abhilfe, ein Tipp entfernt. So kann gar keine
+  // Währung an einer Zahl stehen, die sie nicht trägt.
+  const scopedAccounts = accountId ? accounts.filter((a) => a?.id === accountId) : accounts
+  const accountCurrencies = [...new Set(scopedAccounts.map((a) => a?.currency).filter(Boolean))].sort()
+
+  const currencies = currenciesOf(entries)
+  const inScope = currencies.length > 0 ? currencies : accountCurrencies
+  const mixedCurrency = inScope.length > 1
+  const currency = mixedCurrency ? null : inScope[0] ?? DEFAULT_FINANCE_CURRENCY
+
+  // 4. Die Zahlen — oder, bei zwei Währungen, ausdrücklich keine.
+  const summary = dashboardSummary({
+    entries: inRange,
+    comparisonEntries: inComparison,
+    monetary: !mixedCurrency,
+  })
+  const breakdown = mixedCurrency
+    ? EMPTY_BREAKDOWN
+    : categoryBreakdown({ entries: inRange, categories })
+  const merchantRows = mixedCurrency
+    ? { merchants: [], total: 0 }
+    : topMerchants({ entries: inRange, categories, limit: topMerchantCount })
+  const biggest = mixedCurrency
+    ? []
+    : biggestExpenses({ entries: inRange, categories, limit: biggestCount })
+
+  // 5. Der Verlauf, über alle Buchungen dieser Konten — und über eine längere
+  //    Achse als alles darüber, weshalb er dieselbe Sperre braucht.
+  const trend = mixedCurrency
+    ? { range: trendRange, granularity: null, buckets: [], max: 0 }
+    : trendSeries({ entries, range: trendRange, today })
 
   return {
     today,
@@ -133,7 +177,8 @@ export function buildFinanceDashboard({
     accountId: accountId ?? null,
     accountCount: accounts.length,
     currency,
-    mixedCurrency: currencies.size > 1,
+    currencies: inScope,
+    mixedCurrency,
     entries,
     periodEntries: inRange,
     summary,

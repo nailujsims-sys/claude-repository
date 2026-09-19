@@ -137,14 +137,23 @@ export default function Finanzen() {
             )}
 
             {tab === 'overview' ? (
-              <Overview
-                dashboard={dashboard}
-                currency={currency}
-                trendRange={trendRange}
-                onTrendRange={setTrendRange}
-                onAdd={openFinanceAdd}
-                onClassify={openFinanceClassify}
-              />
+              dashboard.mixedCurrency ? (
+                <MixedCurrency
+                  dashboard={dashboard}
+                  onPickAccount={() => setSheet('account')}
+                  onAdd={openFinanceAdd}
+                  onClassify={openFinanceClassify}
+                />
+              ) : (
+                <Overview
+                  dashboard={dashboard}
+                  currency={currency}
+                  trendRange={trendRange}
+                  onTrendRange={setTrendRange}
+                  onAdd={openFinanceAdd}
+                  onClassify={openFinanceClassify}
+                />
+              )
             ) : (
               <Bookings dashboard={dashboard} />
             )}
@@ -183,6 +192,53 @@ export default function Finanzen() {
   )
 }
 
+// Zwei Währungen, und deshalb keine Zahl.
+//
+// WARUM HIER NICHTS STEHT, WAS WIE EINE SUMME AUSSIEHT: die Beträge liegen in
+// Minor Units ohne Kurs. 24,83 € und 24,83 AU$ zusammenzuzählen ergibt 49,66
+// von nichts — und das Schlimme daran ist nicht der Fehler, sondern dass er
+// aussieht wie ein Ergebnis. Also sagt dieser Bildschirm, was los ist, und
+// bietet die Abhilfe an, statt eine Zahl zu zeigen, der niemand trauen kann.
+//
+// Was WEITERHIN geht, weil es keine Summe ist: die offenen Zuordnungen, der
+// Weg hinein, und der Buchungen-Tab — dort trägt jede Zeile ihre eigene
+// Währung und steht für sich.
+export function MixedCurrency({ dashboard, onPickAccount, onAdd, onClassify }) {
+  return (
+    <>
+      <section className="mt-3 rounded-card border border-subtle bg-bg-card px-4 py-4">
+        <h2 className="text-section font-semibold text-text-primary">Mehrere Währungen</h2>
+        <p className="mt-1.5 text-body text-text-secondary">
+          Wähle ein einzelnes Konto, um Beträge korrekt auszuwerten.
+        </p>
+        <p className="mt-2 text-caption text-text-muted">
+          In dieser Auswahl liegen {dashboard.currencies.join(' und ')}. Umgerechnet wird nicht —
+          eine Summe über zwei Währungen wäre keine.
+        </p>
+        <button
+          onClick={onPickAccount}
+          className="press-tint mt-4 w-full rounded-btn bg-accent py-3.5 text-body font-semibold text-white"
+        >
+          Konto wählen
+        </button>
+      </section>
+
+      <AddButton onClick={onAdd} />
+
+      {dashboard.summary.openClassifications > 0 && (
+        <OpenClassifications
+          count={dashboard.summary.openClassifications}
+          onClick={onClassify}
+        />
+      )}
+
+      <p className="mt-6 px-1 text-caption text-text-secondary">
+        Die einzelnen Buchungen stehen im Tab „Buchungen" — jede mit ihrer eigenen Währung.
+      </p>
+    </>
+  )
+}
+
 // ── Übersicht ───────────────────────────────────────────────────────────────
 //
 // Exportiert wie `AccountList` und `AccountDetail` in FinanceAccountsSheet, und
@@ -201,16 +257,7 @@ export function Overview({ dashboard, currency, trendRange, onTrendRange, onAdd,
       {/* Nur wenn etwas offen ist. Eine leere Warteschlange bekommt keine Zeile,
           die sagt, dass sie leer ist — §18: Rückmeldung ist verhältnismäßig. */}
       {summary.openClassifications > 0 && (
-        <button
-          onClick={onClassify}
-          className="press-tint mt-3 flex min-h-[44px] w-full items-center gap-3 rounded-card bg-bg-card px-4 py-2.5 text-left"
-        >
-          <span className="h-2 w-2 shrink-0 rounded-full bg-accent" aria-hidden />
-          <span className="min-w-0 flex-1 text-body text-text-primary">
-            {plural(summary.openClassifications, 'Buchung prüfen', 'Buchungen prüfen')}
-          </span>
-          <ChevronRight size={18} className="shrink-0 text-text-muted" />
-        </button>
+        <OpenClassifications count={summary.openClassifications} onClick={onClassify} />
       )}
 
       <Section
@@ -468,6 +515,21 @@ export function Bookings({ dashboard }) {
 }
 
 // ── Bausteine ───────────────────────────────────────────────────────────────
+
+function OpenClassifications({ count, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className="press-tint mt-3 flex min-h-[44px] w-full items-center gap-3 rounded-card bg-bg-card px-4 py-2.5 text-left"
+    >
+      <span className="h-2 w-2 shrink-0 rounded-full bg-accent" aria-hidden />
+      <span className="min-w-0 flex-1 text-body text-text-primary">
+        {plural(count, 'Buchung prüfen', 'Buchungen prüfen')}
+      </span>
+      <ChevronRight size={18} className="shrink-0 text-text-muted" />
+    </button>
+  )
+}
 
 function AddButton({ onClick }) {
   return (

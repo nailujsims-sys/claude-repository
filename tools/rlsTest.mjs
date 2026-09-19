@@ -116,6 +116,29 @@ try {
   }
   console.log(`  Upgrade-Probe: ${latest} läuft zweimal auf einem bestehenden Schema und lässt die Daten in Ruhe`)
 
+  // ── Upgrade-Probe II: die Kategorie-Hierarchie ────────────────────────────
+  // Dieselbe Frage, auf die eine Zusage von 0014 hinausläuft und die sich in
+  // JavaScript prinzipiell nicht stellen lässt: behalten die fünf Kategorien
+  // aus 0008 ihre `id`, und zeigt danach jeder Fremdschlüssel noch auf dieselbe
+  // Zeile? Also eine eigene Datenbank, die bis 0013 gebaut, dann mit echten
+  // Daten befüllt und erst danach auf 0014 gehoben wird.
+  psql(['-c', 'create database category_probe'])
+  const catProbe = (args) =>
+    pg(exe('psql'), ['-h', sock, '-U', 'postgres', '-d', 'category_probe', '-v', 'ON_ERROR_STOP=1', ...args], {
+      cwd: process.cwd(),
+    })
+  catProbe(['-f', 'tools/pgtest/supabase-stub.sql'])
+  for (const file of earlier) catProbe(['-f', join('supabase/migrations', file)])
+  catProbe(['-f', 'supabase/tests/finance_category_upgrade_seed.sql'])
+  catProbe(['-f', join('supabase/migrations', latest)])
+  catProbe(['-f', join('supabase/migrations', latest)])
+  const catUpgrade = catProbe(['-f', 'supabase/tests/finance_category_upgrade_verify.sql'])
+  if (!catUpgrade.includes('FINANCE-CATEGORY-UPGRADE: all assertions passed')) {
+    console.error('rls: die Kategorie-Hierarchie meldete auf bestehenden Daten keinen Erfolg.')
+    process.exit(1)
+  }
+  console.log('  Upgrade-Probe: die fünf Kategorie-IDs aus 0008 überleben 0014 unverändert, mit allen Fremdschlüsseln')
+
   // Idempotence is a promise the migration headers make — so it gets tested.
   for (const file of migrations) psql(['-f', join('supabase/migrations', file)])
   console.log(`  erneut angewandt: ${migrations.length} Migrationen laufen zweimal ohne Fehler`)
@@ -125,6 +148,7 @@ try {
   const suites = [
     { file: 'supabase/tests/rls.sql', marker: 'RLS: all assertions passed' },
     { file: 'supabase/tests/finance_import.sql', marker: 'FINANCE-IMPORT: all assertions passed' },
+    { file: 'supabase/tests/finance_category_hierarchy.sql', marker: 'CATS: all assertions passed' },
   ]
 
   for (const suite of suites) {
@@ -201,6 +225,46 @@ try {
     console.log(`  Gegenprobe: ohne ${guard.what} schlägt finance_import.sql fehl`)
     // Put it back, so the next counter-proof tests its own guard alone.
     psql(['-f', 'supabase/migrations/0009_finance_import.sql'])
+  }
+
+  // Dieselbe Übung für 0014. Jeder der fünf Wächter kommt einzeln weg, und die
+  // Hierarchie-Suite muss es einzeln merken — sonst prüft sie den Wächter nicht,
+  // sondern nur, dass die Datenbank antwortet. Dazu die beiden Regeln, an denen
+  // die Zweistufigkeit hängt, und der Fremdschlüssel selbst: wird er wieder auf
+  // `restrict` gesetzt, fällt die Suite auf „is not deferrable" — genau der
+  // Grund, warum er es nicht mehr ist.
+  const categoryGuards = [
+    { what: 'den Wächter auf finance_transactions',
+      drop: 'drop trigger finance_transactions_category_assignable on public.finance_transactions' },
+    { what: 'den Wächter auf finance_transaction_overrides',
+      drop: 'drop trigger finance_overrides_category_assignable on public.finance_transaction_overrides' },
+    { what: 'den Wächter auf finance_category_rules',
+      drop: 'drop trigger finance_category_rules_category_assignable on public.finance_category_rules' },
+    { what: 'den Wächter auf finance_transaction_ai_suggestions',
+      drop: 'drop trigger finance_ai_suggestions_category_assignable on public.finance_transaction_ai_suggestions' },
+    { what: 'den Wächter auf finance_ai_learning_memories',
+      drop: 'drop trigger finance_ai_memories_category_assignable on public.finance_ai_learning_memories' },
+    { what: 'die Zweistufigkeit',
+      drop: 'drop trigger finance_categories_hierarchy on public.finance_categories' },
+    { what: 'den aufschiebbaren Fremdschlüssel (zurück auf restrict)',
+      drop: 'alter table public.finance_categories drop constraint finance_categories_parent_fk; '
+          + 'alter table public.finance_categories add constraint finance_categories_parent_fk '
+          + 'foreign key (parent_id) references public.finance_categories (id) on delete restrict' },
+  ]
+  for (const guard of categoryGuards) {
+    psql(['-c', guard.drop])
+    let caught = false
+    try {
+      psql(['-f', 'supabase/tests/finance_category_hierarchy.sql'])
+    } catch {
+      caught = true
+    }
+    if (!caught) {
+      console.error(`rls: Gegenprobe bestanden — ohne ${guard.what} merkt die Hierarchie-Suite nichts.`)
+      process.exit(1)
+    }
+    console.log(`  Gegenprobe: ohne ${guard.what} schlägt finance_category_hierarchy.sql fehl`)
+    psql(['-f', 'supabase/migrations/0014_finance_category_hierarchy.sql'])
   }
 
   console.log('\nrls: alle Policies verhalten sich wie erwartet.')

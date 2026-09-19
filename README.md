@@ -1212,6 +1212,18 @@ seinen Namen.
 Kind ist, und eine Zeile mit Kindern, die zum Kind gemacht werden soll. Eine
 Hierarchie, die nur der Client einhält, ist keine.
 
+**Der Fremdschlüssel ist aufschiebbar** (`on delete no action deferrable
+initially deferred`) und ausdrücklich nicht `restrict`. Gebraucht werden drei
+Zusagen gleichzeitig: eine einzelne Oberkategorie mit Kindern lässt sich nicht
+löschen, ein kompletter Benutzer-Delete entfernt Eltern **und** Kinder, und ein
+verwaistes Kind kann nie committet werden. `restrict` lässt sich nicht
+aufschieben — gemessen: `set constraints all deferred` hat auf ihn keine
+Wirkung, und damit scheitert jede Transaktion, die eine Oberkategorie vor ihren
+Kindern löscht, auch wenn am Ende gar nichts verwaist wäre. Die aufgeschobene
+Prüfung stellt genau die Frage, um die es geht: „ist am Ende dieser Transaktion
+ein Kind ohne Elternteil übrig?" Alle drei Zusagen sind einzeln belegt, gegen
+ein echtes Postgres, in `supabase/tests/finance_category_hierarchy.sql`.
+
 **Nur Blätter sind zuordenbar.** Eine Oberkategorie ist eine Überschrift; sie
 darf nicht in `finance_transactions`, `finance_transaction_overrides`,
 `finance_category_rules`, `finance_transaction_ai_suggestions` oder
@@ -1280,7 +1292,12 @@ Gesamtausgaben (und damit in jeder Prozentzahl) und steht als eigene Zahl da.
 ### Der Bildschirm
 
 Unter der TopBar zwei Tabs (**Übersicht** · **Buchungen**), darunter die
-Filterzeile (Zeitraum ▾ · Konto ▾). Die Übersicht trägt eine dominante
+Filterzeile (Zeitraum ▾ · Konto ▾). Das Zeitraum-Sheet bietet die vier Arten und
+für Monat und Jahr einen Schalter darunter — ‹ September 2026 › — mit dem sich
+zurückblättern lässt; nach vorn ist beim laufenden Monat Schluss, weil ein Monat,
+der noch nicht angefangen hat, keine Ausgaben hat. Der Jahreswechsel ist ein
+Schritt wie jeder andere (Januar ‹ Dezember des Vorjahres), und beim erneuten
+Öffnen steht der gewählte Zeitraum da, nicht der heutige. Die Übersicht trägt eine dominante
 KPI-Karte (Ausgaben groß, der Vergleich darunter **neutral** — nicht rot, weil
 „mehr ausgegeben" keine Wertung dieses Bildschirms ist —, Einnahmen und Cashflow
 zweispaltig, und nur der Cashflow darf grün oder rot sein), bei Bedarf eine
@@ -1296,16 +1313,34 @@ liegt (`src/config/merchantLogos.js` — heute bewusst leer), sonst die Initiale
 **Kein Logo-Dienst.** Jede Anfrage an einen solchen Dienst trüge Händlername, IP
 und Zeitpunkt nach draußen, und das ist ein 32 Pixel großes Bildchen nicht wert.
 
-### Bekannte Grenze: zwei Währungen
+### Zwei Währungen: keine Zahl, sondern ein Satz
 
-Die Währung des Dashboards kommt aus den Buchungen des Zeitraums, nicht aus
-einer Annahme — wer ein Konto in einer anderen Währung anlegt, sieht deren
-Zeichen. **Umgerechnet wird nicht.** Liegen in einem Zeitraum Buchungen in zwei
-Währungen, ist die Summe darüber keine Summe; `buildFinanceDashboard` meldet das
-als `mixedCurrency`, statt sie stillschweigend zu verrechnen. Ein Kurs gehört in
-dieses Modul erst, wenn er bestellt wird (die Ausgaben-Module haben mit
-`exchangeRate.js` bereits einen, der dann die Vorlage wäre). Heute ist jedes
-Konto in EUR, der Fall tritt also nicht auf.
+Beträge liegen in Minor Units, ohne Kurs. 2483 EUR-Cent und 2483 AUD-Cent zu
+addieren ergibt 4966 von nichts — und das Schlimme daran ist nicht der Fehler,
+sondern dass er wie ein Ergebnis aussieht. **Umgerechnet wird in v1.26 nicht**
+(ein Kurs ist eine eigene Entscheidung mit eigenen Fragen; `exchangeRate.js` im
+Ausgaben-Modul zeigt, dass sie nicht nebenbei zu beantworten sind).
+
+Stattdessen wird gesagt statt gerechnet. Enthält die **Kontenauswahl** mehr als
+eine Währung, dann
+
+- ist `dashboard.currency` `null` und `mixedCurrency` `true`,
+- sind `expenses`, `income`, `cashflow` und der Vergleich `null` — nicht `0`,
+  damit keine Oberfläche sie versehentlich als Betrag zeigen kann,
+- bleiben Kategorien, Händler, größte Ausgaben und **der Verlauf** leer,
+- zeigt der Bildschirm „Mehrere Währungen / Wähle ein einzelnes Konto, um
+  Beträge korrekt auszuwerten." mit dem Kontofilter als Knopf darunter.
+
+**Der Maßstab ist die Kontenauswahl, nicht der Zeitraum**, und das ist die
+strengere der beiden Lesarten. Ein Dashboard, das im September rechnet, weil
+dort zufällig nur Euro liegen, und im August nicht, wechselte beim Blättern die
+Bedeutung seiner Zahlen. Vor allem aber hat der Verlauf eine eigene, längere
+Achse: er legte sonst unbemerkt EUR und AUD in einen Balken, sobald sie nur weit
+genug auseinanderliegen. Mehrere Konten in **derselben** Währung rechnen
+unverändert kontoübergreifend weiter.
+
+Was keine Summe ist, bleibt: die offenen Zuordnungen, „Hinzufügen" und der
+Buchungen-Tab, in dem jede Zeile ihre eigene Währung trägt.
 
 ### Was v1.26A ausdrücklich nicht baut
 

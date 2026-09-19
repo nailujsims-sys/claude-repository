@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Calendar, CalendarDays, CalendarRange, Check, Clock } from 'lucide-react'
+import { Calendar, CalendarDays, CalendarRange, Check, ChevronLeft, ChevronRight, Clock } from 'lucide-react'
 import BottomSheet from './BottomSheet'
 import {
   describePeriod,
@@ -55,6 +55,26 @@ export default function FinancePeriodSheet({ open, onClose, value, today, onAppl
 
   const customRange = draft.kind === 'custom' ? draft : null
 
+  // Ein Monat oder ein Jahr ist nicht „der aktuelle" — er ist einer von vielen.
+  // Ohne Schritte zurück wäre „Monat" nur ein anderes Wort für „dieser Monat",
+  // und der August ließe sich gar nicht ansehen.
+  //
+  // NACH VORN NUR BIS HEUTE: ein Monat, der noch nicht angefangen hat, hat
+  // keine Ausgaben, und ein Dashboard, das auf den Dezember blättert, zeigt
+  // eine leere Auswertung statt einer Antwort. Der Pfeil ist dann deaktiviert
+  // und sagt das auch dem Screenreader.
+  const stepMonth = (delta) => {
+    const total = draft.year * 12 + (draft.month - 1) + delta
+    setDraft({ kind: 'month', year: Math.floor(total / 12), month: (total % 12) + 1 })
+  }
+  const stepYear = (delta) => setDraft({ kind: 'year', year: draft.year + delta })
+
+  const thisYear = yearOf(today)
+  const thisMonth = monthOf(today).month
+  const monthAtEnd =
+    draft.kind === 'month' && (draft.year > thisYear || (draft.year === thisYear && draft.month >= thisMonth))
+  const yearAtEnd = draft.kind === 'year' && draft.year >= thisYear
+
   return (
     <BottomSheet open={open} onClose={onClose} title="Zeitraum auswählen">
       <div className="overflow-y-auto px-5 pb-5">
@@ -93,6 +113,28 @@ export default function FinancePeriodSheet({ open, onClose, value, today, onAppl
           })}
         </div>
 
+        {draft.kind === 'month' && (
+          <Stepper
+            label={describePeriod(draft, today)}
+            previousLabel="Vorheriger Monat"
+            nextLabel="Nächster Monat"
+            onPrevious={() => stepMonth(-1)}
+            onNext={() => stepMonth(1)}
+            atEnd={monthAtEnd}
+          />
+        )}
+
+        {draft.kind === 'year' && (
+          <Stepper
+            label={String(draft.year)}
+            previousLabel="Vorheriges Jahr"
+            nextLabel="Nächstes Jahr"
+            onPrevious={() => stepYear(-1)}
+            onNext={() => stepYear(1)}
+            atEnd={yearAtEnd}
+          />
+        )}
+
         {customRange && (
           <div className="mt-3 rounded-card bg-bg-card px-4 py-4">
             <div className="flex gap-3">
@@ -124,6 +166,45 @@ export default function FinancePeriodSheet({ open, onClose, value, today, onAppl
   )
 }
 
+// ‹  September 2026  › — die Beschriftung in der Mitte, zwei Pfeile daneben.
+//
+// Beide Pfeile sind 44px groß (§22) und heißen im Screenreader, was sie tun —
+// „Vorheriger Monat", nicht „Zurück". Der deaktivierte Pfeil bleibt stehen
+// statt zu verschwinden: eine Leiste, die ihre Breite ändert, sobald man am
+// Rand ankommt, springt.
+// Exportiert, damit tools/financeDashboardLayout.mjs die beiden Pfeile in einem
+// echten Browser messen kann — sie sind die kleinsten Trefferflächen, die v1.26
+// hinzufügt (§22).
+export function Stepper({ label, previousLabel, nextLabel, onPrevious, onNext, atEnd }) {
+  return (
+    <div className="mt-3 flex items-center gap-2 rounded-card bg-bg-card px-2 py-2">
+      <button
+        type="button"
+        onClick={onPrevious}
+        aria-label={previousLabel}
+        className="press-tint grid h-11 w-11 shrink-0 place-items-center rounded-btn text-text-secondary"
+      >
+        <ChevronLeft size={20} />
+      </button>
+      <span
+        aria-live="polite"
+        className="min-w-0 flex-1 truncate text-center text-body font-semibold text-text-primary"
+      >
+        {label}
+      </span>
+      <button
+        type="button"
+        onClick={onNext}
+        disabled={atEnd}
+        aria-label={nextLabel}
+        className="press-tint grid h-11 w-11 shrink-0 place-items-center rounded-btn text-text-secondary disabled:opacity-30"
+      >
+        <ChevronRight size={20} />
+      </button>
+    </div>
+  )
+}
+
 function DateField({ label, value, min, max, onChange }) {
   return (
     <label className="min-w-0 flex-1">
@@ -150,9 +231,11 @@ const yearOf = (today) => Number(String(today).slice(0, 4))
 // des Entwurfs, für die anderen das, was sie ergäben.
 function hintFor(kind, draft, today) {
   if (kind === draft.kind) {
-    if (kind === 'month' || kind === 'year') {
-      return `Ganzer ${kind === 'month' ? 'Monat' : 'Zeitraum'} (${describePeriod(draft, today)})`
-    }
+    // Für Monat und Jahr steht die Auswahl im Schalter darunter; hier stünde
+    // sie ein zweites Mal und würde beim Blättern doppelt wandern. Stattdessen
+    // die Tage, die tatsächlich gezählt werden — beim laufenden Monat ist das
+    // ausdrücklich nicht der ganze.
+    if (kind === 'month' || kind === 'year') return describeRange(periodRange(draft, today))
     return describeRange(periodRange(draft, today))
   }
   if (kind === 'month') return `Ganzer Monat (z. B. ${describePeriod(monthDraft(today), today)})`

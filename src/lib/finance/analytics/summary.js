@@ -39,9 +39,14 @@ export function compare(current, previous) {
  *
  * @param {{entries?: Array<object>, comparisonEntries?: Array<object>}} input
  */
-export function dashboardSummary({ entries = [], comparisonEntries = [] } = {}) {
+export function dashboardSummary({ entries = [], comparisonEntries = [], monetary = true } = {}) {
   const totals = sumEffects(entries.map((e) => e.effect))
   const previous = sumEffects(comparisonEntries.map((e) => e.effect))
+  // `monetary = false` heißt: in diesem Ausschnitt liegen zwei Währungen, und
+  // eine gemeinsame Summe gibt es deshalb nicht (siehe dashboard.js). Sie wird
+  // dann nicht berechnet und auch nicht auf 0 gesetzt — `null` ist die einzige
+  // Antwort, die eine Oberfläche nicht versehentlich als Betrag anzeigen kann.
+  const money = (value) => (monetary ? value : null)
 
   // Das jüngste Datum, das in diesen Zahlen steckt — die ehrliche Antwort auf
   // „bis wann sind die Daten?". Ausgeschlossene Buchungen zählen dabei nicht:
@@ -56,12 +61,14 @@ export function dashboardSummary({ entries = [], comparisonEntries = [] } = {}) 
   }
 
   return {
-    expenses: totals.expense,
-    income: totals.income,
-    cashflow: totals.cashflow,
-    comparisonExpenses: previous.expense,
-    comparisonIncome: previous.income,
-    expenseChange: compare(totals.expense, previous.expense),
+    expenses: money(totals.expense),
+    income: money(totals.income),
+    cashflow: money(totals.cashflow),
+    comparisonExpenses: money(previous.expense),
+    comparisonIncome: money(previous.income),
+    expenseChange: monetary
+      ? compare(totals.expense, previous.expense)
+      : { absolute: null, percent: null, direction: 'flat', comparable: false },
     // Metadaten, keine Kennzahlen.
     transactionCount: entries.filter((e) => e.included).length,
     latestBookingDate,

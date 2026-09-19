@@ -3270,18 +3270,80 @@ async function run() {
       if (!sheet.includes(option))
         errors.push(`[Finanzen/Zeitraum] the option „${option}" is missing`)
     }
-    // Ein anderer Zeitraum ändert die Zahl — und zwar erst beim Übernehmen.
+    // ── Monat zurückblättern ──────────────────────────────────────────────
+    // Ohne das wäre „Monat" nur ein anderes Wort für „dieser Monat".
+    const byLabel = (label) =>
+      [...window.document.querySelectorAll('button')].find(
+        (b) => (b.getAttribute('aria-label') || '') === label)
+
+    if (!byLabel('Vorheriger Monat'))
+      errors.push('[Finanzen/Zeitraum] there is no way back to the previous month')
+    if (!byLabel('Nächster Monat'))
+      errors.push('[Finanzen/Zeitraum] there is no way forward')
+    // Nach vorn ist beim laufenden Monat Schluss.
+    if (byLabel('Nächster Monat') && !byLabel('Nächster Monat').disabled)
+      errors.push('[Finanzen/Zeitraum] the current month offers a step into the future')
+
+    byLabel('Vorheriger Monat')?.dispatchEvent(
+      new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(80)
+    const stepped = nb(txt(window))
+    if (!stepped.includes('August 2026'))
+      errors.push(`[Finanzen/Zeitraum] stepping back did not reach August: ${stepped.slice(0, 260)}`)
+    // Und jetzt ist der Weg nach vorn wieder offen.
+    if (byLabel('Nächster Monat')?.disabled)
+      errors.push('[Finanzen/Zeitraum] a past month cannot be stepped forward again')
+    // Erst beim Übernehmen ändert sich etwas.
+    if (!stepped.includes('Ausgaben75,03 €'))
+      errors.push('[Finanzen/Zeitraum] stepping already changed the dashboard')
+
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Übernehmen')
+    await wait(500)
+    const august = nb(txt(window))
+    if (august.includes('Übernehmen'))
+      errors.push('[Finanzen/Zeitraum] the sheet stayed open after Übernehmen')
+    if (!august.includes('August 2026'))
+      errors.push(`[Finanzen/Zeitraum] the filter does not name the chosen month: ${august.slice(0, 200)}`)
+    // Im August liegt keine der beiden Buchungen.
+    if (!august.includes('Ausgaben0,00 €'))
+      errors.push(`[Finanzen/Zeitraum] the chosen month was not evaluated: ${august.slice(0, 260)}`)
+
+    // Wieder aufmachen: es steht der gewählte Monat da, nicht der heutige.
+    if (!click(window, (el) => (el.getAttribute?.('aria-label') || '') === 'Zeitraum ändern'))
+      errors.push('[Finanzen/Zeitraum] the period filter is not tappable again')
+    await wait(340)
+    const reopened = nb(txt(window))
+    if (!reopened.includes('August 2026'))
+      errors.push(`[Finanzen/Zeitraum] reopening shows the wrong month: ${reopened.slice(0, 260)}`)
+
+    // ── Jahr, und dort ebenso ─────────────────────────────────────────────
     click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Jahr'))
     await wait(80)
-    if (!nb(txt(window)).includes('Ausgaben75,03 €'))
-      errors.push('[Finanzen/Zeitraum] picking an option already changed the dashboard')
+    if (!byLabel('Vorheriges Jahr'))
+      errors.push('[Finanzen/Zeitraum] the year cannot be stepped')
+    if (byLabel('Nächstes Jahr') && !byLabel('Nächstes Jahr').disabled)
+      errors.push('[Finanzen/Zeitraum] the current year offers a step into the future')
+    byLabel('Vorheriges Jahr')?.dispatchEvent(
+      new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(80)
+    if (!nb(txt(window)).includes('2025'))
+      errors.push('[Finanzen/Zeitraum] stepping back did not reach 2025')
+
     click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Übernehmen')
     await wait(500)
     const yearly = nb(txt(window))
     if (yearly.includes('Übernehmen'))
       errors.push('[Finanzen/Zeitraum] the sheet stayed open after Übernehmen')
-    if (!yearly.includes('2026') || yearly.includes('September 2026'))
-      errors.push(`[Finanzen/Zeitraum] the period did not switch to the year: ${yearly.slice(0, 200)}`)
+    if (!yearly.includes('2025') || yearly.includes('September 2026'))
+      errors.push(`[Finanzen/Zeitraum] the period did not switch to 2025: ${yearly.slice(0, 200)}`)
+
+    // Zurück auf den laufenden Monat für alles, was danach kommt.
+    click(window, (el) => (el.getAttribute?.('aria-label') || '') === 'Zeitraum ändern')
+    await wait(340)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Monat'))
+    await wait(80)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Übernehmen')
+    await wait(500)
 
     // Der Kontofilter kennt „Alle Konten" und jedes einzelne Konto.
     if (!click(window, (el) => (el.getAttribute?.('aria-label') || '') === 'Konto ändern'))
@@ -3292,6 +3354,74 @@ async function run() {
       errors.push('[Finanzen/Konto] the account filter does not list the account')
     if (!accountSheet.includes('Alle Konten'))
       errors.push('[Finanzen/Konto] the account filter has no „all accounts" entry')
+  }
+
+  // 16b0) Zwei Währungen: keine Zahl, sondern ein Satz und die Abhilfe.
+  //
+  // Der Fehler, den dieser Block ausschließt, sieht aus wie ein Ergebnis:
+  // 60,65 € und 30,00 AU$ ergäben addiert „90,65 €" — eine Zahl, an der nichts
+  // stimmt außer dem Format.
+  {
+    const AUD_ACCOUNT = '11111111-2222-4333-8444-000000000003'
+    const window = makeDom('#/finanzen', {
+      finance: {
+        ...financeSeed,
+        finance_accounts: [
+          ...financeSeed.finance_accounts,
+          { id: AUD_ACCOUNT, user_id: TEST_USER_ID, name: 'Australien', currency: 'AUD' },
+        ],
+        finance_transactions: [
+          financeSeed.finance_transactions[0],
+          { id: '11111111-2222-4333-8444-000000000109', user_id: TEST_USER_ID,
+            account_id: AUD_ACCOUNT, booking_date: '2026-09-12', amount_minor: -3000,
+            currency: 'AUD', raw_description: 'Bondi Beach Parkgebuehr',
+            normalized_tokens: ['BONDI'], include_in_analytics: true, manual_lock: false },
+        ],
+      },
+    })
+    mount(window, code, 'Finanzen/Waehrungen')
+    await wait(400)
+    window.__restoreConsole?.()
+    const text = nb(txt(window))
+    console.log(`=== Finanzen — zwei Währungen ===\n  ${text.slice(0, 260)}`)
+
+    if (!text.includes('Mehrere Währungen'))
+      errors.push(`[Finanzen/Währung] the mixed-currency notice is missing: ${text.slice(0, 260)}`)
+    if (!text.includes('Wähle ein einzelnes Konto'))
+      errors.push('[Finanzen/Währung] the notice does not say what to do')
+    if (!text.includes('EUR') || !text.includes('AUD'))
+      errors.push('[Finanzen/Währung] the notice does not name the two currencies')
+
+    // KEINE gemeinsame Geldsumme, in keiner Form.
+    if (/Ausgaben[−+]?\d/.test(text))
+      errors.push(`[Finanzen/Währung] a common total is shown anyway: ${text.slice(0, 260)}`)
+    if (/90,65|9065/.test(text))
+      errors.push('[Finanzen/Währung] two currencies were added up')
+    for (const section of ['Ausgaben nach Kategorie', 'Ausgabenentwicklung', 'Top-Händler',
+                           'Größte Ausgaben']) {
+      if (text.includes(section))
+        errors.push(`[Finanzen/Währung] „${section}" is rendered although it cannot be computed`)
+    }
+    // Was keine Summe ist, bleibt: der Weg hinein und die offene Arbeit.
+    if (!text.includes('Hinzufügen'))
+      errors.push('[Finanzen/Währung] adding is no longer reachable')
+
+    // Der Kontofilter ist einen Tap entfernt — und löst es auf.
+    if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Konto wählen'))
+      errors.push('[Finanzen/Währung] the account filter is not offered')
+    await wait(340)
+    if (!nb(txt(window)).includes('DKB Girokonto'))
+      errors.push('[Finanzen/Währung] the account sheet did not open')
+    if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('DKB Girokonto')))
+      errors.push('[Finanzen/Währung] the EUR account cannot be picked')
+    await wait(400)
+    const single = nb(txt(window))
+    if (single.includes('Mehrere Währungen'))
+      errors.push('[Finanzen/Währung] picking one account did not resolve it')
+    if (!single.includes('Ausgaben60,65 €'))
+      errors.push(`[Finanzen/Währung] the single account is not evaluated: ${single.slice(0, 260)}`)
+    if (!single.includes('Ausgabenentwicklung'))
+      errors.push('[Finanzen/Währung] the trend stayed suppressed for a single account')
   }
 
   // 16b1) A booking the AI import sorted out completely: no open assignment.

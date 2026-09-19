@@ -475,11 +475,14 @@ begin
     (user_b, 'rls-fin-b@mindwhiteboard.test');
 
   -- ── The seeded categories ────────────────────────────────────────────────
-  -- Every account starts with the five agreed MVP categories, created by the
-  -- signup trigger the way the profile is.
+  -- Every account starts with the full taxonomy, created by the signup trigger
+  -- the way the profile is. Since 0014 that is two levels: nine parents and
+  -- twenty-six assignable children. The hierarchy's own promises are asserted
+  -- in supabase/tests/finance_category_hierarchy.sql; what matters here is only
+  -- that the trigger still fires and still covers the whole set.
   select count(*) into n from public.finance_categories where user_id = user_a;
-  if n <> 5 then
-    raise exception 'FAIL: a new account got % finance categories, expected 5', n;
+  if n <> 35 then
+    raise exception 'FAIL: a new account got % finance categories, expected 35', n;
   end if;
   select count(*) into n from public.finance_categories
    where user_id = user_a

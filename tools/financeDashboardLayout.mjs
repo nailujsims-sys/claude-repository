@@ -37,7 +37,8 @@ const css = readFileSync(`${cssDir}/${cssFile}`, 'utf-8')
 const RENDER = `
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
-import { Overview, Bookings } from './src/screens/Finanzen.jsx'
+import { Overview, Bookings, MixedCurrency } from './src/screens/Finanzen.jsx'
+import { Stepper } from './src/components/FinancePeriodSheet.jsx'
 import { buildFinanceDashboard } from './src/lib/finance/analytics/index.js'
 import { financeCategoryRows } from './tools/fixtures/financeCategories.mjs'
 import { tokenize } from './src/lib/finance/normalize.js'
@@ -116,8 +117,41 @@ const overview = renderToStaticMarkup(
 )
 const bookings = renderToStaticMarkup(createElement(Bookings, { dashboard }))
 
+// Zwei Waehrungen: die Karte, die statt der Zahlen steht.
+const mixedDashboard = buildFinanceDashboard({
+  transactions: [
+    transactions[0],
+    { ...transactions[1], id: 'tx-aud', currency: 'AUD', account_id: 'acc-aud' },
+  ],
+  categories: CATEGORIES, merchants, patterns, rules,
+  accounts: [
+    { id: ACCOUNT, name: 'DKB Girokonto', currency: 'EUR' },
+    { id: 'acc-aud', name: 'Australien', currency: 'AUD' },
+  ],
+  today: TODAY,
+})
+const mixed = renderToStaticMarkup(
+  createElement(MixedCurrency, {
+    dashboard: mixedDashboard, onPickAccount: noop, onAdd: noop, onClassify: noop,
+  })
+)
+
+// Der Monats-/Jahresschalter des Zeitraum-Sheets.
+const stepper = renderToStaticMarkup(
+  createElement('div', { className: 'px-5' },
+    createElement(Stepper, {
+      label: 'September 2026', previousLabel: 'Vorheriger Monat',
+      nextLabel: 'Naechster Monat', onPrevious: noop, onNext: noop, atEnd: true,
+    }),
+    createElement(Stepper, {
+      label: 'Dezember 2025', previousLabel: 'Vorheriger Monat',
+      nextLabel: 'Naechster Monat', onPrevious: noop, onNext: noop, atEnd: false,
+    })
+  )
+)
+
 process.stdout.write(JSON.stringify({
-  overview, bookings,
+  overview, bookings, mixed, stepper,
   expected: {
     expenses: dashboard.summary.expenses,
     parents: dashboard.categories.top.length,
@@ -168,6 +202,8 @@ const pageFor = (width, height) => `<!doctype html><html lang="de"><head><meta c
 <div class="app-frame" id="frame">
   <div class="px-5" id="overview">${rendered.overview}</div>
   <div class="px-5" id="bookings">${rendered.bookings}</div>
+  <div class="px-5" id="mixed">${rendered.mixed}</div>
+  <div id="stepper">${rendered.stepper}</div>
 </div>
 <script>
 const VIEWPORT = ${width}
@@ -290,6 +326,49 @@ for (const title of ['Ausgaben nach Kategorie', 'Ausgabenentwicklung', 'Top-Hän
   add('…und bleibt im Rahmen',
       [...bookings.querySelectorAll('*')].every((el) =>
         box(el).width === 0 || box(el).right <= frameRect.right + 0.5))
+}
+
+// ── Zwei Waehrungen ───────────────────────────────────────────────────────
+{
+  const mixed = document.getElementById('mixed')
+  const t = mixed.textContent
+  add('die Waehrungsmeldung steht da', t.includes('Mehrere Währungen'))
+  add('…und sagt, was zu tun ist', t.includes('Wähle ein einzelnes Konto'))
+  add('…und zeigt keine gemeinsame Summe', !/€|AU\\$|[0-9]+,[0-9]{2}/.test(t), t.slice(0, 120))
+  const cta = [...mixed.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Konto wählen')
+  add('der Weg zum Kontofilter ist ein Knopf', Boolean(cta))
+  add('…und daumengross', cta && box(cta).height >= 44, cta ? Math.round(box(cta).height) + 'px' : '')
+  add('…und bleibt im Rahmen', cta && box(cta).right <= frameRect.right + 0.5)
+  add('nichts in der Karte laeuft ueber',
+      [...mixed.querySelectorAll('*')].every((el) =>
+        box(el).width === 0 || box(el).right <= frameRect.right + 0.5))
+}
+
+// ── Der Monats-/Jahresschalter ────────────────────────────────────────────
+{
+  const stepper = document.getElementById('stepper')
+  const arrows = [...stepper.querySelectorAll('button')]
+  add('vier Pfeile, zwei je Schalter', arrows.length === 4, arrows.length + '')
+  let smallest = null
+  for (const a of arrows) {
+    const r = box(a)
+    if (!smallest || r.height < smallest.h || r.width < smallest.w) {
+      smallest = { h: Math.min(r.height, smallest ? smallest.h : r.height),
+                   w: Math.min(r.width, smallest ? smallest.w : r.width) }
+    }
+  }
+  add('jeder Pfeil ist mindestens 44x44', smallest && smallest.h >= 44 && smallest.w >= 44,
+      smallest ? Math.round(smallest.w) + 'x' + Math.round(smallest.h) : '')
+  add('jeder Pfeil sagt, was er tut',
+      arrows.every((a) => (a.getAttribute('aria-label') || '').length > 5))
+  add('am Rand ist der Pfeil nach vorn deaktiviert',
+      arrows.filter((a) => a.disabled).length === 1,
+      arrows.filter((a) => a.disabled).length + '')
+  add('…und bleibt trotzdem stehen, statt die Leiste springen zu lassen',
+      arrows.filter((a) => a.disabled).every((a) => box(a).width >= 44))
+  const labels = [...stepper.querySelectorAll('span')]
+  add('die Beschriftung steht in der Mitte und wird nicht abgeschnitten',
+      labels.every((l) => l.scrollWidth <= l.clientWidth + 1))
 }
 
 const out = document.createElement('div')

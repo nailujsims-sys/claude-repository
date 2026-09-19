@@ -608,18 +608,188 @@ const dash = (over = {}) =>
   ok('und der Zeitraum steht als Beschriftung bereit',
      d.periodLabel === 'September 2026' && d.comparisonLabel !== '')
 
-  // Die Waehrung kommt aus den Buchungen, nicht aus einer Annahme — und zwei
-  // Waehrungen in einem Zeitraum werden gemeldet, nicht verrechnet.
   ok('eine Waehrung: die der Buchungen', d.currency === 'EUR' && d.mixedCurrency === false)
-  const mixed = dash({
-    accounts: [{ id: 'acc-1', name: 'Girokonto', currency: 'EUR' }],
+}
+
+
+// == 12. Zwei Waehrungen: keine gemeinsame Summe ============================
+{
+  const EUR = 'acc-eur'
+  const AUD = 'acc-aud'
+  const accounts = [
+    { id: EUR, name: 'Girokonto', currency: 'EUR' },
+    { id: AUD, name: 'Australien', currency: 'AUD' },
+  ]
+  const mixedTx = [
+    tx({ booking_date: '2026-09-02', amount_minor: -2000, currency: 'EUR', account_id: EUR,
+         category_id: cat('lebensmittel') }),
+    tx({ booking_date: '2026-09-03', amount_minor: -3000, currency: 'AUD', account_id: AUD,
+         category_id: cat('restaurant') }),
+  ]
+
+  // EUR + EUR: ganz normal.
+  const same = dash({
+    accounts: [accounts[0], { id: 'acc-eur-2', name: 'Zweitkonto', currency: 'EUR' }],
     transactions: [
-      tx({ booking_date: '2026-09-02', amount_minor: -1000, currency: 'EUR' }),
-      tx({ booking_date: '2026-09-03', amount_minor: -1000, currency: 'AUD' }),
+      tx({ booking_date: '2026-09-02', amount_minor: -2000, currency: 'EUR', account_id: EUR }),
+      tx({ booking_date: '2026-09-03', amount_minor: -3000, currency: 'EUR', account_id: 'acc-eur-2' }),
     ],
   })
-  ok('zwei Waehrungen werden gemeldet statt verrechnet',
-     mixed.mixedCurrency === true && mixed.currency === 'EUR')
+  ok('zwei Konten in derselben Waehrung rechnen kontouebergreifend weiter',
+     same.mixedCurrency === false && same.currency === 'EUR' && same.summary.expenses === 5000)
+
+  // EUR + AUD: keine gemeinsame Geldsumme, nirgends.
+  const mixed = dash({ accounts, transactions: mixedTx })
+  ok('zwei Waehrungen werden gemeldet', mixed.mixedCurrency === true)
+  ok('… und beide benannt', mixed.currencies.join(',') === 'AUD,EUR')
+  ok('… und es gibt keine Waehrung, in der das Ergebnis stuende',
+     mixed.currency === null)
+  ok('… keine Ausgabensumme', mixed.summary.expenses === null)
+  ok('… keine Einnahmen und kein Cashflow',
+     mixed.summary.income === null && mixed.summary.cashflow === null)
+  ok('… kein Vergleichswert und keine Prozentzahl',
+     mixed.summary.comparisonExpenses === null &&
+     mixed.summary.expenseChange.percent === null &&
+     mixed.summary.expenseChange.absolute === null)
+  ok('… und ausdruecklich nicht 0 statt null',
+     mixed.summary.expenses !== 0)
+  ok('… keine Kategoriesummen',
+     mixed.categories.parents.length === 0 && mixed.categories.totalExpenses === null)
+  ok('… keine Haendlersummen', mixed.merchants.merchants.length === 0)
+  ok('… keine groessten Ausgaben', mixed.biggest.length === 0)
+  ok('… und kein Balken im Verlauf', mixed.trend.buckets.length === 0)
+
+  // Was KEINE Summe ist, bleibt: die offene Arbeit und das Datum.
+  ok('die offenen Zuordnungen bleiben zaehlbar',
+     typeof mixed.summary.openClassifications === 'number')
+  ok('… und die Buchungen selbst stehen weiterhin bereit',
+     mixed.periodEntries.length === 2)
+
+  // Der Filter loest es auf, in beide Richtungen.
+  const onlyEur = dash({ accounts, transactions: mixedTx, accountId: EUR })
+  ok('ein einzelnes EUR-Konto rechnet normal',
+     onlyEur.mixedCurrency === false && onlyEur.currency === 'EUR' &&
+     onlyEur.summary.expenses === 2000)
+  const onlyAud = dash({ accounts, transactions: mixedTx, accountId: AUD })
+  ok('ein einzelnes AUD-Konto ebenso, und zwar in AUD',
+     onlyAud.mixedCurrency === false && onlyAud.currency === 'AUD' &&
+     onlyAud.summary.expenses === 3000)
+
+  // DER FALL, DEN DER ZEITRAUM ALLEIN NICHT FAENGT: im gewaehlten Monat liegt
+  // nur Euro, die zweite Waehrung steht weiter hinten — und der Verlauf reicht
+  // dorthin. Wuerde nur der Zeitraum geprueft, legte der Verlauf hier still
+  // EUR und AUD in einen Balken.
+  const later = dash({
+    accounts,
+    transactions: [
+      tx({ booking_date: '2026-09-02', amount_minor: -2000, currency: 'EUR', account_id: EUR }),
+      tx({ booking_date: '2026-05-02', amount_minor: -3000, currency: 'AUD', account_id: AUD }),
+    ],
+    trendRange: '1J',
+  })
+  ok('eine zweite Waehrung ausserhalb des Zeitraums faellt trotzdem auf',
+     later.mixedCurrency === true)
+  ok('… und der Verlauf mischt sie nicht still zusammen',
+     later.trend.buckets.length === 0)
+  ok('… waehrend der Filter auf ein Konto es wieder aufloest',
+     dash({ accounts, transactions: later.entries.map((e) => e.transaction), accountId: EUR })
+       .trend.buckets.length > 0)
+
+  // Keine falsche Fallback-Waehrung: ohne Buchung sagt das KONTO, worin die
+  // Null steht — nicht eine Annahme.
+  const emptyAud = dash({ accounts, transactions: [], accountId: AUD })
+  ok('ein leerer Zeitraum erbt die Waehrung seines Kontos',
+     emptyAud.currency === 'AUD' && emptyAud.summary.expenses === 0)
+  const emptyAll = dash({ accounts, transactions: [] })
+  ok('… und bei uneinigen Konten wird keine erfunden',
+     emptyAll.currency === null && emptyAll.mixedCurrency === true)
+  const emptyOne = dash({ accounts: [accounts[0]], transactions: [] })
+  ok('… bei einem einzigen Konto ist sie eindeutig', emptyOne.currency === 'EUR')
+  const emptyNone = dash({ accounts: [], transactions: [] })
+  ok('… und ganz ohne Konto gilt die Vorgabe des Moduls', emptyNone.currency === 'EUR')
+}
+
+
+// == 13. Ein anderer Monat, ein anderes Jahr ================================
+//
+// Der Schalter im Sheet rechnet einen Schritt; die Folgen davon rechnet das
+// Modell. Beides wird hier gegeneinander geprueft, damit „einmal zurueck" im
+// Dezember nicht im Dezember desselben Jahres landet.
+{
+  const TODAY = '2026-09-12'
+  // Derselbe Schritt, den FinancePeriodSheet macht.
+  const stepMonth = (p, delta) => {
+    const total = p.year * 12 + (p.month - 1) + delta
+    return { kind: 'month', year: Math.floor(total / 12), month: (total % 12) + 1 }
+  }
+
+  const sep = currentMonthPeriod(TODAY)
+  ok('der Standard ist der laufende Monat', sep.year === 2026 && sep.month === 9)
+
+  const aug = stepMonth(sep, -1)
+  ok('ein Schritt zurueck fuehrt in den August',
+     aug.year === 2026 && aug.month === 8 && describePeriod(aug, TODAY) === 'August 2026')
+  ok('… und der August ist abgeschlossen, zaehlt also ganz',
+     JSON.stringify(periodRange(aug, TODAY)) ===
+     JSON.stringify({ from: '2026-08-01', to: '2026-08-31', running: false }))
+  ok('… und vergleicht gegen den ganzen Juli',
+     JSON.stringify(comparisonRange(aug, TODAY)) ===
+     JSON.stringify({ from: '2026-07-01', to: '2026-07-31' }))
+
+  const jan = { kind: 'month', year: 2026, month: 1 }
+  const dec = stepMonth(jan, -1)
+  ok('vom Januar zurueck in den Dezember des Vorjahres',
+     dec.year === 2025 && dec.month === 12)
+  ok('… und vom Dezember vorwaerts wieder in den Januar',
+     JSON.stringify(stepMonth(dec, 1)) === JSON.stringify(jan))
+  ok('… der Januar vergleicht gegen den Dezember davor',
+     JSON.stringify(comparisonRange(jan, TODAY)) ===
+     JSON.stringify({ from: '2025-12-01', to: '2025-12-31' }))
+
+  ok('zwoelf Schritte zurueck sind genau ein Jahr',
+     JSON.stringify(Array.from({ length: 12 }).reduce((p) => stepMonth(p, -1), sep)) ===
+     JSON.stringify({ kind: 'month', year: 2025, month: 9 }))
+
+  // Der Februar, an dem sich Off-by-one-Fehler zeigen.
+  const feb = { kind: 'month', year: 2026, month: 2 }
+  ok('der Februar 2026 hat 28 Tage',
+     periodRange(feb, TODAY).to === '2026-02-28')
+  const febLeap = { kind: 'month', year: 2028, month: 2 }
+  ok('der Februar 2028 hat 29',
+     periodRange(febLeap, '2028-06-01').to === '2028-02-29')
+  ok('… und der Maerz 2028 vergleicht gegen alle 29',
+     JSON.stringify(comparisonRange({ kind: 'month', year: 2028, month: 3 }, '2028-06-01')) ===
+     JSON.stringify({ from: '2028-02-01', to: '2028-02-29' }))
+
+  // Nach vorn nur bis heute.
+  const atEnd = (p) => p.year > 2026 || (p.year === 2026 && p.month >= 9)
+  ok('der laufende Monat ist das Ende der Fahnenstange', atEnd(sep) === true)
+  ok('… der August nicht', atEnd(aug) === false)
+
+  // Jahre.
+  ok('ein Jahr zurueck ist das Vorjahr',
+     describePeriod({ kind: 'year', year: 2025 }, TODAY) === '2025')
+  ok('… und es zaehlt ganz',
+     JSON.stringify(periodRange({ kind: 'year', year: 2025 }, TODAY)) ===
+     JSON.stringify({ from: '2025-01-01', to: '2025-12-31', running: false }))
+  ok('… gegen das ganze Jahr davor',
+     JSON.stringify(comparisonRange({ kind: 'year', year: 2025 }, TODAY)) ===
+     JSON.stringify({ from: '2024-01-01', to: '2024-12-31' }))
+
+  // Und das Dashboard rechnet den gewaehlten Monat, nicht den heutigen.
+  const transactions = [
+    tx({ booking_date: '2026-09-05', amount_minor: -1000 }),
+    tx({ booking_date: '2026-08-05', amount_minor: -2000 }),
+    tx({ booking_date: '2026-07-05', amount_minor: -4000 }),
+  ]
+  const onAugust = dash({ transactions, period: aug })
+  ok('ein zurueckgeblaetterter Monat wertet genau ihn aus',
+     onAugust.summary.expenses === 2000)
+  ok('… und vergleicht ihn mit dem ganzen Juli',
+     onAugust.summary.comparisonExpenses === 4000 &&
+     onAugust.summary.expenseChange.comparable === true)
+  ok('… und die Beschriftung sagt, welcher Monat gemeint ist',
+     onAugust.periodLabel === 'August 2026')
 }
 
 console.log((fail === 0 ? '' : '\\n') + 'finance dashboard: ' + pass + ' passed, ' + fail + ' failed')

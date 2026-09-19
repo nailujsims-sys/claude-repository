@@ -237,8 +237,23 @@ const MERCHANTS = [merchant(REWE), merchant(EDEKA), merchant(MAXMORITZ), merchan
      ['finance_transactions', 'finance_transaction_overrides', 'finance_category_rules',
       'finance_transaction_ai_suggestions', 'finance_ai_learning_memories']
        .every((table) => hierarchy.includes(table)))
-  ok('0014 schützt eine Oberkategorie mit Kindern vor dem Löschen',
-     /on\\s+delete\\s+restrict/.test(hierarchy))
+  // Aufschiebbar, NICHT restrict: die Pruefung gehoert ans COMMIT, sonst
+  // scheitert eine Transaktion, die Eltern vor Kindern löscht, obwohl am Ende
+  // gar nichts verwaist wäre. Belegt auf einer echten Datenbank in
+  // supabase/tests/finance_category_hierarchy.sql.
+  // Nur die DDL lesen: in den Kommentaren steht das Wort restrict als
+  // Begruendung dafuer, dass der Fremdschluessel eben keiner ist.
+  const ddl = hierarchy.replace(/^\\s*--.*$/gm, '')
+  ok('0014 schützt eine Oberkategorie mit Kindern mit einem aufschiebbaren Fremdschlüssel',
+     /on\\s+delete\\s+no action/.test(ddl) &&
+     /deferrable initially deferred/.test(ddl) &&
+     !/on\\s+delete\\s+restrict/.test(ddl))
+  ok('…und repariert einen früher mit restrict angelegten Fremdschlüssel',
+     /drop constraint if exists finance_categories_parent_id_fkey/.test(ddl) &&
+     /drop constraint if exists finance_categories_parent_fk/.test(ddl))
+  ok('0014 ändert die Signatur von finance_default_categories nicht',
+     !/drop function if exists public\\.finance_default_categories/.test(hierarchy) &&
+     /create or replace function public\\.finance_category_taxonomy/.test(hierarchy))
   ok('and the migration never mentions an „events" category',
      !/'events'/.test(sql) && !/'events'/.test(hierarchy))
 
