@@ -1,6 +1,7 @@
 import { requireSupabase } from '../lib/supabase'
 import { tokenize } from '../lib/finance/normalize'
 import {
+  pickFinanceAiMemoryPatch,
   pickFinancePatternPatch,
   pickFinanceTransactionPatch,
   pickWritableFinanceAccount,
@@ -390,4 +391,38 @@ export const financeRepository = {
   // Nutzer korrigiert hat.
   listAiSuggestions: (userId) =>
     readAll('finance_transaction_ai_suggestions', userId, [['created_at', false]]),
+
+  // Das Gedächtnis (v1.24): was der Nutzer ausdrücklich für kommende KI-Importe
+  // behalten wollte. Neueste zuerst — dieselbe Reihenfolge, in der der
+  // Prompt-Builder sie begrenzt.
+  listAiMemories: (userId) =>
+    readAll('finance_ai_learning_memories', userId, [['created_at', false]]),
+
+  /**
+   * Eine Erinnerung abschalten — oder wieder einschalten.
+   *
+   * Der einzige Schreibvorgang, den der Client auf dieser Tabelle hat, und
+   * bewusst der kleinste mögliche: angelegt werden die Zeilen in
+   * `finance_apply_ai_import`, zusammen mit der Buchung, aus der sie stammen.
+   * Hier wird nur `active` umgelegt, denn das ist die Zusage der Oberfläche —
+   * deaktivieren, Toast, Rückgängig (§18/§19) statt „Wirklich löschen?".
+   *
+   * Der eindeutige Teilindex aus 0012 kann ein Wiedereinschalten ablehnen, wenn
+   * inzwischen eine neue Regel für denselben Händler gilt. Das ist kein
+   * Fehlverhalten, sondern die Regel „keine zwei gleichzeitigen Wahrheiten" —
+   * der Aufrufer fängt den Fehler und sagt es.
+   */
+  async setAiMemoryActive(userId, memoryId, active) {
+    requireUser(userId)
+    const patch = pickFinanceAiMemoryPatch({ active, updated_at: new Date().toISOString() })
+    const { data, error } = await requireSupabase()
+      .from('finance_ai_learning_memories')
+      .update(patch)
+      .eq('id', memoryId)
+      .eq('user_id', userId)
+      .select()
+      .single()
+    if (error) throw error
+    return data
+  },
 }

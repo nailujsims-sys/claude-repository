@@ -1,8 +1,10 @@
 import { useCallback, useMemo, useState } from 'react'
-import { Check, ChevronDown, Copy, Sparkles } from 'lucide-react'
+import { Brain, Check, ChevronDown, ChevronRight, Copy, Sparkles } from 'lucide-react'
 import BottomSheet from './BottomSheet'
 import Toggle from './Toggle'
 import FinanceAccountPicker from './FinanceAccountPicker'
+import FinanceLearningScopeSheet from './FinanceLearningScopeSheet'
+import FinanceMemoriesSheet from './FinanceMemoriesSheet'
 import { ChipSelect } from './FinanceManualSheet'
 import { useFinance } from '../context/FinanceContext'
 import { useUI } from '../context/UIContext'
@@ -12,13 +14,23 @@ import { failureLog } from '../lib/finance/importFlow'
 import { sourceHash } from '../lib/finance/dkb/sourceHash'
 import { buildAIContextPrompt } from '../lib/finance/ai/prompt'
 import { parseAIImport, validateAIImport } from '../lib/finance/ai/parse'
-import { applyRowEdit, buildAIApplyPayload, buildAIImportPlan, summarizeAIPlan } from '../lib/finance/ai/plan'
+import {
+  applyRowEdit,
+  buildAIApplyPayload,
+  buildAIImportPlan,
+  summarizeAIPlan,
+} from '../lib/finance/ai/plan'
 import {
   aiConfirmSentence,
   aiPreviewRow,
   aiSummaryLines,
   describeAIApplyResult,
 } from '../lib/finance/ai/messages'
+import {
+  activeMemoryCount,
+  learningModeLabel,
+  rowHasLearnableCorrection,
+} from '../lib/finance/ai/memories'
 
 // Der KI-Import, in einem Sheet.
 //
@@ -48,7 +60,7 @@ export default function FinanceAiImportSheet() {
 function Sheet({ onClose }) {
   const {
     accounts, transactions, observations, categories, merchants, patterns, categoryRules,
-    createAccount, openImport, applyAiImport,
+    aiMemories, createAccount, openImport, applyAiImport,
   } = useFinance()
   const { showToast } = useToast()
 
@@ -70,12 +82,17 @@ function Sheet({ onClose }) {
       patterns,
       categoryRules,
       transactions: transactions.filter((t) => t.account_id === accountId),
+      // Das Gedächtnis von v1.24. Es steht hier und nirgends sonst: ChatGPT
+      // behält zwischen zwei Unterhaltungen nichts, also wird alles, was der
+      // Nutzer sich gemerkt hat, bei jedem Kopieren neu mitgeteilt.
+      memories: aiMemories,
       accountName: account?.name ?? null,
       currency: account?.currency ?? 'EUR',
     })
     const copied = await copyText(prompt)
     showToast(copied ? 'Kontext kopiert ✓' : 'Kopieren hat nicht geklappt')
-  }, [categories, merchants, patterns, categoryRules, transactions, accountId, account, showToast])
+  }, [categories, merchants, patterns, categoryRules, transactions, aiMemories, accountId, account,
+      showToast])
 
   const onCheck = useCallback(() => {
     setProblems([])
@@ -152,6 +169,7 @@ function Sheet({ onClose }) {
             onPaste={setPasted}
             onCheck={onCheck}
             problems={problems}
+            memoryCount={activeMemoryCount(aiMemories)}
           />
         )}
 
@@ -182,8 +200,10 @@ function Sheet({ onClose }) {
 
 function SetupStep({
   accounts, accountId, onAccount, onCreateAccount, onCopy, pasted, onPaste, onCheck, problems,
+  memoryCount = 0,
 }) {
   const ready = Boolean(accountId)
+  const [showMemories, setShowMemories] = useState(false)
   return (
     <div>
       <p className="text-label font-semibold text-text-secondary">Konto</p>
@@ -208,6 +228,25 @@ function SetupStep({
       >
         <Copy size={18} /> KI-Kontext kopieren
       </button>
+
+      {/* Was mitgeht, ohne dass man den Prompt lesen muss. Die Zeile erscheint
+          erst, wenn es etwas zu zeigen gibt — ein Konto ohne Korrekturen
+          bekommt keine Oberfläche für einen Zustand, in dem es nicht ist. */}
+      {memoryCount > 0 && (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowMemories(true)}
+            className="press-tint mt-3 flex min-h-[44px] w-full items-center gap-3 rounded-btn bg-bg-card px-4 py-3 text-left"
+          >
+            <Brain size={18} className="shrink-0 text-accent" />
+            <span className="min-w-0 flex-1 text-ui text-text-primary">Gelerntes Wissen</span>
+            <span className="shrink-0 text-ui tabular-nums text-text-secondary">{memoryCount}</span>
+            <ChevronRight size={18} className="shrink-0 text-text-muted" />
+          </button>
+          <FinanceMemoriesSheet open={showMemories} onClose={() => setShowMemories(false)} />
+        </>
+      )}
 
       <p className="mt-4 text-body text-text-secondary">
         Kopiere den Kontext zu ChatGPT, lade dort deinen Kontoauszug hoch und füge die Antwort
@@ -310,6 +349,7 @@ export function PreviewStep({
 // korrigiert man nicht in einem Import, sondern gar nicht.
 function PreviewRow({ row, categories, merchants = [], showBorder, onEdit }) {
   const [open, setOpen] = useState(false)
+  const [scopeOpen, setScopeOpen] = useState(false)
   const view = aiPreviewRow(row, categories)
   const tone =
     view.tone === 'accent'
@@ -420,6 +460,25 @@ function PreviewRow({ row, categories, merchants = [], showBorder, onEdit }) {
             />
           </label>
 
+          {/* Erst wenn es etwas zu lernen GIBT, wird gefragt. Das ist eine
+              engere Frage als „wurde hier etwas geändert": wer nur eine Notiz
+              getippt hat, hat die Buchung bearbeitet (`human_review` sagt
+              zurecht „corrected"), aber nichts hinterlassen, woraus eine Regel
+              für kommende Importe werden könnte. Eine Bestätigung erst recht
+              nicht. Siehe rowHasLearnableCorrection und 0012, wo dieselbe Frage
+              noch einmal gestellt wird. */}
+          {rowHasLearnableCorrection(row) && (
+            <>
+              <LearningRow row={row} onOpen={() => setScopeOpen(true)} />
+              <FinanceLearningScopeSheet
+                open={scopeOpen}
+                row={row}
+                onClose={() => setScopeOpen(false)}
+                onChoose={(learningMode) => onEdit({ learningMode })}
+              />
+            </>
+          )}
+
           {/* „Passt so" ist keine Geste zum Zuklappen, sondern eine Aussage:
               ich habe diese Zeile angesehen und sie stimmt. Eine unsichere
               Buchung, deren Händler und Kategorie schon richtig waren, ist damit
@@ -439,6 +498,30 @@ function PreviewRow({ row, categories, merchants = [], showBorder, onEdit }) {
         </div>
       )}
     </div>
+  )
+}
+
+// Die Zeile, mit der eine Korrektur über diese eine Buchung hinauswirkt.
+//
+// Sie ist eine Zeile und kein Formular: die Antwort steht rechts, das Sheet
+// dahinter fragt genauer. Und sie ist nie eine Pflicht — wer sie übergeht, hat
+// „Nur diese Buchung" gewählt, was in fast allen Fällen das Richtige ist.
+//
+// Exportiert, damit ein echter Browser sie vermessen kann: sie liegt im
+// aufgeklappten Editor, und was zugeklappt ist, misst kein statisches Rendering.
+export function LearningRow({ row, onOpen }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="press-tint -mx-1 flex min-h-[44px] w-[calc(100%+0.5rem)] items-center gap-3 rounded-btn px-1 text-left"
+    >
+      <span className="min-w-0 flex-1 text-body text-text-primary">Für die Zukunft merken</span>
+      <span className="max-w-[45%] shrink-0 truncate text-ui text-text-secondary">
+        {learningModeLabel(row)}
+      </span>
+      <ChevronRight size={18} className="shrink-0 text-text-muted" />
+    </button>
   )
 }
 

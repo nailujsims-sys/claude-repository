@@ -1,6 +1,7 @@
 import { TRANSACTION_TYPES } from '../../../config/finance'
 import { AI_IMPORT_FORMAT, AI_IMPORT_VERSION } from './format'
 import { matchExisting } from './dedupe'
+import { LEARNING_MODES, rowHasLearnableCorrection, sanitizeLearningMode } from './memories'
 
 // Aus geprüften Zeilen wird das, was der Preview zeigt und die Datenbank
 // speichert.
@@ -93,6 +94,11 @@ export function buildAIImportPlan({ entries = [], existing = [], observations = 
       // gedrückt. Beides ist eine Prüfung; nur das erste ist eine Korrektur, und
       // rowIsCorrection() unterscheidet sie.
       reviewed: false,
+
+      // Was von dieser Zeile für kommende Importe behalten werden soll. Die
+      // Voreinstellung ist die zurückhaltende: eine Korrektur gilt für diese
+      // eine Buchung, bis der Mensch etwas anderes sagt (v1.24).
+      learningMode: LEARNING_MODES.NONE,
     }
   })
 
@@ -151,7 +157,15 @@ export function applyRowEdit(row, patch = {}) {
     const note = typeof patch.note === 'string' ? patch.note.trim() : ''
     next.note = note === '' ? null : note.slice(0, 2000)
   }
+  // Der Merk-Umfang darf mit derselben Geste gesetzt werden wie alles andere —
+  // und wird sofort an dem gemessen, was diese Zeile nach der Änderung IST:
+  // gemerkt wird nur aus einer Korrektur, also nimmt, wer die Korrektur
+  // zurücknimmt, die Regel mit zurück. Sonst stünde nach einem Hin und Her eine
+  // Regel im Import, zu der es keine Korrektur mehr gibt.
+  if ('learningMode' in patch) next.learningMode = patch.learningMode
   next.reviewed = true
+  next.learningMode =
+    rowHumanReview(next) === 'corrected' ? sanitizeLearningMode(next) : LEARNING_MODES.NONE
   return next
 }
 
@@ -248,6 +262,24 @@ export function buildAIApplyPayload({ importId, accountId, rows = [] } = {}) {
         // Entscheidung etwas über die Einordnung sagt oder etwas festhält, das
         // sonst verloren ginge (siehe 0011). Eine Bestätigung von „nichts" ist
         // deshalb keine leere Zeile, sondern nur ein `human_review`.
+        // Was der Mensch sich für die Zukunft merken wollte — ein Wort, und
+        // sonst nichts. Welche Felder daraus eine Regel werden, entscheidet die
+        // Datenbank aus Vorschlag und Entscheidung derselben Zeile (0012):
+        // ein Client, der die Felder selbst schickt, könnte auch die Notiz
+        // schicken, und die wird nie gelernt.
+        //
+        // Gemerkt wird ausschließlich, was der Mensch KORRIGIERT hat — und
+        // zwar an einem Feld, aus dem sich überhaupt lernen lässt. Eine
+        // Bestätigung ist ein wertvolles Signal und trotzdem keine Erlaubnis,
+        // daraus eine Regel zu machen; eine geänderte Notiz ist eine echte
+        // Korrektur dieser einen Buchung und trotzdem nichts, was ein nächster
+        // Vorschlag je wieder treffen könnte.
+        learning: {
+          mode:
+            review === 'corrected' && rowHasLearnableCorrection(row)
+              ? sanitizeLearningMode(row)
+              : LEARNING_MODES.NONE,
+        },
         user_decision: review !== 'none'
           ? {
               merchant_id: row.merchantId ?? null,

@@ -131,6 +131,15 @@ export const WRITABLE_FINANCE_OVERRIDE_FIELDS = [
   'updated_at',
 ]
 
+// Was ein KI-Import sich für die Zukunft gemerkt hat. Angelegt wird eine solche
+// Zeile ausschließlich in `finance_apply_ai_import` (0012), zusammen mit der
+// Buchung, aus der sie stammt — der Client legt keine an. Was er darf, ist
+// genau das Eine, was die Liste im „Gelerntes Wissen"-Sheet anbietet: eine
+// Erinnerung deaktivieren und wieder einschalten. Deshalb steht hier `active`
+// und sonst nichts: eine Regel nachträglich umzuschreiben wäre eine zweite
+// Wahrheit ohne den Fall, aus dem sie stammt.
+export const WRITABLE_FINANCE_AI_MEMORY_PATCH_FIELDS = ['active', 'updated_at']
+
 export const pickWritableFinanceAccount = (patch) => pick(WRITABLE_FINANCE_ACCOUNT_FIELDS, patch)
 export const pickWritableFinanceCategory = (patch) => pick(WRITABLE_FINANCE_CATEGORY_FIELDS, patch)
 export const pickWritableFinanceMerchant = (patch) => pick(WRITABLE_FINANCE_MERCHANT_FIELDS, patch)
@@ -143,3 +152,5 @@ export const pickWritableFinanceTransaction = (patch) =>
 export const pickFinanceTransactionPatch = (patch) =>
   pick(WRITABLE_FINANCE_TRANSACTION_PATCH_FIELDS, patch)
 export const pickWritableFinanceOverride = (patch) => pick(WRITABLE_FINANCE_OVERRIDE_FIELDS, patch)
+export const pickFinanceAiMemoryPatch = (patch) =>
+  pick(WRITABLE_FINANCE_AI_MEMORY_PATCH_FIELDS, patch)
