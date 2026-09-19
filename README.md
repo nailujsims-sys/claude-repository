@@ -1047,6 +1047,79 @@ Migrationen, den echten RPCs und Policies) und `tools/financeLearningLayout.mjs`
 (48, die Wahl des Umfangs und die Liste in Chromium bei 390×844 und 390×667),
 dazu die sechs Strecken durch die gemountete Oberfläche in `tools/smoke.mjs`.
 
+## 🗄️ Finanzen v1.25 — Kontoverwaltung
+
+Ein Konto entstand bisher nebenbei, mitten in einer Buchung, und war danach
+unveränderlich. v1.25 gibt ihm einen Lebenszyklus: **bearbeiten, archivieren,
+reaktivieren — und löschen nur dann, wenn wirklich nichts daran hängt.**
+
+**Warum Archivieren und nicht Löschen.** `finance_imports.account_id`,
+`finance_transactions.account_id` (0008) und
+`finance_import_review_items.account_id` (0009) verweisen mit
+`on delete cascade` auf `finance_accounts`. Der Cascade gehört dorthin — für den
+Tag, an dem ein Benutzer sein Konto auflöst — aber er darf nie der Weg sein, auf
+dem ein Fehlgriff in einem Sheet eine Kontohistorie mitnimmt. Ein Bankkonto
+verschwindet im echten Leben auch nicht rückwirkend aus der eigenen Geschichte.
+Also: Archivieren ist der Normalfall (eine Spalte, ein Zeitstempel, keine Zeile
+wird angefasst), Löschen die Ausnahme für ein wirklich leeres Konto.
+
+**Die Datenbank entscheidet das, nicht die Oberfläche.**
+`supabase/migrations/0013_finance_account_management.sql` bringt
+
+| | |
+|---|---|
+| `finance_accounts.archived_at` | `null` = aktiv. Ein Zeitstempel statt eines Booleans, weil „seit wann" die Frage ist, die ein Mensch an ein Archiv stellt. Kein Default — kein bestehendes Konto wird archiviert. |
+| `finance_accounts_user_archived_idx` | `(user_id, archived_at)` — die eine Frage, die v1.25 neu stellt |
+| `finance_account_dependency(uuid)` | hängt Finanzhistorie an diesem Konto? Liest die **Fremdschlüssel des Schemas** (`pg_constraint`), nicht eine Liste von drei Tabellen, die beim nächsten `create table` veraltet wäre |
+| `finance_update_account(…)` | Name, Anbieter, Währung — mit der Währungsregel darin |
+| `finance_set_account_archived(…)` | archivieren und reaktivieren, dieselbe Handlung in zwei Richtungen |
+| `finance_delete_empty_account(…)` | löscht ausschließlich ein Konto, auf das keine einzige Zeile zeigt |
+
+Alle drei lesen `auth.uid()` selbst, laufen mit Invoker-Rechten unter derselben
+RLS wie alles andere, tragen `search_path = ''` und sind ausschließlich für
+`authenticated` ausführbar.
+
+**Die Währung ist kein Name.** Name und Anbieter sind Beschriftungen und
+jederzeit änderbar. `currency` ist die Basis, unter der jeder gespeicherte
+Betrag dieses Kontos gelesen wird: ein Wechsel von EUR auf AUD würde 2.483 Cent
+von gestern zu 24,83 AUD erklären, ohne dass irgendjemand eine Zahl angefasst
+hat. Alte Buchungen umzuschreiben wäre die noch schlechtere Antwort (0008: „eine
+importierte Buchung behält ihren Betrag für immer"). Also: solange das Konto
+leer ist, frei änderbar — danach lehnt `finance_update_account` den Wechsel mit
+`FIN01` und dem Satz ab, den der Nutzer liest.
+
+**Was archiviert bedeutet — und was nicht.** Ein archiviertes Konto verschwindet
+aus `FinanceAccountPicker`, aus der manuellen Buchung und aus dem KI-Import. Es
+bleibt vollständig in der Historie, in jeder Auswertung und in jeder Regel.
+Deshalb bleibt `accounts` im `FinanceContext` bewusst **alle** Konten; wer etwas
+Neues schreibt, fragt `activeAccounts`. Ein archiviertes Konto still aus
+`accounts` zu entfernen hätte die Zuordnung seiner alten Buchungen mitgenommen.
+
+**Die Oberfläche.** Auf `/finanzen` eine ruhige Zeile „Konten verwalten ›" ganz
+unten — kein zweiter Primärknopf, und nur, wenn es überhaupt ein Konto gibt.
+Dahinter `FinanceAccountsSheet`: die Sektionen *Aktiv* und *Archiviert*
+(gedimmt, aber lesbar), je Zeile Name und „Anbieter · Währung", unten
+„+ Neues Konto". Ein Tap öffnet das Bearbeiten-Sheet mit den drei Feldern, dem
+Primärknopf „Speichern" und genau **einer** leisen Aktion darunter: archivieren,
+reaktivieren oder löschen — nie drei nebeneinander, von denen zwei nicht gehen.
+Archivieren läuft ohne Rückfrage und mit „Rückgängig" im Toast (§18/§19);
+gelöscht wird mit `ConfirmDialog`, weil es dafür kein Zurück gibt.
+
+Das Anlegeformular ist **dasselbe** wie mitten in einer Buchung
+(`NewAccountForm` aus `FinanceAccountPicker`), und die drei Felder liegen in
+`FinanceAccountFields` — ein zweites Kontoformular wäre ein zweiter Satz
+Platzhalter und eine zweite Meinung darüber, ob die Bank Pflicht ist.
+
+Geprüft in `tools/financeAccountsLogic.mjs` (60 Assertions, reine Logik:
+aktiv/archiviert, das gewählte Konto nach dem Archivieren, Währungs-Freigabe,
+leer vs. belegt, der Picker), `tools/financeAccountsE2E.mjs` (48, gegen ein
+echtes Postgres mit allen Migrationen, den echten RPCs und Policies — die Fälle
+A–J des Auftrags) und `tools/financeAccountsLayout.mjs` (86, Liste und
+Bearbeiten-Sheet in Chromium bei 390×844 und 390×667, Touch-Ziele ≥ 44 px), dazu
+sieben Strecken durch die gemountete Oberfläche in `tools/smoke.mjs`.
+
+---
+
 ---
 
 ## 🎨 Design system

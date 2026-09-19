@@ -89,6 +89,62 @@ export const financeRepository = {
   },
 
   /**
+   * Name, Anbieter und Währung eines Kontos — in einem Aufruf, mit der
+   * Währungsregel in der Datenbank.
+   *
+   * Bewusst kein `update` auf der Tabelle: die Regel „die Währung ist frei,
+   * solange das Konto leer ist" (0013, Abschnitt 4) müsste sonst der Client
+   * kennen und einhalten — und ein Client, der eine Regel einhält, IST keine
+   * Regel. Die Benutzer-ID reist wie bei jedem anderen RPC hier nicht mit; die
+   * Funktion liest `auth.uid()` selbst.
+   */
+  async updateAccount(userId, accountId, { name, provider = null, currency }) {
+    requireUser(userId)
+    const { data, error } = await requireSupabase().rpc('finance_update_account', {
+      p_account_id: accountId,
+      p_name: name,
+      p_provider: provider,
+      p_currency: currency,
+    })
+    if (error) throw error
+    return data
+  },
+
+  /**
+   * Archivieren und Reaktivieren — dieselbe Handlung in zwei Richtungen, und
+   * deshalb ein Aufruf mit einem Schalter. „Rückgängig" im Toast ist damit
+   * buchstäblich derselbe Aufruf mit `false`.
+   */
+  async setAccountArchived(userId, accountId, archived) {
+    requireUser(userId)
+    if (typeof archived !== 'boolean') throw new Error('finance: Wert muss true oder false sein.')
+    const { data, error } = await requireSupabase().rpc('finance_set_account_archived', {
+      p_account_id: accountId,
+      p_archived: archived,
+    })
+    if (error) throw error
+    return data
+  },
+
+  /**
+   * Ein leeres Konto endgültig löschen.
+   *
+   * Der einzige Löschweg, den die App kennt — und ausdrücklich kein
+   * `.delete()` auf `finance_accounts`: die Fremdschlüssel aus 0008/0009
+   * stehen auf `on delete cascade`, ein direktes Löschen nähme also jede
+   * Buchung und jeden Import dieses Kontos wortlos mit. Die Funktion aus 0013
+   * prüft vorher und lehnt ab.
+   */
+  async deleteEmptyAccount(userId, accountId) {
+    requireUser(userId)
+    const { data, error } = await requireSupabase().rpc('finance_delete_empty_account', {
+      p_account_id: accountId,
+    })
+    if (error) throw error
+    return data ?? accountId
+  },
+
+  /**
    * The import row for a file that was already read once, or null.
    *
    * 0008 put a unique index on (user_id, source_hash) because "the same file

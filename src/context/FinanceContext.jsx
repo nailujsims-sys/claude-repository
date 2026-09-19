@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { financeRepository } from '../data/financeRepository'
+import { splitAccounts } from '../lib/finance/accounts'
 import { failureLog } from '../lib/finance/importFlow'
 import { useAuth } from './AuthContext'
 
@@ -27,6 +28,13 @@ export function FinanceProvider({ children }) {
   const repo = financeRepository
 
   const [accounts, setAccounts] = useState([])
+  // Die Import-Zeilen, seit v1.25 — nicht für eine Liste, sondern für eine
+  // einzige Frage: ist dieses Konto wirklich leer? „Leer" entscheidet, ob die
+  // Kontoverwaltung „Löschen" anbietet und ob die Währung noch frei ist, und
+  // ein Konto ohne Buchung, an dem ein abgebrochener Import hängt, ist eben
+  // nicht leer. Die verbindliche Antwort gibt `finance_account_dependency`
+  // (0013); diese Zeilen sind das, was die Oberfläche vorher schon weiß.
+  const [imports, setImports] = useState([])
   const [transactions, setTransactions] = useState([])
   // Not for the screen — for the matcher. A booking's stored text is frozen at
   // the moment it arrived; the richer text a later export contributed lives
@@ -61,10 +69,11 @@ export function FinanceProvider({ children }) {
       if (!silent) setLoading(true)
       try {
         const [
-          accountRows, transactionRows, observationRows, overrideRows,
+          accountRows, importRows, transactionRows, observationRows, overrideRows,
           categoryRows, merchantRows, patternRows, ruleRows, suggestionRows, memoryRows,
         ] = await Promise.all([
           repo.listAccounts(user.id),
+          repo.listImports(user.id),
           repo.listTransactions(user.id),
           repo.listObservations(user.id),
           repo.listOverrides(user.id),
@@ -76,6 +85,7 @@ export function FinanceProvider({ children }) {
           repo.listAiMemories(user.id),
         ])
         setAccounts(accountRows)
+        setImports(importRows)
         setTransactions(transactionRows)
         setObservations(observationRows)
         setOverrides(overrideRows)
@@ -100,11 +110,28 @@ export function FinanceProvider({ children }) {
     load()
   }, [load])
 
+  // Aktiv und archiviert, einmal getrennt.
+  //
+  // `accounts` BLEIBT ALLE KONTEN. Das ist die bewusste Entscheidung von v1.25:
+  // wer die Historie liest, muss ein archiviertes Konto sehen können, sonst
+  // verschwände mit dem Konto auch die Zuordnung seiner alten Buchungen. Wer
+  // dagegen etwas NEUES schreibt, fragt `activeAccounts` — und genau darauf
+  // sind der Picker, der manuelle Eintrag und der KI-Import umgestellt.
+  const { active: activeAccounts, archived: archivedAccounts } = useMemo(
+    () => splitAccounts(accounts),
+    [accounts]
+  )
+
   // The first account, for every caller that only ever had one. The model
   // allows several and always names the one it writes into, so this is a
   // default and never a decision: since v1.23 the sheets that write show a
   // picker as soon as `accounts` holds more than one row.
-  const account = accounts[0] ?? null
+  //
+  // Seit v1.25 ist es das erste AKTIVE Konto: ein Standard, der auf ein
+  // archiviertes Konto zeigt, wäre ein Standard, in den man nichts eintragen
+  // darf. Sind alle Konten archiviert, bleibt das erste als Beschriftung übrig
+  // — der Finanzen-Screen schreibt damit nichts, er stellt nur eine Überschrift.
+  const account = activeAccounts[0] ?? accounts[0] ?? null
 
   /**
    * A new account.
@@ -153,9 +180,75 @@ export function FinanceProvider({ children }) {
         period_start: periodStart ?? null,
         period_end: periodEnd ?? null,
       })
+      // Mitschreiben statt neu laden: die eine Frage, die diese Zeilen
+      // beantworten, ist „ist dieses Konto leer?", und ein abgebrochener Import
+      // macht es genau ab hier unleer. Ohne das böte die Kontoverwaltung bis
+      // zum nächsten vollen Laden ein „Löschen" an, das die Datenbank dann
+      // ablehnt — richtig, aber unnötig unfreundlich.
+      setImports((prev) => (prev.some((r) => r.id === row.id) ? prev : [row, ...prev]))
       return { row, reused: false }
     },
     [user, repo]
+  )
+
+  /**
+   * Ein Konto umbenennen — und, solange es leer ist, seine Währung ändern.
+   *
+   * Der ganze Vorgang liegt in `finance_update_account` (0013): ein Aufruf,
+   * eine Transaktion, und die Währungsregel dort, wo sie nicht umgangen werden
+   * kann. Danach wird gelesen statt gepatcht, wie bei jedem anderen Schreiben
+   * in diesem Modul.
+   */
+  const updateAccount = useCallback(
+    async (accountId, patch) => {
+      const row = await repo.updateAccount(user.id, accountId, patch)
+      await load({ silent: true })
+      return row
+    },
+    [user, repo, load]
+  )
+
+  /**
+   * Archivieren und reaktivieren.
+   *
+   * Zwei Namen, ein Aufruf — damit „Rückgängig" im Toast dieselbe Funktion mit
+   * `false` ist und nicht ein zweiter Weg, der auseinanderlaufen kann. Keine
+   * Buchung, kein Import und keine Regel wird dabei angefasst; was sich ändert,
+   * ist ausschließlich, ob dieses Konto für NEUE Einträge angeboten wird.
+   */
+  const setAccountArchived = useCallback(
+    async (accountId, archived) => {
+      const row = await repo.setAccountArchived(user.id, accountId, archived)
+      await load({ silent: true })
+      return row
+    },
+    [user, repo, load]
+  )
+
+  const archiveAccount = useCallback(
+    (accountId) => setAccountArchived(accountId, true),
+    [setAccountArchived]
+  )
+
+  const reactivateAccount = useCallback(
+    (accountId) => setAccountArchived(accountId, false),
+    [setAccountArchived]
+  )
+
+  /**
+   * Ein leeres Konto endgültig löschen.
+   *
+   * Ob es leer ist, entscheidet die Datenbank (0013) und nicht dieser Aufruf —
+   * die Oberfläche fragt vorher nur, ob sie den Knopf überhaupt zeigt. Wirft
+   * die Funktion, ist der Grund verständlich und wird angezeigt.
+   */
+  const deleteEmptyAccount = useCallback(
+    async (accountId) => {
+      const id = await repo.deleteEmptyAccount(user.id, accountId)
+      await load({ silent: true })
+      return id
+    },
+    [user, repo, load]
   )
 
   /**
@@ -333,7 +426,10 @@ export function FinanceProvider({ children }) {
   const value = useMemo(
     () => ({
       accounts,
+      activeAccounts,
+      archivedAccounts,
       account,
+      imports,
       transactions,
       observations,
       categories,
@@ -348,6 +444,10 @@ export function FinanceProvider({ children }) {
       error,
       reload: () => load({ silent: true }),
       createAccount,
+      updateAccount,
+      archiveAccount,
+      reactivateAccount,
+      deleteEmptyAccount,
       findImport,
       openImport,
       applyPlan,
@@ -359,10 +459,12 @@ export function FinanceProvider({ children }) {
       setMerchantAnalytics,
       saveClassification,
     }),
-    [accounts, account, transactions, observations, categories, merchants, patterns, categoryRules,
+    [accounts, activeAccounts, archivedAccounts, account, imports, transactions, observations,
+     categories, merchants, patterns, categoryRules,
      overrides, aiSuggestions, aiMemories, loading, error, load, createAccount, findImport, openImport,
      applyPlan, learnRule, saveOverride, setMerchantAnalytics, saveClassification,
-     createManualTransaction, applyAiImport, setAiMemoryActive]
+     createManualTransaction, applyAiImport, setAiMemoryActive,
+     updateAccount, archiveAccount, reactivateAccount, deleteEmptyAccount]
   )
 
   return <FinanceContext.Provider value={value}>{children}</FinanceContext.Provider>
