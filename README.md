@@ -139,7 +139,9 @@ npm run test:logic   # pure-logic tests: drag/resize math, search, timezone-safe
                      # create/update/delete, DST, duplicates) against a fake
                      # Google
 npm run test:rls     # the RLS policies and the import end-to-end against a
-                     # throwaway Postgres
+                     # throwaway Postgres. Skips with exit 0 when the machine
+                     # has none — set RLS_TEST_REQUIRED=1 to make that a
+                     # failure instead (the deploy workflow does)
 npm run test:layout  # the import preview and the Zuordnung screen in a real
                      # Chromium at 390 px, with hostile content (build first)
 ```
@@ -185,6 +187,13 @@ user's rows, that an unauthenticated client gets nothing, and that **no client
 role can reach the Google tokens at all** — not another user's, not even its
 own.
 
+The suite builds its own throwaway cluster in a temp directory and deletes it
+afterwards; **your Supabase project is never contacted, never migrated and
+never read.** On a machine without PostgreSQL it skips with exit 0, which is
+right for a laptop and wrong for a deployment — so the deploy workflow sets
+`RLS_TEST_REQUIRED=1`, and there a missing or unsupported PostgreSQL fails the
+run instead of passing it quietly. See *Deploy* below.
+
 > Both values are public and belong in the client: the URL names the project,
 > the anon key is the browser's identity before login, and RLS decides the rest.
 > The **service-role key** and the **database password** must never appear in
@@ -206,6 +215,43 @@ other branch, so a feature-branch trigger would only produce failing runs.
    The workflow checks both before building and fails the run if either is
    missing — a deployed app without a database is worse than a red build.
 3. Merge into the default branch — the workflow prints the live URL.
+
+**The gates, in the order the workflow runs them:** `npm ci` → *Logic tests* →
+*Smoke test* → **Database / RLS tests** → the Supabase configuration check →
+*Build* → the commit-stamp check → Pages deploy → the live-URL check.
+
+The database step is the one that cannot be faked in JavaScript. Row Level
+Security, the migration chain and the finance module's stored procedures are
+properties of PostgreSQL, so the step boots a **throwaway cluster** on the
+runner, applies every migration in order, replays them to prove idempotence and
+runs the SQL suites plus their counter-proofs and the end-to-end suites.
+**The production database is never contacted, never migrated and never read.**
+
+It runs with `RLS_TEST_REQUIRED=1`, and that is the whole point: without it the
+suites skip with exit 0 when they find no PostgreSQL — correct on a laptop, and
+exactly the kind of green that must not exist in a deployment. With it, a
+missing or unsupported PostgreSQL, a cluster that will not start, a failing
+migration, replay, RLS assertion, upgrade probe or E2E suite all fail the run.
+The runner image ships PostgreSQL 16 with the server disabled, which is all the
+suite needs; the step prints `initdb --version` and `psql --version` so each run
+documents which database it actually used. Local behaviour is unchanged — without
+the variable, a machine without PostgreSQL still skips.
+
+The layout tests (`npm run test:layout`) are deliberately **not** in the
+deployment gate: they drive a real Chromium and are slow, and what they protect
+is a rendering detail rather than the data. The database suite is the opposite
+on both counts.
+
+**The same suite also runs before the merge.**
+`.github/workflows/database-tests.yml` runs it on every pull request against the
+default branch — no `github-pages` environment, no Pages permissions, no
+deployment, no Supabase access, just `contents: read`. It exists because the
+deploy workflow's copy sits behind that environment, which only the default
+branch may enter: a broken migration would otherwise surface *after* the merge,
+on the branch everything is published from. It carries **no path filter** on
+purpose — the six end-to-end suites bundle real application code from
+`src/lib/finance/**`, so a `src/`-only change can break them, and a filter that
+has to track which modules those are is a filter somebody forgets to update.
 
 **Releasing a feature branch**, in order: `npm run verify` (`test:logic` →
 `smoke` → `build`, exactly the checks CI gates on), push, open a PR against the

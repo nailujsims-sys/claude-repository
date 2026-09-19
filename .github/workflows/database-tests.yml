@@ -1,0 +1,149 @@
+name: Database tests
+
+# Migrationen, Row Level Security und die Finanz-RPCs gegen ein echtes
+# PostgreSQL — VOR dem Merge, nicht erst beim Deployment.
+#
+# WARUM ES DIESEN WORKFLOW ZUSÄTZLICH ZU deploy.yml GIBT. Die Datenbankprüfung
+# hängt im Deploy-Workflow hinter dem `github-pages`-Environment, und das lässt
+# nur den Default-Branch zu. Ein Migrationsfehler fiele dort also erst nach dem
+# Merge auf — auf dem Branch, von dem aus veröffentlicht wird, und zwischen
+# einem roten Lauf und einer grünen Seite. Hier fällt er vorher auf, im PR, wo
+# er noch niemandem wehtut.
+#
+# WAS DIESER WORKFLOW NICHT HAT, und das ist der Punkt: kein
+# `github-pages`-Environment, keine Pages-Berechtigungen, kein Deployment,
+# keinen Zugriff auf Supabase. Er braucht nichts davon. Die Suite baut ihren
+# eigenen Wegwerf-Cluster in einem Temp-Verzeichnis, spielt die Migrationen dort
+# ein und löscht ihn danach wieder — die Produktionsdatenbank wird nie
+# kontaktiert, nie migriert und nie gelesen. Deshalb reicht `contents: read`.
+
+on:
+  pull_request:
+    branches:
+      - claude/zen-mayer-bKTbe
+
+# KEIN PATH-FILTER, und das ist eine Entscheidung, keine Nachlässigkeit.
+#
+# Naheliegend wäre, nur bei `supabase/**` und `tools/**` zu laufen. Das wäre
+# falsch: die sechs E2E-Suites bündeln mit esbuild echten Anwendungscode aus
+# `src/lib/finance/**` (classificationQueue, classificationFlow, learning,
+# normalize, ai/*) und fahren ihn gegen die echte Datenbank. Eine reine
+# `src/`-Änderung kann sie also brechen — und genau die würde ein solcher Filter
+# durchlassen.
+#
+# Ein Filter, der die Liste der bündelnden Module nachzieht, ist ein Filter, den
+# jemand beim nächsten neuen Modul vergisst. Der Lauf dauert wenige Minuten und
+# kostet auf einem öffentlichen Repository nichts; die Gewissheit, dass keine
+# datenbankrelevante Änderung ungeprüft durchrutscht, ist mehr wert als die
+# gesparten Minuten.
+
+permissions:
+  contents: read
+
+concurrency:
+  # Beim Deployment stehen Läufe an, damit jeder Commit landet; hier ist das
+  # Gegenteil richtig. Ein Lauf gegen einen Stand, den der nächste Push schon
+  # überholt hat, beantwortet eine Frage, die niemand mehr stellt.
+  group: database-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  database:
+    name: Migrations, RLS and finance E2E
+    runs-on: ubuntu-latest
+    # Die Suite legt mehrere Cluster an und spielt jede Migration mehrfach ein;
+    # ein hängender `pg_ctl` soll den Runner nicht eine Stunde blockieren.
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Dieselbe Auflösung und dieselbe Reihenfolge wie in der Harness
+      # (tools/rlsTest.mjs) und im Deploy-Workflow: 16, dann 15, dann 14.
+      #
+      # Das Ubuntu-Runner-Image bringt PostgreSQL 16 mit, den SERVER
+      # DEAKTIVIERT — was genau passt, denn die Suite benutzt den System-Cluster
+      # nie, sie baut ihren eigenen. Gebraucht werden nur die Binaries, und die
+      # liegen unter Debian-Paketierung nicht auf PATH. Deshalb wird das
+      # Verzeichnis hier aufgelöst und ausgegeben: so dokumentiert jeder Lauf
+      # selbst, gegen welche echte Datenbank er gelaufen ist.
+      - name: PostgreSQL version
+        run: |
+          set -euo pipefail
+          bin=""
+          for dir in /usr/lib/postgresql/16/bin \
+                     /usr/lib/postgresql/15/bin \
+                     /usr/lib/postgresql/14/bin; do
+            if [ -x "$dir/initdb" ]; then bin="$dir"; break; fi
+          done
+          if [ -z "$bin" ]; then
+            echo "::error::No supported PostgreSQL (16, 15 or 14) on this runner — the database gate cannot run. See supabase/README.md"
+            exit 1
+          fi
+          echo "PostgreSQL binaries: $bin"
+          "$bin/initdb" --version
+          "$bin/psql" --version
+          {
+            echo "### PostgreSQL"
+            echo ""
+            echo '```'
+            "$bin/initdb" --version
+            "$bin/psql" --version
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # RLS_TEST_REQUIRED=1 ist auch hier der Kern: ohne die Variable
+      # überspringen sich die sieben Suites mit Exit 0, sobald sie kein
+      # PostgreSQL finden. Auf einem Entwicklungsrechner ist das richtig, in
+      # einem Gate ist es genau die Art von Grün, die nichts bedeutet.
+      - name: Database / RLS tests
+        env:
+          RLS_TEST_REQUIRED: "1"
+        run: |
+          set -euo pipefail
+          npm run test:rls 2>&1 | tee db-tests.log
+
+          # Gürtel und Hosenträger. `RLS_TEST_REQUIRED` schließt jeden bekannten
+          # Skip-Pfad, aber „bekannt" ist eine Aussage über heute. Käme je ein
+          # neuer dazu, wäre er an genau diesem Wort zu erkennen — und dann soll
+          # der Lauf rot sein und nicht still grün.
+          if grep -q "übersprungen" db-tests.log; then
+            echo "::error::Eine Suite hat sich übersprungen. Im PR-Gate ist das ein Fehler — siehe die Zeile oben im Log."
+            exit 1
+          fi
+
+          # Und die Gegenrichtung: der Lauf muss die Dinge, für die es ihn gibt,
+          # tatsächlich gemeldet haben. Ein Log ohne diese Zeilen ist ein Lauf,
+          # der irgendwo unterwegs aufgehört hat, ohne es zu sagen.
+          for marker in \
+            "erneut angewandt:" \
+            "rls: alle Policies verhalten sich wie erwartet." \
+            "finance import e2e:" \
+            "finance classify e2e:" \
+            "finance analytics e2e:" \
+            "finance ai e2e:" \
+            "finance learning e2e:" \
+            "finance accounts e2e:"; do
+            if ! grep -qF "$marker" db-tests.log; then
+              echo "::error::Im Protokoll fehlt „$marker\" — der Lauf ist nicht vollständig durchgelaufen."
+              exit 1
+            fi
+          done
+
+          {
+            echo "### Ergebnis"
+            echo ""
+            echo '```'
+            grep -E "angewandt:|Upgrade-Probe|erneut angewandt|alle Policies|passed, " db-tests.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

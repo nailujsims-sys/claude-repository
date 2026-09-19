@@ -33,7 +33,7 @@ if (!bin && !process.env.RLS_TEST_REQUIRED) {
   process.exit(0)
 }
 if (!bin) {
-  console.error('rls: RLS_TEST_REQUIRED gesetzt, aber kein Postgres gefunden.')
+  console.error('rls: RLS_TEST_REQUIRED ist gesetzt, aber es wurde kein unterstütztes PostgreSQL (16, 15 oder 14) gefunden.')
   process.exit(1)
 }
 
@@ -68,6 +68,14 @@ const run = (cmd, args, opts = {}) =>
 
 try {
   if (asRoot && !sudoUser) {
+    // PostgreSQL läuft nicht als root, also braucht dieser Lauf ein
+    // unprivilegiertes Konto. Auf einem Entwicklungsrechner ist das ein Grund
+    // zu überspringen; im Deployment ist es ein Fehler — ein Gate, das sich
+    // selbst abschalten kann, ist kein Gate. Geworfen statt `exit(1)`, damit
+    // das `finally` unten den Cluster noch aufräumt.
+    if (process.env.RLS_TEST_REQUIRED) {
+      throw new Error('rls: läuft als root und findet kein unprivilegiertes Konto — im Deployment ist das ein Fehler.')
+    }
     console.log('rls: läuft als root und findet kein unprivilegiertes Konto — übersprungen.')
     process.exit(0)
   }
