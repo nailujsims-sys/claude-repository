@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { Check, Plus } from 'lucide-react'
-import { DEFAULT_FINANCE_CURRENCY, isCurrencyCode } from '../config/finance'
+import FinanceAccountFields from './FinanceAccountFields'
+import { DEFAULT_FINANCE_CURRENCY } from '../config/finance'
+import { isAccountDraftValid, selectableAccounts } from '../lib/finance/accounts'
 
 // Zu welchem Konto gehört das hier?
 //
@@ -27,25 +29,31 @@ export default function FinanceAccountPicker({
 }) {
   const [creating, setCreating] = useState(false)
 
+  // Ein archiviertes Konto steht hier NIE zur Wahl (§10). Die Aufrufer geben
+  // seit v1.25 bereits `activeAccounts` herein — dieser Filter ist trotzdem da,
+  // weil „für eine neue Buchung nicht auswählbar" eine Zusage dieser Komponente
+  // ist und nicht eine Gewohnheit ihrer Aufrufer.
+  const visible = selectableAccounts(accounts)
+
   const openCreate = () => setCreating(true)
   const handleCreated = (row) => {
     setCreating(false)
     onChange?.(row.id)
   }
 
-  if (accounts.length === 0 || creating) {
+  if (visible.length === 0 || creating) {
     return (
       <NewAccountForm
         onCreate={onCreate}
         onCreated={handleCreated}
-        onCancel={accounts.length === 0 ? null : () => setCreating(false)}
+        onCancel={visible.length === 0 ? null : () => setCreating(false)}
         disabled={disabled}
       />
     )
   }
 
-  if (accounts.length === 1) {
-    const only = accounts[0]
+  if (visible.length === 1) {
+    const only = visible[0]
     return (
       <div>
         <div className="flex min-h-[44px] items-center gap-3 rounded-input bg-bg-input px-4 py-3">
@@ -60,7 +68,7 @@ export default function FinanceAccountPicker({
   return (
     <div>
       <div className="flex flex-wrap gap-2">
-        {accounts.map((account) => {
+        {visible.map((account) => {
           const active = account.id === value
           return (
             <button
@@ -100,7 +108,11 @@ function NewAccountButton({ onClick, disabled }) {
 // Das Minimum, das ein Konto ausmacht: ein Name. Anbieter und Währung sind
 // vorbelegt bzw. optional, damit hier niemand hängen bleibt, der eigentlich
 // gerade eine Buchung eintragen wollte.
-function NewAccountForm({ onCreate, onCreated, onCancel, disabled }) {
+//
+// Exportiert, weil die Kontoverwaltung (v1.25) dasselbe „Neues Konto" anbietet.
+// Ein zweites Anlegeformular daneben wäre ein zweiter Satz Platzhalter, ein
+// zweiter Fehlertext und eine zweite Meinung darüber, ob die Bank Pflicht ist.
+export function NewAccountForm({ onCreate, onCreated, onCancel, disabled }) {
   const [name, setName] = useState('')
   const [provider, setProvider] = useState('')
   const [currency, setCurrency] = useState(DEFAULT_FINANCE_CURRENCY)
@@ -108,7 +120,7 @@ function NewAccountForm({ onCreate, onCreated, onCancel, disabled }) {
   const [failed, setFailed] = useState(false)
 
   const code = currency.trim().toUpperCase()
-  const canSave = name.trim() !== '' && isCurrencyCode(code) && !busy && !disabled
+  const canSave = isAccountDraftValid({ name, provider, currency: code }) && !busy && !disabled
 
   const submit = async () => {
     if (!canSave) return
@@ -128,30 +140,16 @@ function NewAccountForm({ onCreate, onCreated, onCancel, disabled }) {
     <div className="rounded-card border border-subtle bg-bg-card px-4 py-4">
       <p className="text-label font-semibold text-text-secondary">Neues Konto</p>
 
-      <input
-        autoFocus
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="Name, z. B. Girokonto"
-        maxLength={120}
-        aria-label="Name des Kontos"
-        className="mt-3 w-full rounded-input bg-bg-input px-4 py-3.5 text-field text-text-primary placeholder:text-text-muted outline-none ring-1 ring-transparent focus:ring-accent"
-      />
-
-      <div className="mt-3 flex gap-2">
-        <input
-          value={provider}
-          onChange={(e) => setProvider(e.target.value)}
-          placeholder="Bank (optional)"
-          maxLength={80}
-          aria-label="Bank oder Anbieter"
-          className="min-w-0 flex-1 rounded-input bg-bg-input px-4 py-3.5 text-field text-text-primary placeholder:text-text-muted outline-none ring-1 ring-transparent focus:ring-accent"
-        />
-        <input
-          value={currency}
-          onChange={(e) => setCurrency(e.target.value.toUpperCase().slice(0, 3))}
-          aria-label="Währung"
-          className="w-[84px] shrink-0 rounded-input bg-bg-input px-3 py-3.5 text-center text-field tabular-nums text-text-primary outline-none ring-1 ring-transparent focus:ring-accent"
+      <div className="mt-3">
+        <FinanceAccountFields
+          autoFocus
+          name={name}
+          onName={setName}
+          provider={provider}
+          onProvider={setProvider}
+          currency={currency}
+          onCurrency={setCurrency}
+          disabled={disabled}
         />
       </div>
 

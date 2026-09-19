@@ -17,6 +17,7 @@ import TaskForm from './components/TaskForm'
 import EventForm from './components/EventForm'
 import ListForm from './components/ListForm'
 import ExpenseForm from './components/ExpenseForm'
+import FinanceAccountsSheet from './components/FinanceAccountsSheet'
 import FinanceAddSheet from './components/FinanceAddSheet'
 import FinanceAiImportSheet from './components/FinanceAiImportSheet'
 import FinanceClassifySheet from './components/FinanceClassifySheet'
@@ -161,6 +162,7 @@ function AppShell() {
       <FinanceImportSheet />
       <FinanceClassifySheet />
       <FinanceExclusionsSheet />
+      <FinanceAccountsSheet />
       <ToastHost />
     </div>
   )

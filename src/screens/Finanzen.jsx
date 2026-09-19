@@ -21,9 +21,9 @@ import { formatBookingDate, plural } from '../lib/finance/importFlow'
 // PDF import is still in the code and still works; it is simply no longer a
 // path this screen offers.
 export default function Finanzen() {
-  const { transactions, account, patterns, merchants, categoryRules, overrides, aiSuggestions,
-    loading, error } = useFinance()
-  const { openFinanceAdd, openFinanceClassify, openFinanceExclusions } = useUI()
+  const { transactions, accounts, account, patterns, merchants, categoryRules, overrides,
+    aiSuggestions, loading, error } = useFinance()
+  const { openFinanceAdd, openFinanceAccounts, openFinanceClassify, openFinanceExclusions } = useUI()
 
   // Which bookings still need a human is the engine's answer, asked fresh on
   // every render from rows the user can see — never a counter somebody wrote
@@ -106,6 +106,22 @@ export default function Finanzen() {
         ) : isEmpty ? (
           <EmptyState failed={Boolean(error)} />
         ) : null}
+
+        {/* Die Kontoverwaltung (v1.25) — eine ruhige Zeile, kein zweiter
+            Primärknopf. Sie steht ganz unten, weil Konten anzulegen und zu
+            pflegen die seltenste Handlung dieses Screens ist: „Hinzufügen"
+            bleibt der eine laute Weg, und was darunter steht, ist Verwaltung.
+            Ohne ein einziges Konto gibt es nichts zu verwalten, und die Zeile
+            erscheint gar nicht erst. */}
+        {!loading && accounts.length > 0 && (
+          <button
+            onClick={openFinanceAccounts}
+            className="press-tint mt-3 flex min-h-[44px] w-full items-center gap-3 rounded-card bg-bg-card px-4 py-2 text-left"
+          >
+            <span className="min-w-0 flex-1 text-body text-text-primary">Konten verwalten</span>
+            <ChevronRight size={18} className="shrink-0 text-text-muted" />
+          </button>
+        )}
       </div>
     </div>
   )

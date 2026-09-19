@@ -17,9 +17,14 @@ export default function ConfirmDialog({
   cancelLabel = 'Abbrechen',
   onCancel,
   onConfirm,
+  // Über dem Sheet, aus dem er kommt. `z-[55]` liegt über dem gewöhnlichen
+  // Overlay (`z-50`) und ist deshalb der richtige Standard; ein Dialog aus
+  // einem SCHON gestapelten Sheet (`z-[60]`, siehe BottomSheet) muss höher
+  // steigen, sonst öffnet er sich hinter dem, was ihn geöffnet hat.
+  z = 'z-[55]',
 }) {
   return (
-    <Overlay open={open} onClose={onCancel} duration={200} z="z-[55]">
+    <Overlay open={open} onClose={onCancel} duration={200} z={z}>
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-8">
         <Dialog
           title={title}

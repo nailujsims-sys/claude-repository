@@ -40,6 +40,11 @@ export function UIProvider({ children }) {
   const [financeClassify, setFinanceClassify] = useState(null)
   // financeExclusions: null | true
   const [financeExclusions, setFinanceExclusions] = useState(null)
+  // financeAccounts: null | true — die Kontoverwaltung (v1.25). Global wie die
+  // übrigen Finanz-Sheets, obwohl sie heute nur von einer Stelle aus geöffnet
+  // wird: sie ist ein Overlay über dem ganzen Rahmen, und ein Overlay, das ein
+  // Screen selbst mountet, verschwindet mit dem Screen.
+  const [financeAccounts, setFinanceAccounts] = useState(null)
 
   const value = useMemo(
     () => ({
@@ -85,9 +90,13 @@ export function UIProvider({ children }) {
       financeExclusions,
       openFinanceExclusions: () => setFinanceExclusions(true),
       closeFinanceExclusions: () => setFinanceExclusions(null),
+      financeAccounts,
+      openFinanceAccounts: () => setFinanceAccounts(true),
+      closeFinanceAccounts: () => setFinanceAccounts(null),
     }),
     [sidebarOpen, actionSheetOpen, taskForm, eventForm, listForm, expenseForm, financeImport,
-     financeAdd, financeManual, financeAiImport, financeClassify, financeExclusions]
+     financeAdd, financeManual, financeAiImport, financeClassify, financeExclusions,
+     financeAccounts]
   )
 
   return <UIContext.Provider value={value}>{children}</UIContext.Provider>

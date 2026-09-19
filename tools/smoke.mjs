@@ -4222,6 +4222,262 @@ async function run() {
     }
   }
 
+  // ── 16f) v1.25: Konten verwalten ──────────────────────────────────────────
+  //
+  //  Der ganze Weg, so wie ein Mensch ihn geht: die ruhige Zeile öffnen, ein
+  //  Konto umbenennen, eines archivieren und sofort zurückholen, ein neues
+  //  anlegen, ein leeres löschen — und die Gegenprobe, auf die es bei diesem
+  //  Modul ankommt: ein archiviertes Konto taucht in keinem Picker mehr auf,
+  //  und ein Konto mit Buchungen bietet gar kein „Löschen" an.
+  //
+  //  Was NICHT hier steht, weil es Datenbankverhalten ist und ein DOM-Test es
+  //  nur simulieren könnte: dass die Währung eines belegten Kontos gesperrt
+  //  bleibt und ein belegtes Konto sich nicht löschen lässt. Das beweist
+  //  tools/financeAccountsE2E.mjs gegen ein echtes Postgres.
+  {
+    const ACC_A = '11111111-2222-4333-8444-000000000801'
+    const ACC_B = '11111111-2222-4333-8444-000000000802'
+    const kontenSeed = () => ({
+      finance_accounts: [
+        { id: ACC_A, user_id: TEST_USER_ID, name: 'DKB Girokonto', provider: 'DKB',
+          currency: 'EUR', archived_at: null },
+        { id: ACC_B, user_id: TEST_USER_ID, name: 'Bargeld', provider: null,
+          currency: 'EUR', archived_at: null },
+      ],
+      finance_categories: FIN_CATEGORIES,
+      // Nur auf Konto A liegt Historie — Konto B ist leer und damit löschbar.
+      finance_transactions: [
+        { id: '11111111-2222-4333-8444-000000000811', user_id: TEST_USER_ID, account_id: ACC_A,
+          booking_date: '2026-09-14', amount_minor: -6065, currency: 'EUR',
+          raw_description: 'DB.Vertrieb.GmbH/508354771568', normalized_tokens: ['DB'],
+          include_in_analytics: true, manual_lock: false },
+      ],
+    })
+    const openKonten = async (label, seed = kontenSeed()) => {
+      const window = makeDom('#/finanzen', { finance: seed })
+      mount(window, code, label)
+      await wait(400)
+      window.__restoreConsole?.()
+      if (!click(window, (el) => el.textContent.trim() === 'Konten verwalten'))
+        errors.push(`[${label}] „Konten verwalten" ist nicht klickbar`)
+      await wait(340)
+      return window
+    }
+    const openKonto = (window, name) =>
+      click(window, (el) => el.textContent.includes(name) && el.querySelector('span'))
+    const accountsOf = (window) => window.__backend.tables.finance_accounts
+
+    // a) Die Liste selbst.
+    {
+      const label = 'Finanzen/Konten'
+      const window = await openKonten(label)
+      const sheet = nb(txt(window))
+      console.log(`=== Finanzen — Konten ===\n  ${sheet.slice(-260)}`)
+      if (!sheet.includes('Konten'))
+        errors.push(`[${label}] das Sheet ist nicht aufgegangen`)
+      if (!sheet.includes('AKTIV') && !sheet.includes('Aktiv'))
+        errors.push(`[${label}] die Sektion „Aktiv" fehlt`)
+      if (!sheet.includes('DKB · EUR'))
+        errors.push(`[${label}] die zweite Zeile („Anbieter · Währung") fehlt: ${sheet.slice(-200)}`)
+      if (!sheet.includes('Bargeld'))
+        errors.push(`[${label}] das zweite Konto fehlt`)
+      if (!sheet.includes('Neues Konto'))
+        errors.push(`[${label}] „Neues Konto" fehlt`)
+      // Noch ist nichts archiviert — dann gibt es auch keine Sektion dafür.
+      if (sheet.includes('ARCHIVIERT') || sheet.includes('Archiviert'))
+        errors.push(`[${label}] eine leere Archiv-Sektion wird angezeigt`)
+      window.__restoreConsole?.()
+    }
+
+    // b) Umbenennen.
+    {
+      const label = 'Finanzen/Konten-Umbenennen'
+      const window = await openKonten(label)
+      if (!openKonto(window, 'DKB Girokonto'))
+        errors.push(`[${label}] die Kontozeile ist nicht klickbar`)
+      await wait(340)
+      const detail = nb(txt(window))
+      if (!detail.includes('Speichern'))
+        errors.push(`[${label}] das Bearbeiten-Sheet ist nicht aufgegangen: ${detail.slice(-200)}`)
+      for (const aria of ['Name des Kontos', 'Bank oder Anbieter', 'Währung']) {
+        if (!window.document.querySelector(`input[aria-label="${aria}"]`))
+          errors.push(`[${label}] das Feld „${aria}" fehlt`)
+      }
+      if (!typeInto(window, 'input[aria-label="Name des Kontos"]', 'Gehaltskonto'))
+        errors.push(`[${label}] der Name lässt sich nicht ändern`)
+      await wait(240)
+      if (!click(window, (el) => el.textContent.trim() === 'Speichern'))
+        errors.push(`[${label}] „Speichern" ist nicht klickbar`)
+      await wait(620)
+      const stored = accountsOf(window).find((a) => a.id === ACC_A)
+      if (stored?.name !== 'Gehaltskonto')
+        errors.push(`[${label}] der neue Name hat die Datenbank nicht erreicht (${stored?.name})`)
+      const rpc = window.__backend.rpcCalls.filter((c) => c.name === 'finance_update_account')
+      if (rpc.length !== 1)
+        errors.push(`[${label}] es lief nicht genau ein finance_update_account (${rpc.length})`)
+      if (!nb(txt(window)).includes('Gehaltskonto'))
+        errors.push(`[${label}] die Liste zeigt den neuen Namen nicht`)
+      window.__restoreConsole?.()
+    }
+
+    // c) Ein belegtes Konto: archivieren, und zwar mit Rückgängig.
+    {
+      const label = 'Finanzen/Konten-Archivieren'
+      const window = await openKonten(label)
+      if (!openKonto(window, 'DKB Girokonto'))
+        errors.push(`[${label}] die Kontozeile ist nicht klickbar`)
+      await wait(340)
+      const detail = nb(txt(window))
+      if (!detail.includes('Konto archivieren'))
+        errors.push(`[${label}] „Konto archivieren" fehlt: ${detail.slice(-220)}`)
+      // Ein Konto mit Buchungen bietet kein Löschen an — das ist der Kern.
+      if (detail.includes('Konto löschen'))
+        errors.push(`[${label}] ein Konto mit Buchungen bietet „Löschen" an`)
+
+      if (!click(window, (el) => el.textContent.trim() === 'Konto archivieren'))
+        errors.push(`[${label}] „Konto archivieren" ist nicht klickbar`)
+      await wait(620)
+      if (!accountsOf(window).find((a) => a.id === ACC_A)?.archived_at)
+        errors.push(`[${label}] das Archivieren hat die Datenbank nicht erreicht`)
+      // Keine Rückfrage, sondern ein Toast mit dem Weg zurück (§18/§19).
+      const toast = nb(txt(window))
+      if (!toast.includes('Konto archiviert'))
+        errors.push(`[${label}] es gibt keine Rückmeldung: ${toast.slice(-200)}`)
+      if (!toast.includes('Rückgängig'))
+        errors.push(`[${label}] es gibt kein Rückgängig: ${toast.slice(-200)}`)
+      if (!toast.includes('ARCHIVIERT') && !toast.includes('Archiviert'))
+        errors.push(`[${label}] die Archiv-Sektion erscheint nicht`)
+
+      if (!click(window, (el) => el.textContent.trim() === 'Rückgängig'))
+        errors.push(`[${label}] „Rückgängig" ist nicht klickbar`)
+      await wait(620)
+      if (accountsOf(window).find((a) => a.id === ACC_A)?.archived_at)
+        errors.push(`[${label}] Rückgängig hat das Konto nicht zurückgeholt`)
+      // Und die Buchung hat das alles nicht berührt.
+      if (window.__backend.tables.finance_transactions.length !== 1)
+        errors.push(`[${label}] das Archivieren hat an den Buchungen gerührt`)
+      window.__restoreConsole?.()
+    }
+
+    // d) Ein archiviertes Konto: reaktivieren, und nicht im Picker.
+    {
+      const label = 'Finanzen/Konten-Archiviert'
+      const seed = kontenSeed()
+      seed.finance_accounts[1].archived_at = '2026-09-01T10:00:00.000Z'
+      const window = await openKonten(label, seed)
+      const sheet = nb(txt(window))
+      if (!sheet.includes('ARCHIVIERT') && !sheet.includes('Archiviert'))
+        errors.push(`[${label}] die Archiv-Sektion fehlt: ${sheet.slice(-220)}`)
+
+      if (!openKonto(window, 'Bargeld'))
+        errors.push(`[${label}] das archivierte Konto ist nicht anklickbar`)
+      await wait(340)
+      const detail = nb(txt(window))
+      if (!detail.includes('Konto reaktivieren'))
+        errors.push(`[${label}] „Konto reaktivieren" fehlt: ${detail.slice(-200)}`)
+      if (detail.includes('Konto archivieren'))
+        errors.push(`[${label}] ein archiviertes Konto bietet nochmals „Archivieren" an`)
+      if (!click(window, (el) => el.textContent.trim() === 'Konto reaktivieren'))
+        errors.push(`[${label}] „Konto reaktivieren" ist nicht klickbar`)
+      await wait(620)
+      if (accountsOf(window).find((a) => a.id === ACC_B)?.archived_at)
+        errors.push(`[${label}] das Reaktivieren hat die Datenbank nicht erreicht`)
+      window.__restoreConsole?.()
+    }
+
+    // e) Ein neues Konto, aus der Verwaltung heraus.
+    {
+      const label = 'Finanzen/Konten-Neu'
+      const window = await openKonten(label)
+      if (!click(window, (el) => el.textContent.trim() === 'Neues Konto'))
+        errors.push(`[${label}] „Neues Konto" ist nicht klickbar`)
+      await wait(340)
+      if (!typeInto(window, 'input[aria-label="Name des Kontos"]', 'Urlaubskasse'))
+        errors.push(`[${label}] der Name lässt sich nicht eintragen`)
+      await wait(240)
+      if (!click(window, (el) => el.textContent.trim() === 'Anlegen'))
+        errors.push(`[${label}] „Anlegen" ist nicht klickbar`)
+      await wait(620)
+      if (!accountsOf(window).some((a) => a.name === 'Urlaubskasse'))
+        errors.push(`[${label}] das Konto wurde nicht angelegt`)
+      if (!nb(txt(window)).includes('Urlaubskasse'))
+        errors.push(`[${label}] das neue Konto steht nicht in der Liste`)
+      window.__restoreConsole?.()
+    }
+
+    // f) Ein leeres Konto löschen — mit Rückfrage, weil es kein Zurück gibt.
+    {
+      const label = 'Finanzen/Konten-Löschen'
+      const window = await openKonten(label)
+      if (!openKonto(window, 'Bargeld'))
+        errors.push(`[${label}] das leere Konto ist nicht anklickbar`)
+      await wait(340)
+      const detail = nb(txt(window))
+      if (!detail.includes('Konto löschen'))
+        errors.push(`[${label}] ein leeres Konto bietet kein „Löschen": ${detail.slice(-200)}`)
+      if (detail.includes('Konto archivieren'))
+        errors.push(`[${label}] ein leeres Konto bietet zusätzlich „Archivieren" an`)
+
+      if (!click(window, (el) => el.textContent.trim() === 'Konto löschen'))
+        errors.push(`[${label}] „Konto löschen" ist nicht klickbar`)
+      await wait(320)
+      const dialog = nb(txt(window))
+      if (!dialog.includes('Konto löschen?'))
+        errors.push(`[${label}] es wird nicht nachgefragt: ${dialog.slice(-200)}`)
+      if (!dialog.includes('Das Konto enthält keine Buchungen und wird dauerhaft entfernt.'))
+        errors.push(`[${label}] der Satz zur Rückfrage fehlt`)
+      if (accountsOf(window).length !== 2)
+        errors.push(`[${label}] das Konto ist schon vor der Bestätigung weg`)
+
+      if (!click(window, (el) => el.textContent.trim() === 'Löschen'))
+        errors.push(`[${label}] „Löschen" im Dialog ist nicht klickbar`)
+      await wait(700)
+      if (accountsOf(window).some((a) => a.id === ACC_B))
+        errors.push(`[${label}] das Konto ist noch da`)
+      if (window.__backend.tables.finance_transactions.length !== 1)
+        errors.push(`[${label}] das Löschen hat eine fremde Buchung mitgenommen`)
+      window.__restoreConsole?.()
+    }
+
+    // g) Die Gegenprobe: ein archiviertes Konto steht in keinem Picker.
+    {
+      const label = 'Finanzen/Konten-Picker'
+      const seed = kontenSeed()
+      seed.finance_accounts[1].archived_at = '2026-09-01T10:00:00.000Z'
+      const window = makeDom('#/finanzen', { finance: seed })
+      mount(window, code, label)
+      await wait(400)
+      window.__restoreConsole?.()
+
+      click(window, (el) => el.textContent.trim() === 'Hinzufügen')
+      await wait(320)
+      click(window, (el) => el.textContent.includes('KI-Import'))
+      await wait(360)
+      const ki = nb(txt(window))
+      if (ki.includes('Bargeld'))
+        errors.push(`[${label}] das archivierte Konto steht im KI-Import zur Wahl`)
+      if (!ki.includes('DKB Girokonto'))
+        errors.push(`[${label}] das aktive Konto fehlt im KI-Import: ${ki.slice(0, 220)}`)
+      // Genau ein aktives Konto heißt: keine Chips, sondern die ruhige Zeile —
+      // der Flow von v1.23 bleibt unverändert.
+      if (!ki.includes('Neues Konto'))
+        errors.push(`[${label}] „Neues Konto" ist aus dem Flow verschwunden`)
+
+      click(window, (el) => el.getAttribute?.('aria-label') === 'Schließen')
+      await wait(340)
+      click(window, (el) => el.textContent.trim() === 'Hinzufügen')
+      await wait(320)
+      click(window, (el) => el.textContent.includes('Buchung manuell hinzufügen'))
+      await wait(360)
+      const manual = nb(txt(window))
+      if (manual.includes('Bargeld'))
+        errors.push(`[${label}] das archivierte Konto steht in der manuellen Buchung zur Wahl`)
+      if (!manual.includes('DKB Girokonto'))
+        errors.push(`[${label}] das aktive Konto fehlt in der manuellen Buchung`)
+      window.__restoreConsole?.()
+    }
+  }
+
   console.log('\n--- result ---')
   if (errors.length) {
     console.log('FAILURES:')

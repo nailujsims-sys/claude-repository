@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Brain, Check, ChevronDown, ChevronRight, Copy, Sparkles } from 'lucide-react'
 import BottomSheet from './BottomSheet'
 import Toggle from './Toggle'
@@ -10,6 +10,7 @@ import { useFinance } from '../context/FinanceContext'
 import { useUI } from '../context/UIContext'
 import { useToast } from '../context/ToastContext'
 import { TRANSACTION_TYPES, transactionTypeLabel } from '../config/finance'
+import { nextAccountId } from '../lib/finance/accounts'
 import { failureLog } from '../lib/finance/importFlow'
 import { sourceHash } from '../lib/finance/dkb/sourceHash'
 import { buildAIContextPrompt } from '../lib/finance/ai/prompt'
@@ -59,20 +60,38 @@ export default function FinanceAiImportSheet() {
 
 function Sheet({ onClose }) {
   const {
-    accounts, transactions, observations, categories, merchants, patterns, categoryRules,
+    // `activeAccounts`: ein Import landet nie auf einem archivierten Konto
+    // (§10). Was dort schon liegt, bleibt unangetastet und lesbar.
+    activeAccounts, transactions, observations, categories, merchants, patterns, categoryRules,
     aiMemories, createAccount, openImport, applyAiImport,
   } = useFinance()
   const { showToast } = useToast()
 
   // 'setup' | 'preview' | 'applying' | 'done'
   const [step, setStep] = useState('setup')
-  const [accountId, setAccountId] = useState(accounts[0]?.id ?? null)
+  const [accountId, setAccountId] = useState(activeAccounts[0]?.id ?? null)
   const [pasted, setPasted] = useState('')
   const [problems, setProblems] = useState([])
   const [rows, setRows] = useState([])
   const [outcome, setOutcome] = useState(null)
 
-  const account = accounts.find((a) => a.id === accountId) ?? null
+  // §4: fällt das gewählte Konto weg (archiviert oder gelöscht), rückt das
+  // erste aktive nach — aber NUR im Setup-Schritt. Mitten in einem Preview das
+  // Zielkonto zu wechseln hieße, einen fertig geprüften Import stillschweigend
+  // woandershin zu buchen; dort bleibt die Wahl stehen, bis der Nutzer
+  // zurückgeht.
+  useEffect(() => {
+    if (step !== 'setup') return
+    if (accountId === null) {
+      if (activeAccounts.length === 1) setAccountId(activeAccounts[0].id)
+      return
+    }
+    if (!activeAccounts.some((a) => a.id === accountId)) {
+      setAccountId(nextAccountId(activeAccounts, null))
+    }
+  }, [activeAccounts, accountId, step])
+
+  const account = activeAccounts.find((a) => a.id === accountId) ?? null
   const summary = useMemo(() => summarizeAIPlan(rows), [rows])
 
   const onCopyContext = useCallback(async () => {
@@ -160,7 +179,7 @@ function Sheet({ onClose }) {
       <div className="px-5 py-5 pb-10">
         {step === 'setup' && (
           <SetupStep
-            accounts={accounts}
+            accounts={activeAccounts}
             accountId={accountId}
             onAccount={setAccountId}
             onCreateAccount={createAccount}

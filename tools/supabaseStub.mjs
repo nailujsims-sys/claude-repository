@@ -445,6 +445,18 @@ export function makeBackend({
       rpcCalls.push({ name, body })
       const handler = rpc[name]
       if (typeof handler === 'function') return handler(body)
+      if (name === 'finance_update_account') {
+        const result = updateAccount(body)
+        return json(result, result?.message ? 400 : 200)
+      }
+      if (name === 'finance_set_account_archived') {
+        const result = setAccountArchived(body)
+        return json(result, result?.message ? 400 : 200)
+      }
+      if (name === 'finance_delete_empty_account') {
+        const result = deleteEmptyAccount(body)
+        return json(result, result?.message ? 400 : 200)
+      }
       if (name === 'finance_learn_merchant_rule') return json(learnMerchantRule(body))
       if (name === 'finance_apply_ai_import') {
         const result = applyAiImport(body)
@@ -571,6 +583,73 @@ export function makeBackend({
     }
 
     return json({ message: `method ${method} not stubbed` }, 405)
+  }
+
+  // ── Die drei Konto-Funktionen aus 0013, so weit ein Screen sie merkt ─────
+  //
+  // Die echten stehen in supabase/migrations/0013 und werden gegen ein echtes
+  // Postgres geprüft (tools/financeAccountsE2E.mjs). Was ein DOM-Test braucht,
+  // sind ihre SICHTBAREN Wirkungen — und die beiden Regeln, an denen eine
+  // Oberfläche scheitern kann, sind hier bewusst nachgebildet statt dem
+  // Aufrufer geglaubt:
+  //   • die Währung eines Kontos mit Buchungen oder Importen ändert sich nicht;
+  //   • ein Konto mit Finanzdaten wird nicht gelöscht, und zwar mit demselben
+  //     Fehlercode, an dem der Client die Meldung auswählt.
+  const ownFinance = (table) => tables[table].filter((r) => r.user_id === TEST_USER_ID)
+  const ownAccount = (id) => ownFinance('finance_accounts').find((a) => a.id === id) ?? null
+  const accountHasHistory = (id) =>
+    ownFinance('finance_transactions').some((r) => r.account_id === id) ||
+    ownFinance('finance_imports').some((r) => r.account_id === id) ||
+    ownFinance('finance_import_review_items').some((r) => r.account_id === id)
+
+  function updateAccount(body) {
+    const p = body ?? {}
+    const account = ownAccount(p.p_account_id)
+    if (!account) return { message: 'finance: Konto nicht gefunden', code: 'P0002' }
+    const name = String(p.p_name ?? '').trim()
+    if (name === '') return { message: 'Das Konto braucht einen Namen.', code: 'FIN03' }
+    const currency = String(p.p_currency ?? '').trim().toUpperCase()
+    if (!/^[A-Z]{3}$/.test(currency)) {
+      return { message: 'Die Währung braucht drei Buchstaben, zum Beispiel EUR.', code: 'FIN03' }
+    }
+    if (currency !== account.currency && accountHasHistory(account.id)) {
+      return {
+        message:
+          'Die Währung kann nicht mehr geändert werden, weil das Konto bereits Finanzdaten enthält.',
+        code: 'FIN01',
+      }
+    }
+    account.name = name
+    account.provider = String(p.p_provider ?? '').trim() || null
+    account.currency = currency
+    account.updated_at = nowIso()
+    onChange?.({ table: 'finance_accounts', type: 'UPDATE', record: { ...account } })
+    return { ...account }
+  }
+
+  function setAccountArchived(body) {
+    const p = body ?? {}
+    const account = ownAccount(p.p_account_id)
+    if (!account) return { message: 'finance: Konto nicht gefunden', code: 'P0002' }
+    account.archived_at = p.p_archived ? account.archived_at ?? nowIso() : null
+    account.updated_at = nowIso()
+    onChange?.({ table: 'finance_accounts', type: 'UPDATE', record: { ...account } })
+    return { ...account }
+  }
+
+  function deleteEmptyAccount(body) {
+    const p = body ?? {}
+    const account = ownAccount(p.p_account_id)
+    if (!account) return { message: 'finance: Konto nicht gefunden', code: 'P0002' }
+    if (accountHasHistory(account.id)) {
+      return {
+        message: 'Dieses Konto enthält bereits Finanzdaten und kann nur archiviert werden.',
+        code: 'FIN02',
+      }
+    }
+    tables.finance_accounts = tables.finance_accounts.filter((a) => a.id !== account.id)
+    onChange?.({ table: 'finance_accounts', type: 'DELETE', old_record: { id: account.id } })
+    return account.id
   }
 
   // ── finance_apply_ai_import, as far as a screen can tell ─────────────────

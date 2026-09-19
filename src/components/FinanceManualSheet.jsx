@@ -7,6 +7,7 @@ import { useFinance } from '../context/FinanceContext'
 import { useUI } from '../context/UIContext'
 import { useToast } from '../context/ToastContext'
 import { formatLongDate, todayISO } from '../lib/date'
+import { nextAccountId } from '../lib/finance/accounts'
 import { failureLog } from '../lib/finance/importFlow'
 import { buildManualTransactionPayload } from '../lib/finance/manualTransaction'
 
@@ -45,24 +46,37 @@ const EMPTY = () => ({
 })
 
 function Sheet({ onClose }) {
-  const { accounts, categories, merchants, createAccount, createManualTransaction } = useFinance()
+  // `activeAccounts` und nicht `accounts`: eine neue Buchung landet nie auf
+  // einem archivierten Konto (§10). Die Historie bleibt davon unberührt — sie
+  // wird hier nicht gelesen.
+  const { activeAccounts, categories, merchants, createAccount, createManualTransaction } = useFinance()
   const { showToast } = useToast()
 
   const [form, setForm] = useState(EMPTY)
-  const [accountId, setAccountId] = useState(accounts[0]?.id ?? null)
+  const [accountId, setAccountId] = useState(activeAccounts[0]?.id ?? null)
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState([])
   const [datePickerOpen, setDatePickerOpen] = useState(false)
 
   // Genau ein Konto heißt: vorausgewählt, keine Frage. Kommt eines dazu, während
   // das Sheet offen ist (der Picker kann eins anlegen), bleibt die Wahl stehen.
+  //
+  // Fällt das gewählte Konto dagegen WEG — archiviert oder gelöscht, womöglich
+  // auf einem anderen Gerät —, rückt das erste aktive nach (§4). Ohne das
+  // stünde die Buchung auf einem Konto, das der Picker nicht mehr anzeigt.
   useEffect(() => {
-    if (accountId === null && accounts.length === 1) setAccountId(accounts[0].id)
-  }, [accounts, accountId])
+    if (accountId === null) {
+      if (activeAccounts.length === 1) setAccountId(activeAccounts[0].id)
+      return
+    }
+    if (!activeAccounts.some((a) => a.id === accountId)) {
+      setAccountId(nextAccountId(activeAccounts, null))
+    }
+  }, [activeAccounts, accountId])
 
   const set = (patch) => setForm((f) => ({ ...f, ...patch }))
 
-  const account = accounts.find((a) => a.id === accountId) ?? null
+  const account = activeAccounts.find((a) => a.id === accountId) ?? null
   const built = useMemo(
     () =>
       buildManualTransactionPayload({
@@ -117,7 +131,7 @@ function Sheet({ onClose }) {
       <div className="space-y-6 px-5 py-5 pb-10">
         <Field label="Konto">
           <FinanceAccountPicker
-            accounts={accounts}
+            accounts={activeAccounts}
             value={accountId}
             onChange={setAccountId}
             onCreate={createAccount}
