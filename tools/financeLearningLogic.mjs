@@ -30,6 +30,7 @@ import {
   memoryKey,
   memorySentence,
   promptMemories,
+  rowHasLearnableCorrection,
   sanitizeLearningMode,
 } from './src/lib/finance/ai/memories.js'
 import {
@@ -256,6 +257,115 @@ const memory = (data) => ({
      kindForMode('payment_provider') === MEMORY_KINDS.PROVIDER &&
      kindForMode('similar') === MEMORY_KINDS.EXAMPLE &&
      kindForMode('none') === null)
+}
+
+// ── 4b. Review und Lernen sind zwei Fragen ──────────────────────────────────
+//
+// Eine geänderte Notiz ist eine echte Korrektur dieser einen Buchung — und
+// trotzdem nichts, woraus sich für kommende Importe etwas lernen ließe. Beide
+// Auskünfte müssen nebeneinander stimmen.
+{
+  // A) NUR NOTIZ
+  const nurNotiz = applyRowEdit(
+    row({ suggestedMerchant: 'REWE', suggestedCategory: 'cat-lebensmittel' }),
+    { note: 'Geschäftsessen' }
+  )
+  ok('A: eine geänderte Notiz bleibt eine Korrektur',
+     rowHumanReview(nurNotiz) === 'corrected')
+  ok('A: … aber keine lernbare', rowHasLearnableCorrection(nurNotiz) === false)
+  ok('A: … es wird kein Umfang angeboten', learningOptions(nurNotiz).length === 0)
+  ok('A: … ein trotzdem gesetzter fällt auf none',
+     sanitizeLearningMode(nurNotiz, LEARNING_MODES.SIMILAR) === LEARNING_MODES.NONE)
+  const payloadA = buildAIApplyPayload({
+    importId: IMPORT_ID, accountId: ACCOUNT_ID,
+    rows: [applyRowEdit(nurNotiz, { learningMode: LEARNING_MODES.RULE })],
+  })
+  ok('A: … und der Payload schickt none', payloadA.bookings[0].learning.mode === 'none')
+  ok('A: die Notiz selbst wird trotzdem gespeichert',
+     payloadA.bookings[0].user_decision.note === 'Geschäftsessen')
+  ok('A: … und die Korrektur bleibt als solche vermerkt',
+     payloadA.bookings[0].suggestion.human_review === 'corrected')
+
+  // B) HÄNDLER-KORREKTUR bei bereits richtiger Kategorie
+  const haendler = applyRowEdit(
+    row({ suggestedMerchant: 'Troisdorf', suggestedCategory: 'cat-lebensmittel' }),
+    { merchantName: 'REWE' }
+  )
+  ok('B: ein korrigierter Händler ist lernbar', rowHasLearnableCorrection(haendler) === true)
+  ok('B: … alle drei Umfänge stehen zur Wahl',
+     learningOptions(haendler).length === 4)
+  ok('B: … und die feste Regel trägt die sichtbare Kategorie',
+     canLearnMerchantRule(haendler) === true &&
+     learnedFields(haendler).categoryId === 'cat-lebensmittel')
+  const payloadB = buildAIApplyPayload({
+    importId: IMPORT_ID, accountId: ACCOUNT_ID,
+    rows: [applyRowEdit(haendler, { learningMode: LEARNING_MODES.RULE })],
+  })
+  ok('B: … der Umfang reist mit', payloadB.bookings[0].learning.mode === 'merchant_rule')
+
+  // Ein Händler aus der Liste ist auch dann eine Aussage, wenn der Name gleich
+  // bleibt: der Mensch hat ihn ausgewählt.
+  const verknuepft = applyRowEdit(
+    row({ suggestedMerchant: 'REWE', suggestedCategory: 'cat-lebensmittel' }),
+    { merchantId: 'm-rewe', merchantName: 'REWE' }
+  )
+  ok('B: eine bewusste Verknüpfung ist lernbar',
+     rowHasLearnableCorrection(verknuepft) === true)
+
+  // C) KATEGORIE-KORREKTUR
+  const kategorie = applyRowEdit(
+    row({ suggestedMerchant: 'REWE', suggestedCategory: 'cat-sonstige' }),
+    { categoryId: 'cat-lebensmittel' }
+  )
+  ok('C: eine korrigierte Kategorie ist lernbar',
+     rowHasLearnableCorrection(kategorie) === true)
+
+  // D) ART-KORREKTUR
+  const art = applyRowEdit(
+    row({ suggestedMerchant: 'REWE', suggestedCategory: 'cat-lebensmittel' }),
+    { transactionType: 'refund' }
+  )
+  ok('D: eine korrigierte Buchungsart ist lernbar', rowHasLearnableCorrection(art) === true)
+  ok('D: … und trägt eine Regel', canLearnMerchantRule(art) === true)
+
+  // E) INCLUDE-KORREKTUR
+  const auswertung = applyRowEdit(
+    row({ suggestedMerchant: 'REWE', suggestedCategory: 'cat-lebensmittel' }),
+    { includeInAnalytics: false }
+  )
+  ok('E: ein korrigiertes „zählt nicht" ist lernbar',
+     rowHasLearnableCorrection(auswertung) === true)
+  ok('E: … und wird gelernt', learnedFields(auswertung).includeInAnalytics === false)
+
+  // F) NOTIZ + KATEGORIE
+  const beides = applyRowEdit(
+    row({ suggestedMerchant: 'REWE', suggestedCategory: 'cat-sonstige' }),
+    { categoryId: 'cat-lebensmittel', note: 'Geschäftsessen' }
+  )
+  ok('F: Notiz plus Kategorie ist lernbar — wegen der Kategorie',
+     rowHasLearnableCorrection(beides) === true)
+  const payloadF = buildAIApplyPayload({
+    importId: IMPORT_ID, accountId: ACCOUNT_ID,
+    rows: [applyRowEdit(beides, { learningMode: LEARNING_MODES.RULE })],
+  })
+  ok('F: … der Umfang reist mit', payloadF.bookings[0].learning.mode === 'merchant_rule')
+  ok('F: … die Notiz steht in der Entscheidung',
+     payloadF.bookings[0].user_decision.note === 'Geschäftsessen')
+  ok('F: … und in keinem gelernten Feld',
+     JSON.stringify(learnedFields(beides)).indexOf('Geschäftsessen') === -1)
+
+  // Eine Bestätigung hat ohnehin nichts geändert.
+  const bestaetigt = applyRowEdit(
+    row({ suggestedMerchant: 'REWE', suggestedCategory: 'cat-lebensmittel' }), {}
+  )
+  ok('eine Bestätigung ist nie lernbar', rowHasLearnableCorrection(bestaetigt) === false)
+
+  // Und wer die Kategorie zurückdreht, aber die Notiz stehen lässt, ist wieder
+  // bei A: bearbeitet, aber nichts zu lernen.
+  const zurueck = applyRowEdit(beides, { categoryId: 'cat-sonstige' })
+  ok('eine zurückgenommene Kategorie nimmt die Lernbarkeit mit',
+     rowHumanReview(zurueck) === 'corrected' && rowHasLearnableCorrection(zurueck) === false)
+  ok('… und den gewählten Umfang', sanitizeLearningMode(zurueck) === LEARNING_MODES.NONE)
 }
 
 // ── 5. Eine zurückgenommene Korrektur nimmt die Regel mit ───────────────────

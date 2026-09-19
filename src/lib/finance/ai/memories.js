@@ -109,6 +109,41 @@ export function learnedFields(row) {
   return { merchantName, categoryId, transactionType, includeInAnalytics }
 }
 
+/**
+ * Hat der Mensch an dieser Zeile etwas geändert, aus dem sich überhaupt lernen
+ * lässt?
+ *
+ * DIE FRAGE IST EINE ANDERE ALS `rowHumanReview`, und beide haben recht. Wer
+ * nur eine Notiz tippt, hat die Buchung bearbeitet — sie ist `corrected`, und
+ * das soll sie auch bleiben: die Notiz ist eine echte menschliche Entscheidung
+ * über diese eine Buchung, und für v1.24 ist genau das die richtige Auskunft.
+ *
+ * Nur LERNEN kann man daraus nichts. Eine Regel für kommende Importe kann nur
+ * aus den Feldern entstehen, die der nächste Vorschlag auch wieder füllen
+ * wird: Händler, Kategorie, Buchungsart, „zählt in der Auswertung". Eine Notiz
+ * gehört zu dieser Buchung und zu keiner anderen — „Geschäftsessen" als Regel
+ * für alles Kommende wäre Unsinn.
+ *
+ * Deshalb zwei Fragen statt einer: `rowHumanReview` beantwortet „was hat der
+ * Mensch getan?", diese hier „gibt es daraus etwas zu lernen?". Die zweite ist
+ * strenger, und an ihr hängt, ob „Für die Zukunft merken" überhaupt erscheint.
+ *
+ * @param {object} row
+ * @returns {boolean}
+ */
+export function rowHasLearnableCorrection(row) {
+  if (!row || typeof row !== 'object') return false
+  const suggestion = row.suggestion ?? {}
+  // Ein Händler, den der Mensch aus der Liste gewählt hat, ist eine Aussage —
+  // auch wenn der Name danach derselbe ist wie der des Modells.
+  if ((row.merchantId ?? null) !== null) return true
+  if ((row.merchantName ?? null) !== (suggestion.merchantName ?? null)) return true
+  if ((row.categoryId ?? null) !== (suggestion.categoryId ?? null)) return true
+  if (row.transactionType !== suggestion.transactionType) return true
+  if (row.includeInAnalytics !== suggestion.includeInAnalytics) return true
+  return false
+}
+
 /** Sagt diese Zeile überhaupt etwas, das man als Händlerregel merken könnte? */
 export function canLearnMerchantRule(row) {
   const learned = learnedFields(row)
@@ -138,6 +173,7 @@ export function isKnownProvider(name) {
  * @returns {Array<{mode: string, label: string, hint: string, secondary: boolean}>}
  */
 export function learningOptions(row) {
+  if (!rowHasLearnableCorrection(row)) return []
   const { merchantName } = learnedFields(row)
   const options = [
     {
@@ -186,6 +222,9 @@ export function learningOptions(row) {
  */
 export function sanitizeLearningMode(row, mode = row?.learningMode) {
   if (!mode || mode === LEARNING_MODES.NONE) return LEARNING_MODES.NONE
+  // Ohne lernbare Korrektur gibt es keinen Umfang — auch nicht den, der schon
+  // gewählt war, bevor der Mensch seine Änderung zurückgenommen hat.
+  if (!rowHasLearnableCorrection(row)) return LEARNING_MODES.NONE
   const allowed = learningOptions(row).map((option) => option.mode)
   return allowed.includes(mode) ? mode : LEARNING_MODES.NONE
 }

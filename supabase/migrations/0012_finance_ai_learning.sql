@@ -309,11 +309,21 @@ $$;
 -- denn ein Client, der die Felder selbst schickt, kann sie auch anders schicken.
 --
 -- KEIN AUTOMATISCHES LERNEN. `mode` ungleich 'none' ist nur erlaubt, wenn der
--- Mensch diese Zeile tatsächlich korrigiert hat (`human_review = 'corrected'`).
+-- Mensch diese Zeile tatsächlich korrigiert hat (`human_review = 'corrected'`)
+-- UND diese Korrektur ein Feld betrifft, aus dem sich lernen lässt.
 -- Eine Bestätigung ist das wertvollste Signal, das es gibt — und trotzdem keine
 -- Erlaubnis, daraus eine Regel für alles Kommende zu machen. Wie weit eine
 -- einzelne Korrektur verallgemeinert werden soll, entscheidet der Nutzer im
 -- Preview und niemand sonst.
+--
+-- UND „KORRIGIERT" REICHT NICHT. Eine geänderte Notiz macht eine Zeile zurecht
+-- zu `corrected` — sie IST eine menschliche Entscheidung über diese Buchung.
+-- Lernen lässt sich daraus trotzdem nichts: eine Regel für kommende Importe
+-- kann nur aus den Feldern entstehen, die ein nächster Vorschlag auch wieder
+-- füllt (Händler, Kategorie, Buchungsart, Auswertung). „Geschäftsessen" als
+-- Regel für alles Kommende wäre Unsinn. Deshalb prüft die Funktion die
+-- fachliche Abweichung selbst, statt sich auf `human_review` zu verlassen —
+-- und zwar unabhängig davon, was der Client anbietet oder verbirgt.
 create or replace function public.finance_apply_ai_import(
   p_import_id  uuid,
   p_account_id uuid,
@@ -346,6 +356,8 @@ declare
   -- Was der Mensch sich merken wollte, und was daraus wird.
   v_review       text;
   v_mode         text;
+  v_learnable    boolean;
+  v_dec_type     text;
   v_kind         text;
   v_key          text;
   v_learn_name   text;
@@ -535,6 +547,25 @@ begin
       end if;
       if v_review <> 'corrected' then
         raise exception 'finance: gemerkt wird nur, was der Mensch korrigiert hat'
+          using errcode = '22023';
+      end if;
+
+      -- Gibt es überhaupt etwas zu lernen? Verglichen wird die Entscheidung des
+      -- Menschen mit dem Vorschlag des Modells, Feld für Feld — die Notiz ist
+      -- ausdrücklich nicht dabei.
+      v_dec_type := nullif(coalesce(d->>'transaction_type', ''), '');
+      -- Ohne Entscheidung gibt es nichts zu vergleichen: ein Payload mit
+      -- `learning`, aber ohne `user_decision`, behauptet eine Korrektur, die
+      -- nirgends steht.
+      v_learnable := d is not null and (
+           v_dec_merchant is not null                        -- bewusst verknüpft
+        or v_dec_name     is distinct from v_sug_name
+        or v_dec_category is distinct from v_sug_cat
+        or (v_dec_type    is not null and v_dec_type is distinct from v_sug_type)
+        or (v_dec_include is not null and v_dec_include is distinct from v_sug_incl)
+      );
+      if not v_learnable then
+        raise exception 'finance: aus dieser Aenderung laesst sich nichts lernen'
           using errcode = '22023';
       end if;
 

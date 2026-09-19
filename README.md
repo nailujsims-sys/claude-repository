@@ -975,9 +975,17 @@ liegt in `finance_ai_learning_memories` (0012) und wird jedes Mal neu
 mitgeteilt.
 
 **Nur auf ausdrücklichen Wunsch.** Die Zeile „Für die Zukunft merken" erscheint
-im geöffneten Editor erst, wenn der Mensch die Buchung tatsächlich korrigiert
-hat (`human_review = 'corrected'`), und ihre Voreinstellung ist die
-zurückhaltende: *Nur diese Buchung*. Eine Bestätigung („Passt so") erzeugt nie
+im geöffneten Editor erst, wenn es überhaupt etwas zu lernen gibt, und ihre
+Voreinstellung ist die zurückhaltende: *Nur diese Buchung*.
+
+**„Bearbeitet" und „lernbar" sind zwei Fragen.** Wer nur eine Notiz tippt, hat
+die Buchung korrigiert — `human_review` sagt zurecht `corrected`, und die Notiz
+wird gespeichert. Lernen lässt sich daraus trotzdem nichts: eine Regel für
+kommende Importe kann nur aus den Feldern entstehen, die ein nächster Vorschlag
+auch wieder füllt (Händler, Kategorie, Buchungsart, Auswertung). Deshalb hängt
+das Merken an `rowHasLearnableCorrection` und nicht an `rowHumanReview` — und
+die Datenbank stellt dieselbe Frage noch einmal selbst, damit ein am Client
+vorbei geschickter Wunsch sie nicht umgeht. Eine Bestätigung („Passt so") erzeugt nie
 eine Regel — das Modell lag dort ja richtig, und aus „richtig" eine
 Verallgemeinerung zu machen ist eine Entscheidung, die der App nicht zusteht.
 Die Datenbank hält sich an dieselbe Regel und lehnt ein Merken ohne Korrektur
@@ -1029,11 +1037,11 @@ Nur so lassen sich die drei Zusagen durchsetzen, dass die Notiz nie gelernt
 wird und Art bzw. Auswertung nur bei echter Abweichung. Ein wiederholter Import
 legt keine zweite Erinnerung an.
 
-Geprüft in `tools/financeLearningLogic.mjs` (70 Assertions, reine Logik),
-`tools/financeLearningE2E.mjs` (81, gegen ein echtes Postgres mit allen
+Geprüft in `tools/financeLearningLogic.mjs` (94 Assertions, reine Logik),
+`tools/financeLearningE2E.mjs` (97, gegen ein echtes Postgres mit allen
 Migrationen, den echten RPCs und Policies) und `tools/financeLearningLayout.mjs`
 (48, die Wahl des Umfangs und die Liste in Chromium bei 390×844 und 390×667),
-dazu die fünf Strecken durch die gemountete Oberfläche in `tools/smoke.mjs`.
+dazu die sechs Strecken durch die gemountete Oberfläche in `tools/smoke.mjs`.
 
 ---
 

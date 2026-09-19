@@ -1,7 +1,7 @@
 import { TRANSACTION_TYPES } from '../../../config/finance'
 import { AI_IMPORT_FORMAT, AI_IMPORT_VERSION } from './format'
 import { matchExisting } from './dedupe'
-import { LEARNING_MODES, sanitizeLearningMode } from './memories'
+import { LEARNING_MODES, rowHasLearnableCorrection, sanitizeLearningMode } from './memories'
 
 // Aus geprüften Zeilen wird das, was der Preview zeigt und die Datenbank
 // speichert.
@@ -268,11 +268,17 @@ export function buildAIApplyPayload({ importId, accountId, rows = [] } = {}) {
         // ein Client, der die Felder selbst schickt, könnte auch die Notiz
         // schicken, und die wird nie gelernt.
         //
-        // Gemerkt wird ausschließlich, was der Mensch KORRIGIERT hat. Eine
+        // Gemerkt wird ausschließlich, was der Mensch KORRIGIERT hat — und
+        // zwar an einem Feld, aus dem sich überhaupt lernen lässt. Eine
         // Bestätigung ist ein wertvolles Signal und trotzdem keine Erlaubnis,
-        // daraus eine Regel für alles Kommende zu machen.
+        // daraus eine Regel zu machen; eine geänderte Notiz ist eine echte
+        // Korrektur dieser einen Buchung und trotzdem nichts, was ein nächster
+        // Vorschlag je wieder treffen könnte.
         learning: {
-          mode: review === 'corrected' ? sanitizeLearningMode(row) : LEARNING_MODES.NONE,
+          mode:
+            review === 'corrected' && rowHasLearnableCorrection(row)
+              ? sanitizeLearningMode(row)
+              : LEARNING_MODES.NONE,
         },
         user_decision: review !== 'none'
           ? {

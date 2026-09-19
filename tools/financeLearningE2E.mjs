@@ -421,6 +421,93 @@ ${sql}`
     ok('aus einer unberührten Zeile erst recht nicht', tryApply(unberuehrt))
   }
 
+  // ── 5b. „Korrigiert" ist nicht „lernbar" ─────────────────────────────────
+  //
+  // Eine geänderte Notiz macht eine Zeile zurecht zu `corrected`. Lernen lässt
+  // sich daraus nichts — und die Datenbank prüft das selbst, statt sich auf den
+  // Client zu verlassen.
+  {
+    const nurNotiz = (mode) => {
+      const rows = planFor({
+        description: 'RESTAURANT ZUM LOEWEN 12', suggestedMerchant: 'Zum Loewen',
+        suggestedCategory: restaurant.id,
+      }).map((row) => applyRowEdit(row, { note: 'Geschäftsessen' }))
+      const id = openImport(giro)
+      const payload = buildAIApplyPayload({ importId: id, accountId: giro, rows })
+      const booking = payload.bookings[0]
+      // Der Client schickt hier von sich aus schon 'none' — für den Test wird
+      // der Umfang von Hand gesetzt, also genau das, was ein manipulierter
+      // Aufruf täte.
+      booking.learning = { mode }
+      return { id, booking }
+    }
+
+    const geschickt = nurNotiz('none')
+    ok('der Client schickt bei einer reinen Notizänderung von sich aus nichts',
+       buildAIApplyPayload({
+         importId: geschickt.id, accountId: giro,
+         rows: planFor({
+           description: 'RESTAURANT ZUM LOEWEN 12', suggestedMerchant: 'Zum Loewen',
+           suggestedCategory: restaurant.id,
+         }).map((row) => applyRowEdit(row, { note: 'Geschäftsessen' })),
+       }).bookings[0].learning.mode === 'none')
+
+    const vorher = memories().length
+    const ohne = applyAi(userId, geschickt.id, giro, [geschickt.booking])
+    ok('… die Buchung wird trotzdem gespeichert', ohne.created === 1)
+    ok('… die Notiz auch',
+       jsonAsUser(userId, `select note from public.finance_transaction_overrides
+         where transaction_id = (select id from public.finance_transactions
+           where import_id = '${geschickt.id}')`)[0].note === 'Geschäftsessen')
+    ok('… die Zeile gilt als korrigiert',
+       jsonAsUser(userId, `select human_review from public.finance_transaction_ai_suggestions
+         where import_id = '${geschickt.id}'`)[0].human_review === 'corrected')
+    ok('… und es entsteht keine Erinnerung',
+       ohne.memories === 0 && memories().length === vorher)
+
+    for (const mode of ['similar', 'merchant_rule', 'payment_provider']) {
+      const manipuliert = nurNotiz(mode)
+      ok(`ein von Hand gesetzter Umfang „${mode}" wird bei reiner Notizänderung abgelehnt`,
+         failsAsUser(userId, `select public.finance_apply_ai_import('${manipuliert.id}'::uuid,
+           '${giro}'::uuid, $json$${JSON.stringify([manipuliert.booking])}$json$::jsonb);`))
+    }
+    ok('… und nichts davon hat etwas hinterlassen', memories().length === vorher)
+
+    // Ein Merk-Wunsch ganz ohne Entscheidung behauptet eine Korrektur, die
+    // nirgends steht.
+    const ohneEntscheidung = nurNotiz('similar')
+    ohneEntscheidung.booking.user_decision = null
+    ok('ein Merk-Wunsch ohne Nutzerentscheidung wird abgelehnt',
+       failsAsUser(userId, `select public.finance_apply_ai_import('${ohneEntscheidung.id}'::uuid,
+         '${giro}'::uuid, $json$${JSON.stringify([ohneEntscheidung.booking])}$json$::jsonb);`))
+
+    // F) Notiz UND Kategorie: lernbar wegen der Kategorie — und die Notiz
+    // trotzdem nirgends in der Erinnerung.
+    const beides = importWith(
+      { description: 'CAFE CENTRAL 9', suggestedMerchant: 'Central', suggestedCategory: sonstige.id },
+      { merchantName: 'Café Central', categoryId: restaurant.id, note: 'Geschäftsessen' },
+      'merchant_rule'
+    )
+    ok('F: Notiz plus Kategorie ist lernbar', beides.result.memories === 1)
+    const regel = memories().find((m) => m.active && m.merchant_key === memoryKey('Café Central'))
+    ok('F: … die Regel trägt die Kategorie', regel.category_id === restaurant.id)
+    ok('F: … und nirgends die Notiz', JSON.stringify(regel).indexOf('Geschäftsessen') === -1)
+    ok('F: … die Notiz steht bei der Buchung',
+       jsonAsUser(userId, `select note from public.finance_transaction_overrides
+         where transaction_id = '${regel.source_transaction_id}'`)[0].note === 'Geschäftsessen')
+
+    // D) und E): eine Abweichung allein trägt die Lernberechtigung.
+    const nurArt = importWith(
+      { description: 'RUECKZAHLUNG STROM 4', suggestedMerchant: 'Stadtwerke',
+        suggestedCategory: sonstige.id, suggestedType: 'purchase' },
+      { merchantName: 'Stadtwerke', categoryId: sonstige.id, transactionType: 'refund' },
+      'merchant_rule'
+    )
+    ok('D: eine reine Art-Korrektur ist lernbar', nurArt.result.memories === 1)
+    const artRegel = memories().find((m) => m.active && m.merchant_key === memoryKey('Stadtwerke'))
+    ok('D: … und wird gelernt', artRegel.transaction_type === 'refund')
+  }
+
   // ── 6. Was nie gelernt wird ──────────────────────────────────────────────
   {
     const vorher = memories().length

@@ -684,6 +684,19 @@ export function makeBackend({
       if (review !== 'corrected') {
         return { message: 'finance: gemerkt wird nur, was der Mensch korrigiert hat' }
       }
+      // „Korrigiert" reicht nicht: eine geänderte Notiz ist eine Entscheidung
+      // über diese Buchung und trotzdem nichts, woraus sich eine Regel für
+      // kommende Importe ableiten ließe.
+      const learnable = Boolean(d) && (
+        d.merchant_id != null ||
+        (d.merchant_name ?? null) !== (s.merchant_name ?? null) ||
+        (d.category_id ?? null) !== (s.category_id ?? null) ||
+        (d.transaction_type != null && d.transaction_type !== sugType) ||
+        (typeof d.include_in_analytics === 'boolean' && d.include_in_analytics !== sugInclude)
+      )
+      if (!learnable) {
+        return { message: 'finance: aus dieser Aenderung laesst sich nichts lernen' }
+      }
 
       const name =
         decidedName ??

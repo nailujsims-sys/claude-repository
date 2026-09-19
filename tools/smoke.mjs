@@ -4168,6 +4168,35 @@ async function run() {
       window.__restoreConsole?.()
     }
 
+    // f) Nur die Notiz geändert: eine echte Korrektur dieser Buchung — und
+    //    trotzdem nichts, woraus sich für kommende Importe etwas lernen ließe.
+    {
+      const label = 'Finanzen/Lernen-Notiz'
+      const window = await toPreview(
+        label, '2026-09-20;RESTAURANT ZUM LOEWEN 12;-42,00;EUR;Zum Löwen;restaurant;purchase;true;;true'
+      )
+      if (!typeInto(window, 'textarea[aria-label="Notiz"]', 'Geschäftsessen'))
+        errors.push(`[${label}] es gibt kein Feld für die Notiz`)
+      await wait(320)
+      const editor = nb(txt(window))
+      if (editor.includes('Für die Zukunft merken'))
+        errors.push(`[${label}] eine reine Notizänderung bietet das Merken an`)
+      if (!editor.includes('geändert'))
+        errors.push(`[${label}] die Zeile gilt nicht als geändert: ${editor.slice(-200)}`)
+
+      click(window, (el) => el.textContent.trim() === 'Importieren')
+      await wait(700)
+      if (window.__backend.tables.finance_ai_learning_memories.length !== 0)
+        errors.push(`[${label}] aus einer Notiz ist eine Erinnerung geworden`)
+      const override = window.__backend.tables.finance_transaction_overrides.at(-1)
+      if (override?.note !== 'Geschäftsessen')
+        errors.push(`[${label}] die Notiz wurde nicht gespeichert (${override?.note})`)
+      const suggestion = window.__backend.tables.finance_transaction_ai_suggestions.at(-1)
+      if (suggestion?.human_review !== 'corrected')
+        errors.push(`[${label}] die Notizänderung gilt nicht als Korrektur (${suggestion?.human_review})`)
+      window.__restoreConsole?.()
+    }
+
     // e) „Passt so": bestätigt, nicht korrigiert — also nichts zu merken.
     {
       const label = 'Finanzen/Lernen-Passt'

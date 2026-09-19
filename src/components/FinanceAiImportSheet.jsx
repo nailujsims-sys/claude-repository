@@ -18,7 +18,6 @@ import {
   applyRowEdit,
   buildAIApplyPayload,
   buildAIImportPlan,
-  rowIsCorrection,
   summarizeAIPlan,
 } from '../lib/finance/ai/plan'
 import {
@@ -27,7 +26,11 @@ import {
   aiSummaryLines,
   describeAIApplyResult,
 } from '../lib/finance/ai/messages'
-import { activeMemoryCount, learningModeLabel } from '../lib/finance/ai/memories'
+import {
+  activeMemoryCount,
+  learningModeLabel,
+  rowHasLearnableCorrection,
+} from '../lib/finance/ai/memories'
 
 // Der KI-Import, in einem Sheet.
 //
@@ -457,11 +460,14 @@ function PreviewRow({ row, categories, merchants = [], showBorder, onEdit }) {
             />
           </label>
 
-          {/* Erst wenn wirklich korrigiert wurde, gibt es etwas zu merken. Eine
-              Bestätigung ist keine Korrektur — das Modell lag dort richtig, und
-              daraus eine Regel für alles Kommende zu machen, steht der App
-              nicht zu (siehe rowHumanReview und 0012). */}
-          {rowIsCorrection(row) && (
+          {/* Erst wenn es etwas zu lernen GIBT, wird gefragt. Das ist eine
+              engere Frage als „wurde hier etwas geändert": wer nur eine Notiz
+              getippt hat, hat die Buchung bearbeitet (`human_review` sagt
+              zurecht „corrected"), aber nichts hinterlassen, woraus eine Regel
+              für kommende Importe werden könnte. Eine Bestätigung erst recht
+              nicht. Siehe rowHasLearnableCorrection und 0012, wo dieselbe Frage
+              noch einmal gestellt wird. */}
+          {rowHasLearnableCorrection(row) && (
             <>
               <LearningRow row={row} onOpen={() => setScopeOpen(true)} />
               <FinanceLearningScopeSheet
