@@ -824,7 +824,11 @@ zu irgendetwas:
    die Zahlungsdienstleister, die auf diesem Konto schon aufgetaucht sind, das
    verbindliche Antwortformat und klare Unsicherheitsregeln. Der Nutzer macht
    kein Prompt Engineering.
-3. Auszug in ChatGPT hochladen, Antwort zurück in die App einfügen, „Prüfen".
+3. Auszug in ChatGPT hochladen, **den einen Codeblock über seinen
+   Kopieren-Knopf** zurück in die App einfügen, „Prüfen". Der Prompt verlangt
+   den Block ausdrücklich: auf dem Telefon verliert Fließtext beim Kopieren
+   seine Zeilenumbrüche, und dann steht der halbe Auszug in einer Zeile. Passiert
+   es doch, sagt die App genau das — statt über Semikolons zu reden (v1.24.1).
 4. Preview: X erkannt, Y neu, Z bereits vorhanden, N prüfen — jede Zeile
    einzeln, jede „Prüfen"-Zeile aufklappbar und **vollständig lösbar**: Händler
    (aus der Liste oder selbst getippt), Kategorie, Art, „zählt in der

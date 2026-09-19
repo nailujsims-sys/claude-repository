@@ -432,9 +432,13 @@ const stored = (over = {}) => ({
   ok('der Prompt verbietet, den Ort als Händler zu nehmen',
      prompt.includes('Ein Ort ist kein Händler'))
   ok('… am konkreten Beispiel', prompt.includes('REWE Troisdorf'))
+  // v1.24.1: die Tabelle steht jetzt ausdrücklich in EINEM Codeblock — der
+  // Kopieren-Knopf ist auf dem Telefon der einzige Weg, der die Zeilenumbrüche
+  // überlebt. Die Zusage selbst ist dieselbe geblieben.
   ok('der Prompt fordert ausschließlich die Tabelle',
-     prompt.includes('Antworte ausschließlich mit einer Tabelle'))
-  ok('… ohne Vor- und Nachrede', prompt.includes('nichts davor und nichts danach'))
+     prompt.includes('Antworte mit GENAU EINEM Codeblock und sonst nichts.'))
+  ok('… ohne Vor- und Nachrede',
+     prompt.includes('steht nichts, nach dem schließenden'))
   ok('… und ohne Summenzeile', prompt.includes('keine Summenzeile'))
   ok('der Prompt nennt die Kopfzeile wörtlich', prompt.includes(AI_CSV_HEADER))
   ok('… und zeigt sie im Beispiel', prompt.includes('2026-09-18;REWE TROISDORF'))
@@ -1180,6 +1184,130 @@ const stored = (over = {}) => ({
   ok('… sie ist als bestätigt erkennbar', view.reviewed === true && view.corrected === false)
   ok('… eine korrigierte dagegen als geändert',
      aiPreviewRow(korrigiert, CATEGORIES).corrected === true)
+}
+
+// ── v1.24.1: die Antwort kommt als EIN Codeblock ────────────────────────────
+//
+// Auf dem Telefon verliert Fließtext beim Kopieren seine Zeilenumbrüche, und
+// dann steht der halbe Kontoauszug in einer Zeile. Der Prompt verlangt deshalb
+// einen Codeblock mit Kopieren-Knopf — und wenn es doch passiert, sagt die App
+// genau das, statt über Semikolons zu reden.
+{
+  const FENCE = '\`\`\`'
+  const header = AI_CSV_HEADER
+  const row = (i) =>
+    '2026-09-' + String(10 + (i % 19)).padStart(2, '0') +
+    ';REWE MARKT ' + i + ';-' + (i + 1) + ',95;EUR;REWE;lebensmittel;purchase;true;;false'
+  const rows20 = []
+  for (let i = 0; i < 20; i += 1) rows20.push(row(i))
+
+  // A) Ein sauberer einzelner Codeblock wird unverändert angenommen.
+  const einzeln = [FENCE + 'text', header, row(0), FENCE].join('\\n')
+  const a = parseAIImport(einzeln)
+  ok('A: ein einzelner Codeblock wird angenommen', a.ok === true && a.format === 'semicolon')
+  ok('A: … mit genau einer Buchung', a.payload.transactions.length === 1)
+  ok('A: … und dem Betrag, der dastand', a.payload.transactions[0].amount === '-1.95')
+  // Auch ohne Sprachangabe und ohne Block überhaupt.
+  ok('A: … auch ohne Sprachangabe am Block',
+     parseAIImport([FENCE, header, row(0), FENCE].join('\\n')).ok === true)
+  ok('A: … und auch ganz ohne Block', parseAIImport([header, row(0)].join('\\n')).ok === true)
+
+  // B) Zwanzig Buchungen, eine Zeile je Buchung.
+  const b = parseAIImport([FENCE + 'text', header].concat(rows20).concat([FENCE]).join('\\n'))
+  ok('B: zwanzig Zeilen ergeben zwanzig Datensätze',
+     b.ok === true && b.payload.transactions.length === 20)
+  ok('B: … in der Reihenfolge, in der sie standen',
+     b.payload.transactions[0].raw_description === 'REWE MARKT 0' &&
+     b.payload.transactions[19].raw_description === 'REWE MARKT 19')
+
+  // C) Alles in einer Zeile — der Fall, der auf dem Telefon entsteht.
+  const HINWEIS = 'Die Buchungen wurden ohne Zeilenumbrüche eingefügt. Kopiere in ChatGPT nur ' +
+    'den vollständigen Codeblock über dessen Kopieren-Button und füge ihn hier erneut ein.'
+  const flach = [
+    ['C: Kopfzeile eigene Zeile, Buchungen verklebt', [header, rows20.join(' ')].join('\\n')],
+    ['C: alles in einer Zeile, mit Leerzeichen', [header].concat(rows20).join(' ')],
+    ['C: alles in einer Zeile, ohne Trenner', [header].concat(rows20).join('')],
+    ['C: dasselbe im Codeblock', [FENCE + 'text', [header].concat(rows20).join(' '), FENCE].join('\\n')],
+  ]
+  for (const [name, text] of flach) {
+    const res = parseAIImport(text)
+    ok(name + ' wird abgelehnt', res.ok === false)
+    ok(name + ' nennt den Kopieren-Knopf',
+       res.errors.length === 1 && res.errors[0].code === 'rows_flattened' &&
+       res.errors[0].message === HINWEIS)
+    ok(name + ' redet nicht über Semikolons',
+       res.errors[0].message.indexOf('Semikolon') === -1 &&
+       res.errors[0].message.indexOf('Felder statt') === -1)
+  }
+  // Die Zahl 650 aus dem Bericht des Nutzers, als Fall.
+  const riesig = []
+  for (let i = 0; i < 65; i += 1) riesig.push(row(i))
+  const gross = parseAIImport([header, riesig.join(' ')].join('\\n'))
+  ok('C: auch 650 Felder ergeben denselben Hinweis',
+     gross.errors[0].code === 'rows_flattened' && gross.errors[0].message === HINWEIS)
+
+  // D) Ein einziges Semikolon zu viel bleibt der alte, konkrete Fall.
+  const einsZuViel = parseAIImport([
+    header,
+    '2026-09-18;REWE; SAGT DANKE;-24,95;EUR;REWE;lebensmittel;purchase;true;;false',
+  ].join('\\n'))
+  ok('D: eine Zeile mit einem Semikolon zu viel wird abgelehnt', einsZuViel.ok === false)
+  ok('D: … und zwar mit der Semikolon-Meldung',
+     einsZuViel.errors[0].code === 'row_too_many_fields' &&
+     einsZuViel.errors[0].message.indexOf('11 Felder statt 10') > -1 &&
+     einsZuViel.errors[0].message.indexOf('Semikolon') > -1)
+  // Auch zwei zu viel ist noch der Semikolon-Fall, nicht der Kopier-Fall.
+  const zweiZuViel = parseAIImport([
+    header,
+    '2026-09-18;REWE; SAGT; DANKE;-24,95;EUR;REWE;lebensmittel;purchase;true;;false',
+  ].join('\\n'))
+  ok('D: zwei Semikolons zu viel ebenso',
+     zweiZuViel.errors[0].code === 'row_too_many_fields')
+  ok('D: eine Zeile mit zu wenigen Feldern bleibt, wie sie war',
+     parseAIImport([header, '2026-09-18;REWE;-24,95'].join('\\n')).errors[0].code === 'row_too_few_fields')
+
+  // E) Text vor oder nach dem Block. Der Prompt verbietet ihn; der Parser wird
+  //    deshalb NICHT aufgeweicht — er soll nur nichts stillschweigend
+  //    annehmen, was er nicht verstanden hat.
+  //    Festgehalten, was heute passiert: der abschließende ' + FENCE + ' ist für den
+  //    Parser eine Zeile mit einem Feld, und er sagt das auch.
+  const davor = parseAIImport(['Hier ist deine Tabelle:', FENCE + 'text', header, row(0), FENCE].join('\\n'))
+  ok('E: Text davor wird nicht stillschweigend übernommen', davor.ok === false)
+  ok('E: … die Kopfzeile wird trotzdem gefunden (es geht nicht um sie)',
+     davor.errors.every((e) => e.code === 'row_too_few_fields'))
+  const danach = parseAIImport([FENCE + 'text', header, row(0), FENCE, '', 'Noch Fragen?'].join('\\n'))
+  ok('E: Text danach wird nicht stillschweigend übernommen', danach.ok === false)
+  ok('E: … und die Meldung nennt die Zeile, die nicht passt',
+     danach.errors.every((e) => e.code === 'row_too_few_fields'))
+
+  // F) Der Prompt sagt all das auch.
+  const prompt = buildAIContextPrompt({ categories: CATEGORIES })
+  ok('F: der Prompt verlangt genau einen Codeblock',
+     prompt.indexOf('Antworte mit GENAU EINEM Codeblock und sonst nichts.') > -1)
+  ok('F: … nennt ' + FENCE + 'text als Anfang und Ende',
+     prompt.indexOf('Beginne die Antwort mit ' + FENCE + 'text und beende sie mit ' + FENCE + '.') > -1)
+  ok('F: … verbietet alles davor und danach',
+     prompt.indexOf('Vor dem öffnenden ' + FENCE + ' steht nichts, nach dem schließenden ' +
+                    FENCE + ' steht nichts.') > -1)
+  ok('F: … verbietet Erklärung, Aufzählung und Markdown-Tabelle',
+     prompt.indexOf('keine Erklärung') > -1 && prompt.indexOf('keine Aufzählung') > -1 &&
+     prompt.indexOf('keine Markdown-Tabelle') > -1)
+  ok('F: … nennt den Kopieren-Knopf als Grund',
+     prompt.indexOf('Der Codeblock ist Teil des verbindlichen Ausgabeformats') > -1 &&
+     prompt.indexOf('Kopieren-Knopf des Blocks') > -1)
+  ok('F: … verlangt eine physische Zeile je Buchung',
+     prompt.indexOf('genau eine physische Textzeile je Buchung') > -1 &&
+     prompt.indexOf('Nie mehrere Buchungen in eine Zeile schreiben.') > -1 &&
+     prompt.indexOf('Nie eine Buchung über mehrere Zeilen umbrechen.') > -1)
+  ok('F: … nennt die Kopfzeile als erste Zeile im Block',
+     prompt.indexOf('Die erste Zeile im Block lautet exakt:') > -1 &&
+     prompt.indexOf(AI_CSV_HEADER) > -1)
+  ok('F: … sagt, dass auch die echte Antwort so eingerahmt ist',
+     prompt.indexOf('und zwar auch die echte, nicht nur dieses Beispiel') > -1)
+  ok('F: … und zeigt das Beispiel weiterhin als Codeblock',
+     prompt.indexOf(FENCE + 'text\\n' + AI_CSV_HEADER) > -1)
+  ok('F: der Prompt bleibt deterministisch',
+     buildAIContextPrompt({ categories: CATEGORIES }) === prompt)
 }
 
 console.log(\`finance ai logic: \${pass} passed, \${fail} failed\`)
