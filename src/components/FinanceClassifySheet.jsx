@@ -7,6 +7,7 @@ import { useUI } from '../context/UIContext'
 import { buildClassificationQueue } from '../lib/finance/classificationQueue'
 import { buildLearnRequest } from '../lib/finance/learning'
 import { analyticsInclusion } from '../lib/finance/analytics'
+import { assignableCategories, categoryTree } from '../lib/finance/categories'
 import { failureLog } from '../lib/finance/importFlow'
 import {
   DECISION,
@@ -777,28 +778,50 @@ function MerchantPicker({
   )
 }
 
+// Die Auswahl, die eine Buchung einordnet — und deshalb ausschließlich
+// Unterkategorien anbietet. Die Oberkategorie steht als Überschrift darüber:
+// sie gliedert die Liste und ist keine Zuordnung (0014). Wäre sie antippbar,
+// würde die Datenbank den Speichervorgang ablehnen, und der Nutzer hätte eine
+// Kategorie gewählt, die es für seine Buchung nie gab.
 function CategoryPicker({ categories, value, onPick, onClose }) {
+  const groups = categoryTree(categories).filter((node) => node.children.length > 0)
+  const grouped = new Set(groups.flatMap((node) => node.children.map((c) => c.id)))
+  const orphans = assignableCategories(categories).filter((c) => !grouped.has(c.id))
+  const sections = [
+    ...groups,
+    ...(orphans.length > 0 ? [{ parent: null, children: orphans }] : []),
+  ]
+
   return (
     <BottomSheet open onClose={onClose} title="Kategorie" z="z-[60]">
-      <div className="px-5 pb-6">
-        {categories.map((category) => (
-          <button
-            key={category.id ?? category.slug}
-            onClick={() => onPick(category.slug)}
-            aria-pressed={value === category.slug}
-            className="press-tint flex min-h-[44px] w-full items-center justify-between gap-3 rounded-chip px-3 py-2 text-left"
-          >
-            <span
-              className={`min-w-0 flex-1 truncate text-body ${
-                value === category.slug ? 'font-semibold text-text-primary' : 'text-text-secondary'
-              }`}
-            >
-              {category.label}
-            </span>
-            {value === category.slug && <Check size={18} className="shrink-0 text-accent" />}
-          </button>
+      <div className="overflow-y-auto px-5 pb-6">
+        {sections.map((node) => (
+          <div key={node.parent?.id ?? 'ohne'} className="mt-3 first:mt-0">
+            <p className="px-3 text-label font-semibold uppercase tracking-[0.06em] text-section-label">
+              {node.parent?.label ?? 'Ohne Oberkategorie'}
+            </p>
+            {node.children.map((category) => (
+              <button
+                key={category.id ?? category.slug}
+                onClick={() => onPick(category.slug)}
+                aria-pressed={value === category.slug}
+                className="press-tint mt-1 flex min-h-[44px] w-full items-center justify-between gap-3 rounded-chip px-3 py-2 text-left"
+              >
+                <span
+                  className={`min-w-0 flex-1 truncate text-body ${
+                    value === category.slug
+                      ? 'font-semibold text-text-primary'
+                      : 'text-text-secondary'
+                  }`}
+                >
+                  {category.label}
+                </span>
+                {value === category.slug && <Check size={18} className="shrink-0 text-accent" />}
+              </button>
+            ))}
+          </div>
         ))}
-        {categories.length === 0 && (
+        {sections.length === 0 && (
           <p className="px-3 py-2 text-caption text-text-muted">Es wurden keine Kategorien geladen.</p>
         )}
       </div>

@@ -1,7 +1,7 @@
 // „Zählt diese Buchung?" — asked of the database and of the app, side by side.
 //
 // 0010 implements the effective-inclusion rule in SQL, for the view a future
-// chart will read; src/lib/finance/analytics.js implements it in JavaScript, for
+// chart will read; src/lib/finance/analytics/inclusion.js implements it in JavaScript, for
 // the screen. Two implementations of one rule is one of them waiting to be
 // wrong — so this suite does not test them separately. It builds a database
 // full of awkward cases and asserts, row by row, that
@@ -63,7 +63,7 @@ const bundled = await build({
       export { buildClassificationQueue } from './src/lib/finance/classificationQueue.js'
       export { buildOverride, descriptionSegments, normalizeNote, patternTypeFor, rangeTokens }
         from './src/lib/finance/classificationFlow.js'
-      export { analyticsTransactions, resolveAnalyticsInclusion } from './src/lib/finance/analytics.js'
+      export { analyticsTransactions, resolveAnalyticsInclusion } from './src/lib/finance/analytics/index.js'
       export { matchMerchant } from './src/lib/finance/merchantMatching.js'
       export { buildLearnRequest } from './src/lib/finance/learning.js'
       export { tokenize } from './src/lib/finance/normalize.js'

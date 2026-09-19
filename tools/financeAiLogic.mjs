@@ -60,6 +60,7 @@ import {
 } from './src/lib/finance/manualTransaction.js'
 import { TRANSACTION_TYPES, TRANSACTION_TYPE_LABELS } from './src/config/finance.js'
 import { tokenize } from './src/lib/finance/normalize.js'
+import { financeCategorySubset } from './tools/fixtures/financeCategories.mjs'
 
 let pass = 0
 let fail = 0
@@ -75,11 +76,10 @@ const ACCOUNT = '11111111-1111-4111-8111-111111111111'
 const OTHER_ACCOUNT = '22222222-2222-4222-8222-222222222222'
 const IMPORT = '33333333-3333-4333-8333-333333333333'
 
-const CATEGORIES = [
-  { id: 'cat-lebensmittel', slug: 'lebensmittel', label: 'Lebensmittel', sort_order: 10 },
-  { id: 'cat-restaurant', slug: 'restaurant', label: 'Restaurant', sort_order: 20 },
-  { id: 'cat-sonstige', slug: 'sonstige', label: 'Sonstige', sort_order: 50 },
-]
+// Echte Zeilen mit echter Hierarchie (0014): drei Unterkategorien und die
+// Oberkategorien, unter denen sie haengen. Eine Attrappe ohne parent_id waere
+// lauter Oberkategorien — und die sind seit v1.26 keine gueltige Antwort.
+const CATEGORIES = financeCategorySubset(['lebensmittel', 'restaurant', 'sonstige'])
 
 const envelope = (transactions) =>
   JSON.stringify({ format: AI_IMPORT_FORMAT, version: AI_IMPORT_VERSION, transactions })
@@ -407,8 +407,19 @@ const stored = (over = {}) => ({
     accountName: 'Girokonto', currency: 'EUR',
   })
 
-  ok('der Prompt nennt jede aktuelle Kategorie',
-     CATEGORIES.every((c) => prompt.includes(c.slug) && prompt.includes(c.label)))
+  // Seit v1.26: die Unterkategorien sind die Antwort, die Oberkategorien nur die
+  // Gliederung. Beides muss im Prompt stehen — und der Unterschied muss darin
+  // stehen, sonst gibt das Modell irgendwann \u201eMobilitaet\u201c zurueck.
+  const leaves = CATEGORIES.filter((c) => c.parent_id !== null)
+  const parents = CATEGORIES.filter((c) => c.parent_id === null)
+  ok('der Prompt nennt jede zuordenbare Unterkategorie mit Slug und Label',
+     leaves.every((c) => prompt.includes(c.slug) && prompt.includes(c.label)))
+  ok('… und jede Oberkategorie als Ueberschrift',
+     parents.every((c) => prompt.includes(c.label + ':')))
+  ok('… ohne den Slug einer Oberkategorie anzubieten',
+     parents.every((c) => !prompt.includes('- ' + c.slug + ' —')))
+  ok('… und sagt ausdruecklich, dass eine Oberkategorie keine Antwort ist',
+     prompt.includes('KEINE gültige Antwort'))
   ok('… und verbietet neue', prompt.includes('Erfinde keine neuen'))
   ok('der Prompt nennt die bekannten Händler',
      prompt.includes('REWE') && prompt.includes('Scalable Capital') && prompt.includes('EDEKA'))

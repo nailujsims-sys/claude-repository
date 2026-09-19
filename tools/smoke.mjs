@@ -25,6 +25,7 @@ import { seedTasks } from './fixtures/seedTasks.mjs'
 import { seedEvents } from './fixtures/seedEvents.mjs'
 import { LIST_IDS, seedListItems, seedLists } from './fixtures/seedLists.mjs'
 import { seedExpenses } from './fixtures/seedExpenses.mjs'
+import { financeCategoryRows } from './fixtures/financeCategories.mjs'
 
 const TEST_PASSWORD = 'richtiges-passwort'
 
@@ -3043,13 +3044,14 @@ async function run() {
   // mounted and still works; what is asserted here is that it is not offered.
 
   const FIN_ACCOUNT = '11111111-2222-4333-8444-000000000002'
-  const FIN_CATEGORIES = [
-    ['lebensmittel', 'Lebensmittel', 10], ['restaurant', 'Restaurant', 20],
-    ['klamotten', 'Klamotten', 30], ['drogerie', 'Drogerie', 40], ['sonstige', 'Sonstige', 50],
-  ].map(([slug, label, sort_order], i) => ({
-    id: `11111111-2222-4333-8444-00000000090${i}`, user_id: TEST_USER_ID,
-    slug, label, sort_order, is_system: true,
-  }))
+  // Die vollständige zweistufige Taxonomie, wie 0014 sie anlegt — Oberkategorien
+  // mit `parent_id = null`, Unterkategorien mit der id ihres Elternteils. Eine
+  // verkürzte Attrappe wäre seit v1.26 eine Liste lauter Oberkategorien, und
+  // ein Picker, der auf ihr grün wird, sagt nichts über den echten.
+  const FIN_CATEGORIES = financeCategoryRows({
+    userId: TEST_USER_ID,
+    id: (slug, i) => `11111111-2222-4333-8444-0000000009${String(i).padStart(2, '0')}`,
+  })
   const financeSeed = {
     finance_accounts: [{ id: FIN_ACCOUNT, user_id: TEST_USER_ID, name: 'DKB Girokonto', currency: 'EUR' }],
     finance_categories: FIN_CATEGORIES,
@@ -3185,7 +3187,11 @@ async function run() {
       errors.push('[Finanzen/Konto] the date is not pre-filled with today')
   }
 
-  // 16b) An account that already holds bookings: orientation, not analysis.
+  // 16b) Das Dashboard (v1.26): der Zeitraum, die Kennzahl, die Abschnitte.
+  //
+  // Was hier zählt, ist nicht „sieht hübsch aus", sondern: steht auf dem Schirm,
+  // WORÜBER geredet wird (Zeitraum + Konto), stimmt die eine Kennzahl mit der
+  // Summe der Buchungen überein, und ist der laute Weg hinein noch da.
   {
     const window = makeDom('#/finanzen', { finance: financeSeed })
     mount(window, code, 'Finanzen/Bestand')
@@ -3194,27 +3200,98 @@ async function run() {
     const text = nb(txt(window))
     console.log(`=== Finanzen — mit Umsätzen ===\n  ${text.slice(0, 220)}`)
 
-    if (!text.includes('DKB Girokonto'))
-      errors.push('[Finanzen] the account is not named')
-    if (!text.includes('2 Umsätze'))
-      errors.push(`[Finanzen] the booking count is missing: ${text.slice(0, 160)}`)
-    if (!text.includes('zuletzt 14.09.2026'))
-      errors.push('[Finanzen] the date of the newest booking is missing')
+    // Die beiden Tabs, unter der TopBar und nicht in ihr.
+    for (const tab of ['Übersicht', 'Buchungen']) {
+      if (!text.includes(tab)) errors.push(`[Finanzen] the tab „${tab}" is missing`)
+    }
+    // Die Filterzeile sagt, worüber geredet wird.
+    if (!/September 2026/.test(text))
+      errors.push(`[Finanzen] the period filter does not name the current month: ${text.slice(0, 200)}`)
+    if (!text.includes('Alle Konten'))
+      errors.push('[Finanzen] the account filter does not default to all accounts')
+    if (!text.includes('Daten bis 14.09.2026'))
+      errors.push('[Finanzen] the date of the newest included booking is missing')
+
+    // Die eine Kennzahl: 60,65 € + 14,38 € = 75,03 €.
+    if (!text.includes('Ausgaben75,03 €'))
+      errors.push(`[Finanzen] the expense KPI is wrong or missing: ${text.slice(0, 260)}`)
+    if (!text.includes('Einnahmen0,00 €'))
+      errors.push('[Finanzen] the income column is missing')
+    if (!text.includes('Cashflow−75,03 €'))
+      errors.push('[Finanzen] the cashflow column is wrong or missing')
+    // Kein Vergleichswert heißt keine Prozentzahl — nicht „+100 %".
+    if (/[+−-]\d+ %/.test(text))
+      errors.push(`[Finanzen] a percentage is shown although there is nothing to compare: ${text.slice(0, 260)}`)
+
+    // Die Abschnitte.
+    for (const section of ['Ausgaben nach Kategorie', 'Ausgabenentwicklung', 'Top-Händler',
+                           'Größte Ausgaben']) {
+      if (!text.includes(section)) errors.push(`[Finanzen] the section „${section}" is missing`)
+    }
+    for (const range of ['3M', '6M', '1J', '3J', 'Max']) {
+      if (!text.includes(range)) errors.push(`[Finanzen] the trend range „${range}" is missing`)
+    }
+    // Nicht zugeordnet wird als offene Arbeit ausgewiesen und nicht auf
+    // „Sonstiges" geschoben.
+    if (!text.includes('noch keiner Kategorie zugeordnet'))
+      errors.push('[Finanzen] unassigned bookings are not reported')
+    if (text.includes('Allgemeines Sonstiges'))
+      errors.push('[Finanzen] an unassigned booking was silently filed under Sonstiges')
+
     if (!text.includes('Hinzufügen'))
       errors.push('[Finanzen] adding stops being reachable once there is data')
+    if (!text.includes('Konten verwalten'))
+      errors.push('[Finanzen] the account management row disappeared from the dashboard')
     if (text.includes('Noch keine Umsätze'))
       errors.push('[Finanzen] the empty state is shown although there are bookings')
-    // Still not a transaction list — that is the next module, not this one.
-    if (text.includes('REWE.Mohamed'))
-      errors.push('[Finanzen] the screen lists individual bookings')
 
-    // The second thing the screen owes: how much is unsorted, in one tap.
-    if (!text.includes('Zuordnung'))
-      errors.push('[Finanzen] the Zuordnung card is missing')
-    if (!text.includes('2 Umsätze warten'))
-      errors.push(`[Finanzen] the open count is missing: ${text.slice(0, 200)}`)
-    if (!text.includes('Jetzt zuordnen'))
-      errors.push('[Finanzen] the Zuordnung call to action is missing')
+    // Wie viel noch offen ist, in einem Tap — jetzt als kompakte Zeile.
+    if (!text.includes('2 Buchungen prüfen'))
+      errors.push(`[Finanzen] the open-classification row is missing: ${text.slice(0, 260)}`)
+
+    // Der Buchungen-Tab: eine echte, schlichte Liste — keine Attrappe.
+    if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Buchungen'))
+      errors.push('[Finanzen] the Buchungen tab is not clickable')
+    await wait(120)
+    const bookings = nb(txt(window))
+    if (!bookings.includes('REWE.Mohamed'))
+      errors.push(`[Finanzen/Buchungen] the tab does not list the bookings: ${bookings.slice(0, 240)}`)
+    if (bookings.includes('Ausgabenentwicklung'))
+      errors.push('[Finanzen/Buchungen] the overview is still rendered under the second tab')
+
+    // Der Zeitraum-Filter öffnet ein Sheet mit genau den vier Arten.
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Übersicht')
+    await wait(120)
+    if (!click(window, (el) => (el.getAttribute?.('aria-label') || '') === 'Zeitraum ändern'))
+      errors.push('[Finanzen] the period filter is not tappable')
+    await wait(340)
+    const sheet = nb(txt(window))
+    for (const option of ['Monat', 'Jahr', 'Letzte 30 Tage', 'Benutzerdefiniert', 'Übernehmen']) {
+      if (!sheet.includes(option))
+        errors.push(`[Finanzen/Zeitraum] the option „${option}" is missing`)
+    }
+    // Ein anderer Zeitraum ändert die Zahl — und zwar erst beim Übernehmen.
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Jahr'))
+    await wait(80)
+    if (!nb(txt(window)).includes('Ausgaben75,03 €'))
+      errors.push('[Finanzen/Zeitraum] picking an option already changed the dashboard')
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Übernehmen')
+    await wait(500)
+    const yearly = nb(txt(window))
+    if (yearly.includes('Übernehmen'))
+      errors.push('[Finanzen/Zeitraum] the sheet stayed open after Übernehmen')
+    if (!yearly.includes('2026') || yearly.includes('September 2026'))
+      errors.push(`[Finanzen/Zeitraum] the period did not switch to the year: ${yearly.slice(0, 200)}`)
+
+    // Der Kontofilter kennt „Alle Konten" und jedes einzelne Konto.
+    if (!click(window, (el) => (el.getAttribute?.('aria-label') || '') === 'Konto ändern'))
+      errors.push('[Finanzen] the account filter is not tappable')
+    await wait(340)
+    const accountSheet = nb(txt(window))
+    if (!accountSheet.includes('DKB Girokonto'))
+      errors.push('[Finanzen/Konto] the account filter does not list the account')
+    if (!accountSheet.includes('Alle Konten'))
+      errors.push('[Finanzen/Konto] the account filter has no „all accounts" entry')
   }
 
   // 16b1) A booking the AI import sorted out completely: no open assignment.
@@ -3250,10 +3327,17 @@ async function run() {
       window.__restoreConsole?.()
       const text = nb(txt(window))
       console.log(`=== Finanzen — KI-eingeordnet ===\n  ${text.slice(0, 200)}`)
-      if (!text.includes('Keine offenen Zuordnungen'))
+      // Nichts offen heißt: gar keine Zeile. Eine Zeile, die „0 offen" meldet,
+      // wäre eine Meldung über einen Zustand, in dem der Nutzer nicht ist.
+      if (/Buchung(en)? prüfen/.test(text))
         errors.push(`[Finanzen/KI] a complete suggestion still leaves an open assignment: ${text.slice(0, 200)}`)
-      if (text.includes('warten auf Händler'))
-        errors.push('[Finanzen/KI] the Zuordnung card is shown for a booking the import sorted out')
+      // …und der Umsatz ist eingeordnet, also zählt er bei seiner Kategorie —
+      // und zwar aggregiert auf die OBERkategorie, denn das ist die Zeile, die
+      // das Dashboard führt (§9).
+      if (!text.includes('Essen & Trinken24,95 €'))
+        errors.push(`[Finanzen/KI] the suggested category does not reach the dashboard: ${text.slice(0, 300)}`)
+      if (text.includes('Lebensmittel24,95 €'))
+        errors.push('[Finanzen/KI] the dashboard lists the child instead of aggregating to the parent')
     }
 
     {
@@ -3269,7 +3353,7 @@ async function run() {
       await wait(400)
       window.__restoreConsole?.()
       const text = nb(txt(window))
-      if (!text.includes('1 Umsatz wartet'))
+      if (!text.includes('1 Buchung prüfen'))
         errors.push(`[Finanzen/KI] a flagged suggestion does not ask for a decision: ${text.slice(0, 200)}`)
     }
   }
@@ -3283,7 +3367,7 @@ async function run() {
     const backend = window.__backend
 
     const writesBefore = backend.calls.filter((c) => c.method !== 'GET').length
-    if (!click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen'))
+    if (!click(window, (el) => /^\d+ Buchung(en)? prüfen$/.test(el.textContent.trim())))
       errors.push('[Finanzen/Zuordnung] the call to action was not clickable')
     await wait(320)
 
@@ -3360,7 +3444,7 @@ async function run() {
       errors.push('[Finanzen/Zuordnung] a category cannot be picked')
     await wait(320)
     const afterPick = nb(txt(window))
-    if (afterPick.includes('Klamotten'))
+    if (afterPick.includes('Kleidung'))
       errors.push('[Finanzen/Zuordnung] the category sheet stayed open after picking')
     if (!afterPick.includes('KategorieDrogerie'))
       errors.push(`[Finanzen/Zuordnung] the picked category is not shown in the row: ${afterPick.slice(-200)}`)
@@ -3411,7 +3495,7 @@ async function run() {
     await wait(400)
     window.__restoreConsole?.()
 
-    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    click(window, (el) => /^\d+ Buchung(en)? prüfen$/.test(el.textContent.trim()))
     await wait(320)
     const text = nb(txt(window))
     console.log(`=== Finanzen — Konflikt ===\n  ${text.slice(-360)}`)
@@ -3474,7 +3558,7 @@ async function run() {
     await wait(400)
     window.__restoreConsole?.()
 
-    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    click(window, (el) => /^\d+ Buchung(en)? prüfen$/.test(el.textContent.trim()))
     await wait(320)
     const text = nb(txt(window))
     console.log(`=== Finanzen — Prüfung ===\n  ${text.slice(-300)}`)
@@ -3556,7 +3640,7 @@ async function run() {
     await wait(400)
     window.__restoreConsole?.()
 
-    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    click(window, (el) => /^\d+ Buchung(en)? prüfen$/.test(el.textContent.trim()))
     await wait(320)
 
     const toggle = window.document.querySelector('[role="switch"]')
@@ -3587,7 +3671,7 @@ async function run() {
     await wait(400)
     const backend = window.__backend
 
-    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    click(window, (el) => /^\d+ Buchung(en)? prüfen$/.test(el.textContent.trim()))
     await wait(320)
 
     // Mark a word the booking's STORED tokens really contain — the seed freezes
@@ -3598,7 +3682,7 @@ async function run() {
     await wait(60)
     click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Kategorie'))
     await wait(320)
-    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Sonstige')
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Allgemeines Sonstiges')
     await wait(320)
     const note = window.document.querySelector('textarea[aria-label="Notiz"]')
     if (note) {
@@ -3676,7 +3760,7 @@ async function run() {
     await wait(400)
     const backend = window.__backend
 
-    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
+    click(window, (el) => /^\d+ Buchung(en)? prüfen$/.test(el.textContent.trim()))
     await wait(320)
     if (!nb(txt(window)).includes('Letzte offene Buchung'))
       errors.push(`[${label}] the fixture is not a single open booking`)
@@ -3686,7 +3770,7 @@ async function run() {
     await wait(60)
     click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Kategorie'))
     await wait(320)
-    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Sonstige')
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Allgemeines Sonstiges')
     await wait(320)
 
     const note = window.document.querySelector('textarea[aria-label="Notiz"]')
@@ -3798,11 +3882,16 @@ async function run() {
     mount(window, code, 'Finanzen/Fertig')
     await wait(400)
     window.__restoreConsole?.()
-    click(window, (el) => el.textContent.trim() === 'Jetzt zuordnen')
-    await wait(320)
     const text = nb(txt(window))
-    if (!text.includes('Keine offenen Zuordnungen'))
-      errors.push(`[Finanzen/Fertig] the end state is not shown when nothing waits: ${text.slice(-200)}`)
+    // §17: bei null offenen Zuordnungen steht da gar nichts. Eine Zeile, die
+    // „nichts zu tun" meldet, ist eine Meldung über einen Zustand, in dem der
+    // Nutzer nicht ist — und sie stünde dauerhaft im Weg.
+    if (/Buchung(en)? prüfen/.test(text))
+      errors.push(`[Finanzen/Fertig] an empty queue still advertises itself: ${text.slice(0, 240)}`)
+    // Das Dashboard steht trotzdem — eine entschiedene Buchung ist eine
+    // ausgewertete Buchung.
+    if (!text.includes('Ausgaben60,65 €'))
+      errors.push(`[Finanzen/Fertig] the decided booking is missing from the KPI: ${text.slice(0, 240)}`)
   }
 
   // 16b7) The way back out of a global exclusion. A merchant switched off is

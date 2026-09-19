@@ -1,10 +1,11 @@
 import {
   DEFAULT_FINANCE_CURRENCY,
-  FINANCE_CATEGORY_SLUGS,
+  FINANCE_ASSIGNABLE_CATEGORY_SLUGS,
   isPatternType,
   isReviewMode,
   isCurrencyCode,
 } from '../../config/finance'
+import { assignableCategories } from './categories'
 import { backtestPattern } from './backtest'
 import { patternMatches } from './merchantMatching'
 import {
@@ -133,11 +134,14 @@ export function buildLearnRequest({
     }
   }
 
+  // Zuordenbar heißt Unterkategorie. Eine Oberkategorie würde die Datenbank
+  // ablehnen (0014) — hier abzulehnen heißt, es dem Nutzer zu sagen, bevor er
+  // speichert, statt ihm einen Fehlercode zu zeigen.
   const knownSlugs = Array.isArray(categories) && categories.length > 0
-    ? categories.map((c) => c.slug)
-    : FINANCE_CATEGORY_SLUGS
+    ? assignableCategories(categories).map((c) => c.slug)
+    : FINANCE_ASSIGNABLE_CATEGORY_SLUGS
   if (!categorySlug || !knownSlugs.includes(categorySlug)) {
-    errors.push(error('category_unknown', 'Bitte eine Kategorie auswählen.'))
+    errors.push(error('category_unknown', 'Bitte eine Unterkategorie auswählen.'))
   }
 
   const name = typeof merchantName === 'string' ? merchantName.trim() : ''

@@ -104,15 +104,16 @@ nothing (see *Supabase* below).
 Everything else (Morning Briefing, schedule, greeting quote) is intentionally
 static per the spec.
 
-**Finanzen.** The database model, the classification engine, the DKB PDF import,
-a screen, a manual booking and a bank-independent AI import
-exist (`supabase/migrations/0008_finance.sql`, `src/lib/finance/`), the rules are
-unit-tested, and no screen renders any of it. What is there is the foundation the
-future module stands on: a booking keeps its original text and its original
-amount forever, money is an integer in minor units, merchants are recognised by
-patterns a human confirmed, and categories come from rules — no AI, no fuzzy
-matching, and an honest "unresolved" whenever the software cannot tell. See
-*Finanzen — das Datenmodell und die Regel-Engine* below.
+**Finanzen.** Seit v1.26 ein Dashboard: Ausgaben, Einnahmen und Cashflow für
+einen wählbaren Zeitraum, Ausgaben nach Oberkategorie, die Entwicklung über
+3M/6M/1J/3J/Max, die Top-Händler und die größten Einzelausgaben — dazu die
+bestehenden Wege hinein (Buchung von Hand, KI-Import) und die Kontoverwaltung.
+Darunter liegt unverändert das Modell aus 0008: eine Buchung behält ihren
+Originaltext und ihren Betrag für immer, Geld ist eine Ganzzahl in Minor Units,
+Händler werden an Mustern erkannt, die ein Mensch bestätigt hat, und die
+Kategorie kommt aus Regeln — kein Raten, und ein ehrliches „offen", wo die
+Software es nicht sagen kann. Siehe *Finanzen — das Datenmodell und die
+Regel-Engine* und *Finanzen v1.26 — Hierarchie und Dashboard* unten.
 
 ---
 
@@ -246,8 +247,11 @@ src/
   config/navigation.js      bottom nav / sidebar / action-sheet / modules (config arrays)
   config/listTemplates.js   the three Listen templates + the Einkauf categories (data only)
   config/listIcons.js       the curated 24-icon set a list picks from
-  config/finance.js         the Finanzen vocabulary: the five MVP categories,
+  config/finance.js         the Finanzen vocabulary: the two-level category
+                            taxonomy (9 parents, 26 assignable children),
                             pattern types, review modes, transaction types
+  config/merchantLogos.js   local merchant logos (deliberately empty) + the
+                            initials fallback — never an external logo service
   lib/
     config.js               the two public Supabase values, read at build time
     supabase.js             the shared Supabase client (null without config)
@@ -282,6 +286,24 @@ src/
       importFlow.js         the import as a person reads it: the three pipeline
                             calls wired once, and outcomes turned into German
       manualTransaction.js  one booking typed by hand → the atomic RPC's payload
+      categories.js         the two-level taxonomy as the database holds it:
+                            which rows may be assigned, the tree, a category's
+                            path „Oberkategorie · Unterkategorie"
+      analytics/            the one canonical evaluation pipeline (v1.26):
+        inclusion.js        „zählt diese Buchung?" — the four-step rule (0010)
+        effect.js           what a booking does to expenses / income / cashflow;
+                            the only sign logic in the module
+        period.js           month / year / last30 / custom + the comparison
+                            range, timezone-safe on 'YYYY-MM-DD' strings
+        resolve.js          one booking, resolved once — classification,
+                            inclusion, merchant, category, effect
+        summary.js          the KPI card's numbers, incl. „no percentage when
+                            there is nothing to compare"
+        categories.js       leaves first, then aggregated over parent_id
+        merchants.js        top merchants, refunds netted, across accounts
+        biggest.js          the largest single REAL expenses
+        trend.js            the bars: 3M/6M/1J monthly, 3J quarterly, Max yearly
+        dashboard.js        buildFinanceDashboard — rows in, dashboard out
       types.js              the row and result shapes, as JSDoc typedefs
       effectiveClassification.js
                             the one ladder every screen asks: override →
@@ -1149,6 +1171,149 @@ sieben Strecken durch die gemountete Oberfläche in `tools/smoke.mjs`.
 ---
 
 ---
+
+## 📊 Finanzen v1.26 — Hierarchie und Dashboard
+
+Bis v1.25 hatte das Finanzmodul fünf flache Kategorien und einen Bildschirm, der
+zählte, wie viele Umsätze es gibt. v1.26 macht aus beidem etwas, das eine
+Aussage trägt: eine **zweistufige Taxonomie** und ein **Dashboard**, das auf
+genau einer Auswertungspipeline steht.
+
+### Die Taxonomie (`0014_finance_category_hierarchy.sql`)
+
+`finance_categories` bekommt eine Spalte: `parent_id`. `null` heißt
+Oberkategorie, gesetzt heißt Unterkategorie. Neun Oberkategorien gliedern,
+sechsundzwanzig Unterkategorien werden zugeordnet.
+
+| Oberkategorie | Unterkategorien |
+|---|---|
+| Essen & Trinken | `lebensmittel`, `restaurant` |
+| Shopping | `klamotten`, `technik`, `shopping_sonstige` |
+| Mobilität | `auto_tanken`, `bahn_oepnv`, `taxi_sharing`, `parken`, `fluege` |
+| Drogerie & Pflege | `drogerie`, `friseur_pflege` |
+| Wohnen & Haushalt | `miete_nebenkosten`, `haushalt`, `moebel_einrichtung` |
+| Freizeit | `events_kultur`, `games_medien`, `ausgehen`, `freizeit_sonstige` |
+| Gesundheit & Sport | `gesundheit`, `fitnessstudio`, `sport_ausruestung` |
+| Bildung | `studium_schule`, `buecher_lernmaterial`, `kurse_weiterbildung` |
+| Sonstiges | `sonstige` |
+
+**Keine einzige ID wird ersetzt.** Die fünf Kategorien aus 0008 —
+`lebensmittel`, `restaurant`, `klamotten`, `drogerie`, `sonstige` — behalten ihre
+`id` und damit jeden Fremdschlüssel, der auf sie zeigt: Buchungen,
+Kategorieregeln, Overrides, KI-Vorschläge, gelernte Erinnerungen. Die Migration
+hängt sie nur unter die passende Oberkategorie und benennt drei um
+(`restaurant` → „Restaurants & Cafés", `klamotten` → „Kleidung", `sonstige` →
+„Allgemeines Sonstiges") — und auch das **nur, solange die Zeile noch das
+ursprünglich ausgelieferte Label trägt**. Wer selbst umbenannt hat, behält
+seinen Namen.
+
+**Genau zwei Ebenen, und die Datenbank setzt es durch.** Der Trigger
+`finance_categories_hierarchy` lehnt eine Oberkategorie ab, die selbst schon ein
+Kind ist, und eine Zeile mit Kindern, die zum Kind gemacht werden soll. Eine
+Hierarchie, die nur der Client einhält, ist keine.
+
+**Nur Blätter sind zuordenbar.** Eine Oberkategorie ist eine Überschrift; sie
+darf nicht in `finance_transactions`, `finance_transaction_overrides`,
+`finance_category_rules`, `finance_transaction_ai_suggestions` oder
+`finance_ai_learning_memories` als Kategorie auftauchen. Das steht **einmal**
+(`finance_category_is_leaf`) und wird von **einem** Wächter
+(`finance_category_assignable_guard`) an allen fünf Tabellen durchgesetzt — statt
+in fünf Policies und drei RPCs kopiert zu werden. Dadurch gilt die Regel auch
+für den Schreibweg, den heute noch niemand geschrieben hat.
+`finance_learn_merchant_rule`, `finance_create_manual_transaction` und
+`finance_apply_ai_import` bleiben Wort für Wort, wie sie sind.
+
+Der ChatGPT-Prompt bekommt dieselbe Struktur: Oberkategorien als Überschriften,
+Unterkategorien als die einzige gültige Antwort — ausdrücklich gesagt, und
+`validateAIImport` lässt eine Oberkategorie gar nicht erst durch (sie wird zu
+`null` plus „prüfen", wie jede andere unbekannte Kategorie). Bestehende
+persönliche Lernregeln mit alten Slugs bleiben gültig, weil die Slugs dieselben
+sind.
+
+### Die Auswertung (`src/lib/finance/analytics/`)
+
+**Eine Pipeline, und keine Zahl daneben.** `buildFinanceDashboard` ist der
+einzige Ort, an dem aus Buchungen Zahlen werden; keine React-Komponente rechnet
+etwas nach. Die Reihenfolge ist die Architektur:
+
+1. **Konten filtern** — „Alle Konten" schließt archivierte ein (v1.25: ein
+   archiviertes Konto verschwindet aus der Auswahl für *neue* Buchungen, nicht
+   aus der eigenen Geschichte).
+2. **Einordnen** — einmal, über `resolveEffectiveClassification`: dieselbe
+   Rangfolge wie in der Zuordnungs-Warteschlange (Override → `manual_lock` →
+   eigene Regeln → vollständiger KI-Vorschlag). Die eine Ergänzung für die
+   Auswertung steht in `resolve.js` und ist dort begründet: was der Import als
+   Kategorie auf die Buchung geschrieben hat, zählt — sonst stünde Geld unter
+   „nicht zugeordnet", obwohl auf der Zeile eine Kategorie steht.
+3. **Zeitraum schneiden** — Zeitraum und Vergleichszeitraum.
+4. **Zusammenzählen** — Zusammenfassung, Kategorien, Händler, größte Ausgaben.
+5. **Verlauf** — eigene Zeitachse, derselbe Kontenfilter.
+
+**Die Vorzeichenregel steht in drei Zeilen** (`effect.js`) und nirgends sonst:
+
+```
+ausgeschlossen oder Umbuchung  → 0 / 0 / 0
+income                         → income = Betrag,  expense = 0
+alles andere                   → expense = −Betrag, income = 0
+cashflow = income − expense
+```
+
+Daraus folgt jeder geforderte Fall ohne Sonderweg: ein Kauf über −24,83 € ist
+eine Ausgabe von +24,83 €, eine Retoure über +24,83 € senkt die Ausgaben (auch
+die ihrer Kategorie und ihres Händlers, weil sie dort auf demselben Weg landet),
+eine Umbuchung zählt nirgends, eine Einnahme ist nie eine negative Ausgabe, und
+`include_in_analytics = false` fällt vollständig heraus.
+
+**Das Zeitraum-Modell** (`period.js`) kennt vier Arten — `month`, `year`,
+`last30`, `custom` — und rechnet ausschließlich auf `'YYYY-MM-DD'`-Zeichenketten
+mit UTC-Arithmetik, also ohne Sommerzeit und ohne Off-by-one. Der Vergleich ist
+immer gleich lang: ein laufender September steht am 12. gegen den 1.–12. August,
+ein abgeschlossener Monat gegen den ganzen Vormonat, ein laufendes Jahr gegen
+denselben Ausschnitt des Vorjahres. Der 31. März vergleicht gegen den 28. (bzw.
+29.) Februar statt in den März zu rutschen; der 29. Februar hat im Vorjahr
+keinen Gegentag und wird geklemmt.
+
+**„Nicht zugeordnet" ist ein Ergebnis, kein Fehler.** Es bekommt keine
+Kategorie, wird nicht still auf „Sonstiges" geschoben, zählt in den
+Gesamtausgaben (und damit in jeder Prozentzahl) und steht als eigene Zahl da.
+
+### Der Bildschirm
+
+Unter der TopBar zwei Tabs (**Übersicht** · **Buchungen**), darunter die
+Filterzeile (Zeitraum ▾ · Konto ▾). Die Übersicht trägt eine dominante
+KPI-Karte (Ausgaben groß, der Vergleich darunter **neutral** — nicht rot, weil
+„mehr ausgegeben" keine Wertung dieses Bildschirms ist —, Einnahmen und Cashflow
+zweispaltig, und nur der Cashflow darf grün oder rot sein), bei Bedarf eine
+kompakte Zeile „N Buchungen prüfen" (bei null: gar nichts), „Ausgaben nach
+Kategorie" mit den fünf größten Oberkategorien (**alle Balken blau** — es gibt
+keine Kategorie-Farbpalette), die Ausgabenentwicklung als eigenes
+SVG-freies Balkendiagramm ohne zusätzliche Bibliothek, die Top-Händler mit
+`MerchantAvatar` und die drei größten Einzelausgaben. „Konten verwalten" bleibt
+erreichbar und bleibt leise.
+
+`MerchantAvatar` hat genau zwei Stufen: ein Logo, das in diesem Repository
+liegt (`src/config/merchantLogos.js` — heute bewusst leer), sonst die Initialen.
+**Kein Logo-Dienst.** Jede Anfrage an einen solchen Dienst trüge Händlername, IP
+und Zeitpunkt nach draußen, und das ist ein 32 Pixel großes Bildchen nicht wert.
+
+### Bekannte Grenze: zwei Währungen
+
+Die Währung des Dashboards kommt aus den Buchungen des Zeitraums, nicht aus
+einer Annahme — wer ein Konto in einer anderen Währung anlegt, sieht deren
+Zeichen. **Umgerechnet wird nicht.** Liegen in einem Zeitraum Buchungen in zwei
+Währungen, ist die Summe darüber keine Summe; `buildFinanceDashboard` meldet das
+als `mixedCurrency`, statt sie stillschweigend zu verrechnen. Ein Kurs gehört in
+dieses Modul erst, wenn er bestellt wird (die Ausgaben-Module haben mit
+`exchangeRate.js` bereits einen, der dann die Vorlage wäre). Heute ist jedes
+Konto in EUR, der Fall tritt also nicht auf.
+
+### Was v1.26A ausdrücklich nicht baut
+
+Wiederkehrende Zahlungen, Abo-Erkennung, Budgets, Sparziele, KI-Einsichten,
+Vermögensentwicklung, vollständige Kategorie- und Händler-Detailseiten,
+Buchungssuche. „Alle anzeigen" ist deshalb eine Beschriftung und kein Knopf: ein
+Link auf eine halbfertige Seite wäre die Fake-Funktionalität, die dieses Modul
+nicht hat.
 
 ## 🎨 Design system
 

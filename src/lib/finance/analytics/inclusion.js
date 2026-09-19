@@ -1,4 +1,4 @@
-import { FINANCE_STATUS, matchMerchant } from './merchantMatching'
+import { FINANCE_STATUS, matchMerchant } from '../merchantMatching'
 
 // „Zählt diese Buchung?" — one question, one answer, one place.
 //
