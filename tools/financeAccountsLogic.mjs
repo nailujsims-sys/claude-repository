@@ -198,7 +198,7 @@ const accounts = [giro, alt, bar]
 {
   ok('10: FIN01 wird zum Satz über die Währung',
      accountErrorMessage({ code: ACCOUNT_ERROR.currencyLocked })
-       === 'Die Währung kann nicht mehr geändert werden, weil das Konto bereits Buchungen enthält.')
+       === 'Die Währung kann nicht mehr geändert werden, weil das Konto bereits Finanzdaten enthält.')
   ok('10: FIN02 wird zum Satz über die Finanzdaten',
      accountErrorMessage({ code: ACCOUNT_ERROR.notEmpty })
        === 'Dieses Konto enthält bereits Finanzdaten und kann nur archiviert werden.')

@@ -32,9 +32,16 @@
 -- importierte Buchung behält ihren Betrag für immer"). Also: solange das Konto
 -- leer ist, frei änderbar — danach nicht mehr.
 --
+-- BEIDE REGELN GELTEN AN DER TABELLE, NICHT NUR IN DEN FUNKTIONEN. Abschnitt 7
+-- ist die Konsequenz daraus, dass 0008 weiterhin `update` und `delete` auf
+-- eigene `finance_accounts` erlaubt: ein Trigger schützt die Währung, und die
+-- Delete-Policy aus 0008 wird um „… und nur, wenn nichts daran hängt" ergänzt.
+-- Eine Invariante, die nur ein Aufrufweg einhält, ist keine Invariante.
+--
 -- WAS DIESE MIGRATION AUSDRÜCKLICH NICHT TUT: sie archiviert kein bestehendes
--- Konto, migriert keine Zeile, entfernt keine Spalte, lockert kein Constraint
--- und schreibt keine Policy um. Sie ist additiv und zweimal einspielbar.
+-- Konto, migriert keine Zeile, entfernt keine Spalte und lockert kein
+-- Constraint. Die eine Policy, die sie ersetzt (`finance_accounts_delete_own`),
+-- wird ausschließlich VERSCHÄRFT. Sie ist additiv und zweimal einspielbar.
 
 -- ── 1. Die Spalte ───────────────────────────────────────────────────────────
 -- `null` heißt aktiv. Ein Zeitstempel statt eines Booleans, weil „seit wann"
@@ -215,7 +222,7 @@ begin
   if v_currency is distinct from v_account.currency
      and public.finance_account_dependency(p_account_id) is not null then
     raise exception
-      'Die Währung kann nicht mehr geändert werden, weil das Konto bereits Buchungen enthält.'
+      'Die Währung kann nicht mehr geändert werden, weil das Konto bereits Finanzdaten enthält.'
       using errcode = 'FIN01';
   end if;
 
@@ -329,3 +336,97 @@ comment on function public.finance_delete_empty_account(uuid) is
 
 revoke all on function public.finance_delete_empty_account(uuid) from public, anon;
 grant execute on function public.finance_delete_empty_account(uuid) to authenticated;
+
+-- ── 7. Dieselben Regeln auch ohne die RPCs ──────────────────────────────────
+--
+-- WAS IM REVIEW AUFFIEL, und warum es ein echter Blocker ist. Die Abschnitte 4
+-- bis 6 setzen die beiden Invarianten dieses Moduls in drei Funktionen durch —
+-- und 0008 lässt daneben weiterhin `update` und `delete` auf eigene
+-- `finance_accounts` zu. Beide Regeln waren damit exakt so verbindlich wie die
+-- Höflichkeit des Clients:
+--
+--   1. Ein direktes `update … set currency = 'AUD'` hätte die Währung eines
+--      belegten Kontos gewechselt. Jeder gespeicherte Betrag dieses Kontos
+--      stünde danach unter einer Basiswährung, unter der er nie gebucht wurde.
+--   2. Ein direktes `delete from finance_accounts` hätte über den Cascade aus
+--      0008/0009 Buchungen, Importe und offene Prüfposten mitgenommen — genau
+--      der Schaden, gegen den Abschnitt 6 gebaut ist.
+--
+-- Eine Invariante, die nur ein Aufrufweg einhält, ist keine Invariante. Also
+-- stehen beide jetzt an der Tabelle, und die Prüfungen in den RPCs bleiben als
+-- das, was sie am besten können: eine frühe, verständliche Fehlermeldung, bevor
+-- überhaupt geschrieben wird.
+--
+-- ZU DEN RECHTEN: `finance_account_dependency` ist nur für `authenticated`
+-- ausführbar, und beides hier ruft sie auf. Das ist Absicht und keine Lücke —
+-- `authenticated` ist die einzige Rolle, die auf `finance_accounts` überhaupt
+-- Tabellenrechte hat (0008 vergibt sie an niemanden sonst). Der Eigentümer der
+-- Tabelle umgeht Rechteprüfung und RLS ohnehin, und genau darauf beruht der
+-- Cascade beim Löschen eines `auth.users`-Datensatzes (siehe unten).
+
+-- 7a) Die Währung, an der Tabelle.
+--
+-- `before update of currency` feuert, sobald die Spalte im SET steht — ob sie
+-- sich wirklich ändert, entscheidet erst `is distinct from` im Rumpf. Ein
+-- Update, das die Währung mitschreibt, ohne sie zu ändern (etwa ein Client,
+-- der die ganze Zeile zurückschickt), läuft deshalb unverändert durch.
+create or replace function public.finance_accounts_guard_currency()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  if new.currency is distinct from old.currency
+     and public.finance_account_dependency(old.id) is not null then
+    raise exception
+      'Die Währung kann nicht mehr geändert werden, weil das Konto bereits Finanzdaten enthält.'
+      using errcode = 'FIN01';
+  end if;
+  return new;
+end;
+$$;
+
+comment on function public.finance_accounts_guard_currency() is
+  'Verhindert den Wechsel der Währung eines Kontos, an dem Finanzhistorie '
+  'hängt — unabhängig davon, ob der Schreibvorgang über finance_update_account '
+  'oder direkt auf die Tabelle geht.';
+
+drop trigger if exists finance_accounts_guard_currency on public.finance_accounts;
+create trigger finance_accounts_guard_currency
+  before update of currency on public.finance_accounts
+  for each row execute function public.finance_accounts_guard_currency();
+
+-- 7b) Das Löschen, in der Policy.
+--
+-- BEWUSST EINE POLICY UND KEIN `before delete`-TRIGGER. Ein Trigger feuert auch
+-- dann, wenn die Zeile gar nicht von Hand gelöscht wird, sondern weil der
+-- `auth.users`-Datensatz verschwindet — und dann soll sie verschwinden, mitsamt
+-- allem, was daran hängt. Ein Trigger, der pauschal „nicht leer, also nein"
+-- sagt, würde die Löschung eines Benutzerkontos unmöglich machen; die Regel
+-- „ein Konto mit Historie wird nicht einzeln gelöscht" und die Regel „wer geht,
+-- nimmt alles mit" sind zwei verschiedene Dinge.
+--
+-- Eine RLS-Policy trennt genau das, ohne eine Ausnahme formulieren zu müssen.
+-- Sie ist `to authenticated` — sie gilt also ausschließlich für einen
+-- Schreibvorgang, den ein angemeldeter Client selbst auslöst. Eine
+-- Benutzerlöschung läuft über eine administrative Rolle und über den
+-- Fremdschlüssel-Cascade; weder das eine noch das andere fällt unter diese
+-- Policy. Die E2E-Suite weist das mit Fall P ausdrücklich nach, statt es zu
+-- glauben: erst scheitert der Nutzer selbst an seinem belegten Konto, dann
+-- verschwindet mit `delete from auth.users` alles — Konto, Buchung, Import und
+-- Prüfposten.
+--
+-- WAS BLEIBT ERLAUBT: ein direktes `delete` auf ein WIRKLICH leeres eigenes
+-- Konto. Die schützenswerte Zusage ist „nicht leer ⇒ unter keinem
+-- authenticated-Schreibweg löschbar", nicht „nur der RPC darf löschen".
+-- `finance_delete_empty_account` bleibt trotzdem der einzige Weg, den die App
+-- selbst geht — er sagt im Ablehnungsfall einen Satz, den ein Mensch lesen
+-- kann, während eine Policy nur die Zeile nicht findet.
+drop policy if exists "finance_accounts_delete_own" on public.finance_accounts;
+create policy "finance_accounts_delete_own" on public.finance_accounts
+  for delete to authenticated
+  using (
+    (select auth.uid()) = user_id
+    and public.finance_account_dependency(id) is null
+  );

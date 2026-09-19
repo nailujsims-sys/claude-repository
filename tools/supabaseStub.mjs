@@ -615,7 +615,7 @@ export function makeBackend({
     if (currency !== account.currency && accountHasHistory(account.id)) {
       return {
         message:
-          'Die Währung kann nicht mehr geändert werden, weil das Konto bereits Buchungen enthält.',
+          'Die Währung kann nicht mehr geändert werden, weil das Konto bereits Finanzdaten enthält.',
         code: 'FIN01',
       }
     }

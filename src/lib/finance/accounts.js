@@ -27,8 +27,10 @@ export const ACCOUNT_ERROR = Object.freeze({
 })
 
 const ACCOUNT_ERROR_MESSAGES = Object.freeze({
+  // Wortgleich mit dem, was 0013 wirft — aus dem RPC wie aus dem Trigger. Eine
+  // Regel, zwei Schreibwege, ein Satz.
   [ACCOUNT_ERROR.currencyLocked]:
-    'Die Währung kann nicht mehr geändert werden, weil das Konto bereits Buchungen enthält.',
+    'Die Währung kann nicht mehr geändert werden, weil das Konto bereits Finanzdaten enthält.',
   [ACCOUNT_ERROR.notEmpty]:
     'Dieses Konto enthält bereits Finanzdaten und kann nur archiviert werden.',
 })

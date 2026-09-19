@@ -1074,10 +1074,35 @@ wird angefasst), Löschen die Ausnahme für ein wirklich leeres Konto.
 | `finance_update_account(…)` | Name, Anbieter, Währung — mit der Währungsregel darin |
 | `finance_set_account_archived(…)` | archivieren und reaktivieren, dieselbe Handlung in zwei Richtungen |
 | `finance_delete_empty_account(…)` | löscht ausschließlich ein Konto, auf das keine einzige Zeile zeigt |
+| `finance_accounts_guard_currency` | `before update of currency` — dieselbe Regel, auch ohne den RPC |
+| `finance_accounts_delete_own` | die Policy aus 0008, verschärft um `finance_account_dependency(id) is null` |
 
-Alle drei lesen `auth.uid()` selbst, laufen mit Invoker-Rechten unter derselben
-RLS wie alles andere, tragen `search_path = ''` und sind ausschließlich für
-`authenticated` ausführbar.
+Alle Funktionen lesen `auth.uid()` selbst, laufen mit Invoker-Rechten unter
+derselben RLS wie alles andere, tragen `search_path = ''` und sind
+ausschließlich für `authenticated` ausführbar.
+
+**Die Invarianten hängen nicht am Aufrufweg.** 0008 erlaubt weiterhin `update`
+und `delete` auf eigene `finance_accounts` — die Regeln der drei RPCs wären
+damit exakt so verbindlich wie die Höflichkeit des Clients gewesen: ein direktes
+`update … set currency = 'AUD'` hätte die Währung eines belegten Kontos
+gewechselt, ein direktes `delete` über den Cascade die Historie mitgenommen.
+Deshalb steht beides zusätzlich an der Tabelle. Die Prüfungen in den RPCs
+bleiben als das, was sie am besten können: eine frühe, verständliche
+Fehlermeldung, bevor überhaupt geschrieben wird.
+
+**Warum das Löschen eine Policy ist und kein `before delete`-Trigger.** „Ein
+Konto mit Historie wird nicht einzeln gelöscht" und „wer geht, nimmt alles mit"
+sind zwei verschiedene Regeln. Ein Trigger könnte sie nicht auseinanderhalten
+und würde die Löschung eines `auth.users`-Datensatzes unmöglich machen. Eine
+Policy `to authenticated` gilt nur für den Schreibvorgang eines angemeldeten
+Clients; die Benutzerlöschung läuft administrativ über den Cascade und fällt
+nicht darunter. Nachgewiesen, nicht geglaubt: Fall P der E2E-Suite.
+
+Die schützenswerte Zusage lautet **„nicht leer ⇒ unter keinem
+authenticated-Schreibweg löschbar"** — nicht „nur der RPC darf löschen". Ein
+direktes `delete` auf ein wirklich leeres eigenes Konto bleibt deshalb möglich;
+`finance_delete_empty_account` ist trotzdem der einzige Weg, den die App selbst
+geht, weil er im Ablehnungsfall einen Satz sagt, den ein Mensch lesen kann.
 
 **Die Währung ist kein Name.** Name und Anbieter sind Beschriftungen und
 jederzeit änderbar. `currency` ist die Basis, unter der jeder gespeicherte
@@ -1085,8 +1110,10 @@ Betrag dieses Kontos gelesen wird: ein Wechsel von EUR auf AUD würde 2.483 Cent
 von gestern zu 24,83 AUD erklären, ohne dass irgendjemand eine Zahl angefasst
 hat. Alte Buchungen umzuschreiben wäre die noch schlechtere Antwort (0008: „eine
 importierte Buchung behält ihren Betrag für immer"). Also: solange das Konto
-leer ist, frei änderbar — danach lehnt `finance_update_account` den Wechsel mit
-`FIN01` und dem Satz ab, den der Nutzer liest.
+leer ist, frei änderbar — danach lehnen `finance_update_account` **und** der
+Trigger `finance_accounts_guard_currency` den Wechsel mit `FIN01` und demselben
+Satz ab: „Die Währung kann nicht mehr geändert werden, weil das Konto bereits
+Finanzdaten enthält." Eine Regel, zwei Schreibwege, ein Satz.
 
 **Was archiviert bedeutet — und was nicht.** Ein archiviertes Konto verschwindet
 aus `FinanceAccountPicker`, aus der manuellen Buchung und aus dem KI-Import. Es
@@ -1112,9 +1139,10 @@ Platzhalter und eine zweite Meinung darüber, ob die Bank Pflicht ist.
 
 Geprüft in `tools/financeAccountsLogic.mjs` (60 Assertions, reine Logik:
 aktiv/archiviert, das gewählte Konto nach dem Archivieren, Währungs-Freigabe,
-leer vs. belegt, der Picker), `tools/financeAccountsE2E.mjs` (48, gegen ein
-echtes Postgres mit allen Migrationen, den echten RPCs und Policies — die Fälle
-A–J des Auftrags) und `tools/financeAccountsLayout.mjs` (86, Liste und
+leer vs. belegt, der Picker), `tools/financeAccountsE2E.mjs` (83, gegen ein
+echtes Postgres mit allen Migrationen, den echten RPCs, Triggern und Policies —
+die Fälle A–J plus K–P für die direkten Tabellen-Schreibwege und die
+Cascade-Semantik beim Löschen eines Benutzers) und `tools/financeAccountsLayout.mjs` (86, Liste und
 Bearbeiten-Sheet in Chromium bei 390×844 und 390×667, Touch-Ziele ≥ 44 px), dazu
 sieben Strecken durch die gemountete Oberfläche in `tools/smoke.mjs`.
 

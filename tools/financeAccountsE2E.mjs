@@ -146,6 +146,31 @@ ${sql}`
        returning id`
     )[0].id
 
+  // ── Die Migration archiviert nichts ──────────────────────────────────────
+  // Ein Konto, wie es vor 0013 bestand, und dann 0013 noch einmal darüber: es
+  // bleibt aktiv. Die Prüfung steht hier oben, weil sie sonst die Konten zählen
+  // würde, die dieser Lauf selbst archiviert.
+  {
+    const bestand = jsonAsUser(
+      userId,
+      `insert into public.finance_accounts (user_id, name, currency)
+       values ('${userId}', 'Konto von vorher', 'EUR') returning id, archived_at`
+    )[0]
+    ok('ein neu angelegtes Konto ist aktiv', bestand.archived_at === null)
+    psql(['-f', join('supabase/migrations', '0013_finance_account_management.sql')])
+    const danach = jsonAsUser(
+      userId,
+      `select archived_at from public.finance_accounts where id = '${bestand.id}'`
+    )[0]
+    ok('0013 archiviert ein bestehendes Konto nicht', danach.archived_at === null)
+    const alle = jsonAsUser(
+      userId,
+      `select count(*)::int as n from public.finance_accounts
+       where user_id = '${userId}' and archived_at is not null`
+    )[0].n
+    ok('… und auch sonst keines', alle === 0, `${alle} archiviert`)
+  }
+
   const accountRow = (owner, id) =>
     jsonAsUser(
       owner,
@@ -367,6 +392,246 @@ ${sql}`
     ok('J: anon sieht die Tabelle nicht', asAnon('select * from public.finance_accounts;') !== null)
   }
 
+  // ── K) Direktes UPDATE der Währung ───────────────────────────────────────
+  //
+  //  Der Kern der Nachbesserung: die Regel darf nicht daran hängen, dass ein
+  //  Client den RPC benutzt. 0008 erlaubt `update` auf eigene Konten, also muss
+  //  der Trigger aus 0013 greifen — sonst wäre jede gespeicherte Zahl dieses
+  //  Kontos einen PostgREST-Aufruf von einer neuen Basiswährung entfernt.
+  {
+    const id = newAccount(userId, 'Direkt belegt', 'DKB', 'EUR')
+    addTransaction(userId, id, -777)
+
+    const err = errorOf(
+      userId,
+      `update public.finance_accounts set currency = 'AUD' where id = '${id}';`
+    )
+    ok('K: das direkte UPDATE der Währung wird abgelehnt', err !== null)
+    ok('K: … mit demselben Satz wie der RPC',
+       Boolean(err?.includes('Die Währung kann nicht mehr geändert werden')), String(err).slice(0, 140))
+    ok('K: … und demselben Fehlercode (FIN01)', Boolean(err?.includes('FIN01')))
+    ok('K: die Währung steht unverändert', accountRow(userId, id).currency === 'EUR')
+
+    // Der Trigger darf nicht mehr verbieten als die Regel: Name und Anbieter
+    // bleiben auch direkt änderbar …
+    asUser(userId, `update public.finance_accounts set name = 'Direkt umbenannt' where id = '${id}';`)
+    ok('K: ein direktes UPDATE des Namens läuft durch',
+       accountRow(userId, id).name === 'Direkt umbenannt')
+
+    // … und ein Update, das die Währung MITSCHREIBT, ohne sie zu ändern (ein
+    // Client, der die ganze Zeile zurückschickt), ebenfalls.
+    asUser(
+      userId,
+      `update public.finance_accounts set name = 'Ganze Zeile', currency = 'EUR' where id = '${id}';`
+    )
+    ok('K: eine unveränderte Währung im SET ist kein Wechsel',
+       accountRow(userId, id).name === 'Ganze Zeile')
+
+    // Und beim LEEREN Konto bleibt der direkte Wechsel erlaubt.
+    const frei = newAccount(userId, 'Direkt leer', null, 'EUR')
+    asUser(userId, `update public.finance_accounts set currency = 'AUD' where id = '${frei}';`)
+    ok('K: bei einem leeren Konto bleibt die Währung direkt änderbar',
+       accountRow(userId, frei).currency === 'AUD')
+
+    // Auch das Archivieren bleibt ein gewöhnliches Update.
+    asUser(userId, `update public.finance_accounts set archived_at = now() where id = '${id}';`)
+    ok('K: archivieren bleibt ein gewöhnliches UPDATE',
+       accountRow(userId, id).archived_at !== null)
+  }
+
+  // ── L) Direktes DELETE eines Kontos mit Buchung ──────────────────────────
+  //
+  //  Ohne die verschärfte Policy nähme dieser eine Aufruf über den Cascade aus
+  //  0008 die ganze Buchungshistorie mit.
+  {
+    const id = newAccount(userId, 'Direkt mit Buchung')
+    const tx = addTransaction(userId, id, -4242)
+
+    asUser(userId, `delete from public.finance_accounts where id = '${id}';`)
+    ok('L: das Konto ist noch da',
+       jsonAsUser(userId, `select id from public.finance_accounts where id = '${id}'`).length === 1)
+    ok('L: die Buchung ist noch da — kein Cascade ist gelaufen',
+       jsonAsUser(userId, `select id from public.finance_transactions where id = '${tx}'`).length === 1)
+    ok('L: … und unverändert',
+       jsonAsUser(userId,
+         `select amount_minor from public.finance_transactions where id = '${tx}'`)[0].amount_minor === -4242)
+  }
+
+  // ── M) Direktes DELETE eines Kontos mit Import ───────────────────────────
+  {
+    const id = newAccount(userId, 'Direkt mit Import')
+    const im = addImport(userId, id)
+
+    asUser(userId, `delete from public.finance_accounts where id = '${id}';`)
+    ok('M: das Konto ist noch da',
+       jsonAsUser(userId, `select id from public.finance_accounts where id = '${id}'`).length === 1)
+    ok('M: der Import ist noch da',
+       jsonAsUser(userId, `select id from public.finance_imports where id = '${im}'`).length === 1)
+
+    // Und derselbe Fall über einen Prüfposten — die dynamische Abhängigkeits-
+    // prüfung gilt auch in der Policy, nicht nur im RPC.
+    const review = newAccount(userId, 'Direkt mit Prüfposten')
+    jsonAsUser(
+      userId,
+      `insert into public.finance_import_review_items
+         (user_id, account_id, item_type, reason, payload, item_key)
+       values ('${userId}', '${review}', 'manual_review', 'wartet', '{}'::jsonb, 'key-direct-1')
+       returning id`
+    )
+    asUser(userId, `delete from public.finance_accounts where id = '${review}';`)
+    ok('M: ein offener Prüfposten schützt das Konto ebenfalls',
+       jsonAsUser(userId, `select id from public.finance_accounts where id = '${review}'`).length === 1)
+  }
+
+  // ── N) Direktes DELETE eines wirklich leeren Kontos ──────────────────────
+  //
+  //  Die Zusage lautet „nicht leer ⇒ unter keinem authenticated-Schreibweg
+  //  löschbar" — nicht „nur der RPC darf löschen". Ein leeres eigenes Konto
+  //  direkt zu löschen bleibt deshalb erlaubt; der Produktweg ist trotzdem
+  //  finance_delete_empty_account, weil der im Ablehnungsfall einen Satz sagt,
+  //  den ein Mensch lesen kann.
+  {
+    const id = newAccount(userId, 'Direkt leer und weg')
+    const otherId = newAccount(userId, 'Bleibt stehen')
+    const txElsewhere = addTransaction(userId, otherId, -1111)
+
+    asUser(userId, `delete from public.finance_accounts where id = '${id}';`)
+    ok('N: ein wirklich leeres eigenes Konto lässt sich direkt löschen',
+       jsonAsUser(userId, `select id from public.finance_accounts where id = '${id}'`).length === 0)
+    ok('N: das andere Konto ist unberührt',
+       jsonAsUser(userId, `select id from public.finance_accounts where id = '${otherId}'`).length === 1)
+    ok('N: und dessen Buchung auch',
+       jsonAsUser(userId, `select id from public.finance_transactions where id = '${txElsewhere}'`).length === 1)
+
+    // Ein `delete` ohne `where` über alle eigenen Konten nimmt ebenfalls nur
+    // die leeren mit — der Fall, der einen Schaden anrichten würde, wenn die
+    // Policy an der Zeile nicht griffe.
+    const belegteVorher = jsonAsUser(
+      userId,
+      `select count(*)::int as n from public.finance_accounts a
+       where a.user_id = '${userId}'
+         and exists (select 1 from public.finance_transactions t where t.account_id = a.id)`
+    )[0].n
+    const txVorher = jsonAsUser(userId,
+      `select count(*)::int as n from public.finance_transactions where user_id = '${userId}'`)[0].n
+    asUser(userId, `delete from public.finance_accounts;`)
+    const belegteNachher = jsonAsUser(
+      userId,
+      `select count(*)::int as n from public.finance_accounts a
+       where a.user_id = '${userId}'
+         and exists (select 1 from public.finance_transactions t where t.account_id = a.id)`
+    )[0].n
+    const txNachher = jsonAsUser(userId,
+      `select count(*)::int as n from public.finance_transactions where user_id = '${userId}'`)[0].n
+    ok('N: ein DELETE ohne WHERE lässt jedes belegte Konto stehen',
+       belegteNachher === belegteVorher, `${belegteVorher} → ${belegteNachher}`)
+    ok('N: … und keine einzige Buchung geht dabei verloren',
+       txNachher === txVorher, `${txVorher} → ${txNachher}`)
+  }
+
+  // ── O) Fremde Konten: weiterhin weder les-, änder- noch löschbar ─────────
+  {
+    const mine = newAccount(userId, 'Immer noch meins', 'DKB', 'EUR')
+    addTransaction(userId, mine, -999)
+    const mineEmpty = newAccount(userId, 'Meins und leer')
+
+    // Ein Fremder sieht sie nicht …
+    ok('O: ein Fremder sieht meine Konten nicht',
+       jsonAsUser(otherUser,
+         `select id from public.finance_accounts where id in ('${mine}', '${mineEmpty}')`).length === 0)
+
+    // … und ein direktes UPDATE/DELETE trifft nichts. RLS lehnt hier nicht ab,
+    // sie findet die Zeile schlicht nicht — geprüft wird deshalb die Wirkung.
+    asUser(otherUser, `update public.finance_accounts set name = 'Gekapert' where id = '${mine}';`)
+    asUser(otherUser, `update public.finance_accounts set currency = 'AUD' where id = '${mineEmpty}';`)
+    asUser(otherUser, `delete from public.finance_accounts where id = '${mine}';`)
+    asUser(otherUser, `delete from public.finance_accounts where id = '${mineEmpty}';`)
+
+    const a = accountRow(userId, mine)
+    const b = accountRow(userId, mineEmpty)
+    ok('O: das belegte Konto ist unverändert', a?.name === 'Immer noch meins' && a?.currency === 'EUR')
+    ok('O: auch das leere ist unverändert', b?.name === 'Meins und leer' && b?.currency === 'EUR')
+    ok('O: und beide sind noch da', a !== null && b !== null)
+    ok('O: die Buchung ebenfalls',
+       jsonAsUser(userId, `select id from public.finance_transactions where account_id = '${mine}'`).length === 1)
+  }
+
+  // ── P) Die Cascade-Semantik beim Löschen eines Benutzers ─────────────────
+  //
+  //  DER GRUND, WARUM DIE REGEL EINE POLICY IST UND KEIN `before delete`.
+  //  „Ein Konto mit Historie wird nicht einzeln gelöscht" und „wer geht, nimmt
+  //  alles mit" sind zwei verschiedene Regeln. Ein Trigger könnte sie nicht
+  //  auseinanderhalten und würde die Löschung eines Benutzerkontos unmöglich
+  //  machen; eine RLS-Policy gilt nur für `authenticated`, und der Cascade
+  //  eines Fremdschlüssels läuft als Eigentümer mit abgeschalteter
+  //  Zeilensicherheit. Das wird hier nachgewiesen und nicht geglaubt.
+  {
+    const doomed = '77777777-2222-4333-8444-555555555555'
+    psql(['-c', `insert into auth.users (id, email) values ('${doomed}', 'geht@mindwhiteboard.test')`])
+
+    const acc = newAccount(doomed, 'Konto des scheidenden Nutzers', 'DKB', 'EUR')
+    const tx = addTransaction(doomed, acc, -5150)
+    const im = addImport(doomed, acc)
+    jsonAsUser(
+      doomed,
+      `insert into public.finance_import_review_items
+         (user_id, account_id, item_type, reason, payload, item_key)
+       values ('${doomed}', '${acc}', 'manual_review', 'wartet', '{}'::jsonb, 'key-doomed-1')
+       returning id`
+    )
+
+    // Die Gegenprobe zuerst: für den Nutzer selbst ist dieses Konto geschützt.
+    asUser(doomed, `delete from public.finance_accounts where id = '${acc}';`)
+    const stillThere = psql([
+      '-t', '-A', '-c',
+      `select count(*) from public.finance_accounts where id = '${acc}'`,
+    ]).trim()
+    ok('P: der Nutzer selbst kann sein belegtes Konto nicht löschen', stillThere === '1', stillThere)
+
+    // Und jetzt der Weg, den eine Kontolöschung wirklich geht: der Datensatz in
+    // auth.users verschwindet, und der Cascade räumt alles ab.
+    psql(['-c', `delete from auth.users where id = '${doomed}'`])
+
+    const countOf = (table, where) =>
+      psql(['-t', '-A', '-c', `select count(*) from public.${table} where ${where}`]).trim()
+
+    ok('P: das Benutzerkonto lässt sich löschen', countOf('finance_accounts', `id = '${acc}'`) === '0')
+    ok('P: … der Cascade nimmt die Buchung mit',
+       countOf('finance_transactions', `id = '${tx}'`) === '0')
+    ok('P: … den Import',
+       countOf('finance_imports', `id = '${im}'`) === '0')
+    ok('P: … und den Prüfposten',
+       countOf('finance_import_review_items', `account_id = '${acc}'`) === '0')
+    ok('P: von diesem Nutzer bleibt nichts zurück',
+       countOf('finance_accounts', `user_id = '${doomed}'`) === '0' &&
+       countOf('finance_transactions', `user_id = '${doomed}'`) === '0')
+
+    // Und die Daten des anderen Nutzers hat das nicht angefasst.
+    ok('P: die Konten des verbleibenden Nutzers sind unberührt',
+       Number(countOf('finance_accounts', `user_id = '${userId}'`)) > 0)
+  }
+
+  // ── Die Policy selbst, wie sie in der Datenbank steht ────────────────────
+  {
+    const policy = jsonAsUser(
+      userId,
+      `select qual from pg_policies
+       where schemaname = 'public' and tablename = 'finance_accounts'
+         and policyname = 'finance_accounts_delete_own'`
+    )
+    ok('die Delete-Policy trägt die Abhängigkeitsprüfung', policy.length === 1 &&
+       String(policy[0].qual).includes('finance_account_dependency'),
+       policy.length ? String(policy[0].qual).slice(0, 120) : 'keine Policy')
+
+    const trigger = jsonAsUser(
+      userId,
+      `select tgname from pg_trigger
+       where tgrelid = 'public.finance_accounts'::regclass
+         and tgname = 'finance_accounts_guard_currency'`
+    )
+    ok('der Währungs-Trigger hängt an der Tabelle', trigger.length === 1)
+  }
+
   // ── Der Index, an dem „meine aktiven Konten" hängt ───────────────────────
   {
     const rows = jsonAsUser(
@@ -378,16 +643,6 @@ ${sql}`
     ok('der Index auf (user_id, archived_at) existiert', rows.length === 1)
   }
 
-  // ── Bestehende Konten wurden NICHT archiviert ────────────────────────────
-  {
-    const archived = jsonAsUser(
-      userId,
-      `select count(*)::int as n from public.finance_accounts
-       where user_id = '${userId}' and archived_at is not null`
-    )[0].n
-    ok('die Migration hat kein Konto von sich aus archiviert', archived === 0,
-       `${archived} archiviert`)
-  }
 } finally {
   if (started) {
     try {

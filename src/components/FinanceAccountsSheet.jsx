@@ -269,7 +269,7 @@ export function AccountDetail({
         currency={currency}
         onCurrency={setCurrency}
         currencyLocked={!can.currency}
-        currencyHint="Die Währung kann nicht mehr geändert werden, weil das Konto bereits Buchungen enthält."
+        currencyHint="Die Währung kann nicht mehr geändert werden, weil das Konto bereits Finanzdaten enthält."
         disabled={busy}
       />
 
