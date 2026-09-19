@@ -116,6 +116,37 @@ hin zu „jede Tabelle aus 0008 hat danach immer noch genau ihre vier Policies".
 
 Nach jeder Migration ausführen.
 
+### Diese Suite fasst die Produktionsdatenbank nicht an
+
+Sie baut ihren eigenen Cluster in einem temporären Verzeichnis, spielt die
+Migrationen dort ein und löscht ihn danach wieder — egal ob sie grün oder rot
+war. Es gibt in diesen Dateien keine Verbindung zu einem Supabase-Projekt, keine
+Anmeldedaten und keinen Schreibzugriff nach außen. Wer sie laufen lässt, riskiert
+nichts.
+
+### Im Deployment ist sie Pflicht
+
+`tools/rlsTest.mjs` und die sechs E2E-Suites **überspringen sich mit Exit 0**,
+wenn die Maschine kein PostgreSQL hat. Auf einem Entwicklungsrechner ist das
+richtig — niemand soll eine Datenbank installieren müssen, um einen Tippfehler
+zu korrigieren. In einem Deployment ist es genau die Art von Grün, die nichts
+bedeutet.
+
+Deshalb setzt `.github/workflows/deploy.yml` im Schritt **Database / RLS tests**
+die Variable `RLS_TEST_REQUIRED=1`. Damit wird aus jedem Überspringen ein
+Fehler:
+
+| Fall | ohne `RLS_TEST_REQUIRED` | mit `RLS_TEST_REQUIRED=1` |
+|---|---|---|
+| kein unterstütztes PostgreSQL (16, 15, 14) | übersprungen, Exit 0 | **Exit 1** |
+| läuft als `root` ohne unprivilegiertes Konto | übersprungen, Exit 0 | **Exit 1** |
+| Cluster startet nicht, Migration, Replay, RLS-Assertion, Upgrade-Probe oder E2E-Suite scheitert | Exit 1 | Exit 1 |
+
+Der Runner bringt PostgreSQL 16 mit (Server deaktiviert — die Suite braucht ihn
+nicht, sie startet ihren eigenen). Der Workflow-Schritt gibt vorher
+`initdb --version` und `psql --version` aus, damit jeder Lauf selbst
+dokumentiert, gegen welche echte Datenbank er gelaufen ist.
+
 ## 5. Echtzeit-Synchronisation
 
 Damit ein zweites geöffnetes Gerät eine Änderung mitbekommt, muss die Tabelle in

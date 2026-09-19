@@ -33,6 +33,15 @@ if (!bin && !process.env.RLS_TEST_REQUIRED) {
   process.exit(0)
 }
 
+// RLS_TEST_REQUIRED ist gesetzt — dann ist ein fehlendes PostgreSQL kein Grund
+// zu überspringen, sondern ein Fehler. Ohne diese Zeilen liefe der Lauf weiter
+// und scheiterte irgendwo weiter unten an einem ENOENT, dessen Meldung nichts
+// darüber sagt, was eigentlich fehlt.
+if (!bin) {
+  console.error('finance analytics e2e: RLS_TEST_REQUIRED ist gesetzt, aber es wurde kein unterstütztes PostgreSQL (16, 15 oder 14) gefunden.')
+  process.exit(1)
+}
+
 const asRoot = typeof process.getuid === 'function' && process.getuid() === 0
 const sudoUser = asRoot
   ? (() => {
@@ -44,6 +53,14 @@ const sudoUser = asRoot
     })()
   : null
 if (asRoot && !sudoUser) {
+  // PostgreSQL läuft nicht als root, also braucht dieser Lauf ein
+  // unprivilegiertes Konto. Auf einem Entwicklungsrechner ist das ein Grund zu
+  // überspringen; im Deployment ist es ein Fehler — ein Gate, das sich selbst
+  // abschalten kann, ist kein Gate.
+  if (process.env.RLS_TEST_REQUIRED) {
+    console.error('finance analytics e2e: läuft als root und findet kein unprivilegiertes Konto — im Deployment ist das ein Fehler.')
+    process.exit(1)
+  }
   console.log('finance analytics e2e: läuft als root ohne unprivilegiertes Konto — übersprungen.')
   process.exit(0)
 }

@@ -64,6 +64,48 @@ jobs:
       - name: Smoke test
         run: npm run smoke
 
+      # The database half of the suite, and it is not optional.
+      #
+      # Row Level Security, the migration chain and the module's stored
+      # procedures are properties of PostgreSQL, not of JavaScript — asserting
+      # them against a mock would only test the mock. `tools/rlsTest.mjs` boots
+      # a THROWAWAY cluster in a temp directory, applies every migration in
+      # order, replays them to prove idempotence, runs the SQL suites and their
+      # counter-proofs; the six E2E suites afterwards do the same for the
+      # finance RPCs. The production database is never contacted, never
+      # migrated and never read.
+      #
+      # RLS_TEST_REQUIRED=1 IS THE POINT OF THIS STEP. Without it the suites
+      # skip with exit 0 when they find no PostgreSQL — right on a
+      # contributor's laptop, and exactly the kind of green that must not exist
+      # in a deployment. With it, a missing or unsupported PostgreSQL fails the
+      # run instead of quietly passing it.
+      - name: Database / RLS tests
+        env:
+          RLS_TEST_REQUIRED: "1"
+        run: |
+          set -euo pipefail
+          # The Ubuntu runner image ships PostgreSQL 16 with the SERVER
+          # DISABLED, which is all this suite needs: it never uses the system
+          # cluster, it builds its own. Under Debian packaging the server
+          # binaries are not on PATH, so the directory is resolved — and
+          # printed — here, in the same preference order the harness uses. That
+          # way the run itself documents which database the tests ran against.
+          bin=""
+          for dir in /usr/lib/postgresql/16/bin \
+                     /usr/lib/postgresql/15/bin \
+                     /usr/lib/postgresql/14/bin; do
+            if [ -x "$dir/initdb" ]; then bin="$dir"; break; fi
+          done
+          if [ -z "$bin" ]; then
+            echo "::error::No supported PostgreSQL (16, 15 or 14) on this runner — the database gate cannot run. See supabase/README.md"
+            exit 1
+          fi
+          echo "PostgreSQL binaries: $bin"
+          "$bin/initdb" --version
+          "$bin/psql" --version
+          npm run test:rls
+
       # Fail before the build rather than after the deploy: an app without a
       # database is not a degraded app, it is a different one.
       - name: Check the Supabase configuration
