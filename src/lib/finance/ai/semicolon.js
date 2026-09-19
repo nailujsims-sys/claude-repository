@@ -20,6 +20,30 @@ import { AI_CSV_COLUMNS } from './format'
 
 const error = (code, message) => ({ code, message })
 
+/**
+ * Ab wie vielen Feldern in EINER Zeile es kein Semikolon-Problem mehr ist.
+ *
+ * Ein Semikolon zu viel im Verwendungszweck macht aus zehn Feldern elf. Was
+ * beim Kopieren ohne Zeilenumbrüche entsteht, macht aus zehn Feldern
+ * sechshundert. Zwischen beidem liegt eine Größenordnung, und deshalb genügt
+ * eine grobe Grenze: doppelt so viele Felder, wie die Tabelle Spalten hat,
+ * schreibt keine Bank und kein Modell in eine Buchung.
+ */
+const FLATTENED_FACTOR = 2
+
+/**
+ * Die eine Meldung, die in diesem Fall wirklich hilft.
+ *
+ * NICHT AUTOMATISCH ZERLEGEN: aus einer flachgeklopften Zeile die Buchungen
+ * zurückzurechnen hieße raten, wo eine Buchung endet und die nächste beginnt —
+ * bei Beträgen. Ein Importer, der das rät, schreibt eines Tages eine falsche
+ * Zahl in eine Auswertung, die niemand mehr nachrechnet. Also sagt die App,
+ * was der Nutzer in zehn Sekunden richtig machen kann.
+ */
+const FLATTENED_MESSAGE =
+  'Die Buchungen wurden ohne Zeilenumbrüche eingefügt. Kopiere in ChatGPT nur den ' +
+  'vollständigen Codeblock über dessen Kopieren-Button und füge ihn hier erneut ein.'
+
 /** Umlaute und Groß-/Kleinschreibung weg — nur zum VERGLEICHEN von Spaltennamen. */
 const foldHeader = (value) =>
   String(value ?? '')
@@ -200,6 +224,12 @@ export function parseSemicolonTable(text) {
   const headerIndex = lines.findIndex((line) => isHeader(line))
 
   if (headerIndex === -1) {
+    // Steht ALLES in einer Zeile, fehlt nicht die Kopfzeile — sie ist nur mit
+    // allem anderen verklebt. Dann hilft ein Hinweis auf die Kopfzeile nicht
+    // weiter, sondern einer auf den Kopieren-Knopf.
+    if (lines.some((line) => startsWithHeaderFields(line))) {
+      return { ok: false, records: [], errors: [error('rows_flattened', FLATTENED_MESSAGE)] }
+    }
     return {
       ok: false,
       records: [],
@@ -222,6 +252,12 @@ export function parseSemicolonTable(text) {
     position += 1
 
     const fields = splitSemicolonLine(line)
+    // Sehr viel zu viele Felder heißt nicht „ein Semikolon zu viel", sondern
+    // „hier klebt der ganze Auszug in einer Zeile". Eine Meldung reicht: der
+    // Rest des Textes ist dieselbe Zeile.
+    if (fields.length > AI_CSV_COLUMNS.length * FLATTENED_FACTOR) {
+      return { ok: false, records: [], errors: [error('rows_flattened', FLATTENED_MESSAGE)] }
+    }
     if (fields.length !== AI_CSV_COLUMNS.length) {
       errors.push(
         error(
@@ -292,6 +328,26 @@ function isHeader(line) {
   const fields = splitSemicolonLine(text).map(foldHeader)
   if (fields.length !== FOLDED_COLUMNS.length) return false
   return fields.every((field, i) => field === FOLDED_COLUMNS[i])
+}
+
+/**
+ * Fängt diese Zeile mit den Spaltennamen an, geht aber weiter?
+ *
+ * Genau die Form, die beim Kopieren aus Fließtext entsteht: Kopfzeile und alle
+ * Buchungen hintereinander, ohne einen einzigen Zeilenumbruch.
+ */
+function startsWithHeaderFields(line) {
+  const fields = splitSemicolonLine(String(line ?? '').trim())
+  if (fields.length <= FOLDED_COLUMNS.length) return false
+  // Die letzte Spalte trägt in diesem Fall schon die erste Buchung mit sich
+  // („Prüfen 2026-09-18"), je nachdem, ob das Kopieren aus dem Zeilenumbruch
+  // ein Leerzeichen gemacht hat oder gar nichts. Also: alle bis auf die letzte
+  // genau, die letzte am Anfang.
+  const last = FOLDED_COLUMNS.length - 1
+  for (let i = 0; i < last; i += 1) {
+    if (foldHeader(fields[i]) !== FOLDED_COLUMNS[i]) return false
+  }
+  return foldHeader(fields[last]).startsWith(FOLDED_COLUMNS[last])
 }
 
 /** Sieht dieser Text nach der Tabelle aus? Für die Weiche in parseAIImport. */
