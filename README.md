@@ -241,6 +241,17 @@ deployment gate: they drive a real Chromium and are slow, and what they protect
 is a rendering detail rather than the data. The database suite is the opposite
 on both counts.
 
+**The same suite also runs before the merge.**
+`.github/workflows/database-tests.yml` runs it on every pull request against the
+default branch — no `github-pages` environment, no Pages permissions, no
+deployment, no Supabase access, just `contents: read`. It exists because the
+deploy workflow's copy sits behind that environment, which only the default
+branch may enter: a broken migration would otherwise surface *after* the merge,
+on the branch everything is published from. It carries **no path filter** on
+purpose — the six end-to-end suites bundle real application code from
+`src/lib/finance/**`, so a `src/`-only change can break them, and a filter that
+has to track which modules those are is a filter somebody forgets to update.
+
 **Releasing a feature branch**, in order: `npm run verify` (`test:logic` →
 `smoke` → `build`, exactly the checks CI gates on), push, open a PR against the
 default branch, merge, then wait for that workflow run and read its conclusion.
