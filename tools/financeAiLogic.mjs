@@ -414,8 +414,11 @@ const stored = (over = {}) => ({
      prompt.includes('REWE') && prompt.includes('Scalable Capital') && prompt.includes('EDEKA'))
   ok('… mit dem Muster, an dem sie erkannt werden', prompt.includes('SCALABLE CAPITAL'))
   ok('… und mit der Kategorie, die für sie gilt', prompt.includes('→ lebensmittel'))
+  // v1.24 hat die Überschrift geschärft: „feste" Regeln, weil seit dem
+  // Gedächtnis auch Beispiele im Prompt stehen und die beiden unterschiedlich
+  // verbindlich sind.
   ok('der Prompt nennt die persönlichen Regeln',
-     prompt.includes('Persönliche Regeln'))
+     prompt.includes('Persönliche feste Regeln'))
   ok('… darunter die Betragsgrenze', prompt.includes('ab 30,00 €'))
   ok('… darunter „zählt nicht als Ausgabe"',
      prompt.includes('Scalable Capital zählt nicht als Ausgabe'))

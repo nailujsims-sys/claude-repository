@@ -301,6 +301,10 @@ src/
         dedupe.js           account-scoped, exact, multiset — never fuzzy
         plan.js             rows + what is already stored → the preview and the
                             payload the database applies
+        memories.js         what the user asked to remember (v1.24): the three
+                            kinds, what may be learned from a correction, and
+                            what goes into the next prompt — no similarity
+                            measure anywhere, on purpose
         messages.js         the words the preview says, without protocol nouns
       dkb/                  the DKB Umsatzexport importer, stage 1 (legacy since
                             v1.23 — kept, no longer a visible path):
@@ -959,6 +963,77 @@ category=lebensmittel, needs_review=false" führt zu einer importierten Buchung
 ohne offene Zuordnung, mit nachlesbarem Vorschlag und ohne globale Regel — läuft
 in allen dreien: als reine Logik, gegen die echte Datenbank und im gemounteten
 Screen (`tools/smoke.mjs`).
+
+## 🧠 Finanzen v1.24 — Lernen aus Korrekturen
+
+v1.23 hat eine Korrektur sauber gespeichert, aber sie blieb bei der einen
+Buchung. v1.24 lässt den Nutzer entscheiden, ob dieselbe Korrektur beim nächsten
+Import schon bekannt sein soll — und „bekannt" heißt hier wörtlich: sie steht im
+Prompt, den „KI-Kontext kopieren" schreibt. **Das Gedächtnis gehört der App.**
+ChatGPT behält zwischen zwei Unterhaltungen nichts; alles, was gelernt aussieht,
+liegt in `finance_ai_learning_memories` (0012) und wird jedes Mal neu
+mitgeteilt.
+
+**Nur auf ausdrücklichen Wunsch.** Die Zeile „Für die Zukunft merken" erscheint
+im geöffneten Editor erst, wenn der Mensch die Buchung tatsächlich korrigiert
+hat (`human_review = 'corrected'`), und ihre Voreinstellung ist die
+zurückhaltende: *Nur diese Buchung*. Eine Bestätigung („Passt so") erzeugt nie
+eine Regel — das Modell lag dort ja richtig, und aus „richtig" eine
+Verallgemeinerung zu machen ist eine Entscheidung, die der App nicht zusteht.
+Die Datenbank hält sich an dieselbe Regel und lehnt ein Merken ohne Korrektur
+ab, auch wenn es am Client vorbei geschickt wird.
+
+**Drei Arten, und sie bedeuten nicht dasselbe:**
+
+| | was gespeichert wird | wie der Prompt es einführt |
+|---|---|---|
+| **Ähnliche Buchungen** | der konkrete Fall: Originaltext, was das Modell sagte, was der Mensch daraus machte | Hinweis — vorsichtig übertragen, im Zweifel „Prüfen" |
+| **Immer für [Händler]** | Händlername + Kategorie, dazu Art und „zählt in der Auswertung" **nur bei echter Abweichung** vom Vorschlag | feste Regel mit Vorrang vor allgemeinen Annahmen |
+| **[Händler] als Zahlungsdienstleister** | nur der Name — ausdrücklich ohne Kategorie | „nicht zwingend der Händler, suche den echten Empfänger" |
+
+**Kein Ähnlichkeitsmaß, nirgends.** Dass „REWE TROISDORF" und „REWE Stuttgart"
+derselbe Fall sind, ist eine semantische Leistung, und die erbringt das
+Sprachmodell besser als jeder Tokenvergleich. Die App speichert deshalb den
+konkreten Fall und sagt dazu, wie weit er tragen darf. Aus einer KI-Korrektur
+entsteht **nie** ein `finance_merchants`-Eintrag und **nie** ein Muster: die
+Pattern- und Lern-Engine aus 0008 bleibt unangetastet und weiterhin zuständig
+für alles, was sie heute entscheidet — ihre Regeln stehen unverändert mit im
+Kontext, weil auch sie vom Nutzer bestätigt wurden.
+
+**Die Rangfolge steht im Prompt, nicht im Code:** persönliche feste Regeln →
+Zahlungsdienstleister → Korrekturbeispiele → allgemeine Annahmen, dazu die
+Ansage, einen Widerspruch nie still aufzulösen, sondern „Prüfen" zu setzen.
+Das Budget begrenzt nur die Beispiele (höchstens 40, neueste zuerst, ohne
+Wiederholungen); starke Regeln und Dienstleister gehen vollständig mit, weil sie
+wenige sind und jede einzelne eine Ansage ist.
+
+**Keine zwei gleichzeitigen Wahrheiten.** Pro Nutzer und normalisiertem
+Händlernamen gibt es höchstens eine aktive starke Regel. Eine neue ersetzt die
+alte (dieselbe Zeile, neues `updated_at`), und „immer für X" und „X ist ein
+Dienstleister" schließen sich gegenseitig aus — wer das eine wählt, schaltet das
+andere ab. Erzwungen wird das von einem eindeutigen Teilindex, nicht von
+Sorgfalt im Client.
+
+**Sichtbar und rückgängig.** Sobald etwas gemerkt ist, steht im KI-Import die
+Zeile „Gelerntes Wissen N". Dahinter liegt die Liste, gruppiert wie der Prompt:
+feste Regeln, Dienstleister, Beispiele. Entfernen heißt deaktivieren, mit Toast
+und „Rückgängig" (§18/§19) — eine falsch gemerkte Regel ist kein Schaden,
+sondern ein Handgriff, und sie verschwindet sofort aus dem nächsten Kontext.
+
+**Ein Import bleibt eine Handlung.** Buchung, Vorschlag, Nutzerentscheidung und
+Erinnerung entstehen in derselben Transaktion (`finance_apply_ai_import`,
+erweitert in 0012). Der Client schickt dazu genau ein Wort — `learning.mode` —
+und *nichts* darüber, was gelernt werden soll: welche Felder eine Regel tragen
+darf, entscheidet die Datenbank aus Vorschlag und Entscheidung derselben Zeile.
+Nur so lassen sich die drei Zusagen durchsetzen, dass die Notiz nie gelernt
+wird und Art bzw. Auswertung nur bei echter Abweichung. Ein wiederholter Import
+legt keine zweite Erinnerung an.
+
+Geprüft in `tools/financeLearningLogic.mjs` (70 Assertions, reine Logik),
+`tools/financeLearningE2E.mjs` (81, gegen ein echtes Postgres mit allen
+Migrationen, den echten RPCs und Policies) und `tools/financeLearningLayout.mjs`
+(48, die Wahl des Umfangs und die Liste in Chromium bei 390×844 und 390×667),
+dazu die fünf Strecken durch die gemountete Oberfläche in `tools/smoke.mjs`.
 
 ---
 

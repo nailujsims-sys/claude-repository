@@ -40,6 +40,10 @@ export function FinanceProvider({ children }) {
   // sie, um zu entscheiden, ob ein Umsatz noch jemanden beschäftigen muss — und
   // ohne sie stünde nach jedem Reload wieder alles in der Warteschlange.
   const [aiSuggestions, setAiSuggestions] = useState([])
+  // Das Gedächtnis (v1.24): was der Nutzer ausdrücklich für kommende KI-Importe
+  // behalten wollte. Es wird bei jedem „KI-Kontext kopieren" gelesen — ohne
+  // diese Zeilen schreibt die App denselben Prompt wie vor der ersten Korrektur.
+  const [aiMemories, setAiMemories] = useState([])
   // The rule engine's own rows. They are what decides which bookings still need
   // a human — not the `merchant_id` column on the booking — so a screen that
   // asks that question needs all four of them, and needs them again after every
@@ -58,7 +62,7 @@ export function FinanceProvider({ children }) {
       try {
         const [
           accountRows, transactionRows, observationRows, overrideRows,
-          categoryRows, merchantRows, patternRows, ruleRows, suggestionRows,
+          categoryRows, merchantRows, patternRows, ruleRows, suggestionRows, memoryRows,
         ] = await Promise.all([
           repo.listAccounts(user.id),
           repo.listTransactions(user.id),
@@ -69,12 +73,14 @@ export function FinanceProvider({ children }) {
           repo.listPatterns(user.id),
           repo.listCategoryRules(user.id),
           repo.listAiSuggestions(user.id),
+          repo.listAiMemories(user.id),
         ])
         setAccounts(accountRows)
         setTransactions(transactionRows)
         setObservations(observationRows)
         setOverrides(overrideRows)
         setAiSuggestions(suggestionRows)
+        setAiMemories(memoryRows)
         setCategories(categoryRows)
         setMerchants(merchantRows)
         setPatterns(patternRows)
@@ -182,6 +188,23 @@ export function FinanceProvider({ children }) {
       const result = await repo.applyAiImport(user.id, payload)
       await load({ silent: true })
       return result
+    },
+    [user, repo, load]
+  )
+
+  /**
+   * Eine Erinnerung abschalten — oder wieder einschalten.
+   *
+   * Die Zeile selbst entsteht im Import, zusammen mit der Buchung. Was hier
+   * passiert, ist die Rückseite davon: wer merkt, dass er sich etwas Falsches
+   * gemerkt hat, schaltet es ab, und der nächste Prompt enthält es nicht mehr.
+   * Nichts wird gelöscht, weil „Rückgängig" nur geht, solange die Zeile da ist.
+   */
+  const setAiMemoryActive = useCallback(
+    async (memoryId, active) => {
+      const row = await repo.setAiMemoryActive(user.id, memoryId, active)
+      await load({ silent: true })
+      return row
     },
     [user, repo, load]
   )
@@ -319,6 +342,7 @@ export function FinanceProvider({ children }) {
       categoryRules,
       overrides,
       aiSuggestions,
+      aiMemories,
       overrideTransactionIds: overrides.map((o) => o.transaction_id),
       loading,
       error,
@@ -329,14 +353,16 @@ export function FinanceProvider({ children }) {
       applyPlan,
       createManualTransaction,
       applyAiImport,
+      setAiMemoryActive,
       learnRule,
       saveOverride,
       setMerchantAnalytics,
       saveClassification,
     }),
     [accounts, account, transactions, observations, categories, merchants, patterns, categoryRules,
-     overrides, aiSuggestions, loading, error, load, createAccount, findImport, openImport, applyPlan, learnRule,
-     saveOverride, setMerchantAnalytics, saveClassification, createManualTransaction, applyAiImport]
+     overrides, aiSuggestions, aiMemories, loading, error, load, createAccount, findImport, openImport,
+     applyPlan, learnRule, saveOverride, setMerchantAnalytics, saveClassification,
+     createManualTransaction, applyAiImport, setAiMemoryActive]
   )
 
   return <FinanceContext.Provider value={value}>{children}</FinanceContext.Provider>

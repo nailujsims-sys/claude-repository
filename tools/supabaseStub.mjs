@@ -47,6 +47,10 @@ export const FINANCE_TABLES = [
   // one of the answers. A stub without this table makes the whole module look
   // like a failed request.
   'finance_transaction_ai_suggestions',
+  // Added by 0012. The AI import's memory: read on every finance load, because
+  // „KI-Kontext kopieren" builds the prompt from it. A stub without it makes
+  // the whole module look like a failed request, exactly as 0011's table did.
+  'finance_ai_learning_memories',
 ]
 
 // Creating a Supabase client also builds its realtime client, and that one
@@ -442,6 +446,10 @@ export function makeBackend({
       const handler = rpc[name]
       if (typeof handler === 'function') return handler(body)
       if (name === 'finance_learn_merchant_rule') return json(learnMerchantRule(body))
+      if (name === 'finance_apply_ai_import') {
+        const result = applyAiImport(body)
+        return json(result, result?.message ? 400 : 200)
+      }
       return json({ ok: true })
     }
 
@@ -563,6 +571,225 @@ export function makeBackend({
     }
 
     return json({ message: `method ${method} not stubbed` }, 405)
+  }
+
+  // ── finance_apply_ai_import, as far as a screen can tell ─────────────────
+  //
+  // The real one is in 0011/0012 and is tested against a real Postgres
+  // (tools/financeAiE2E.mjs, tools/financeLearningE2E.mjs). What a DOM test
+  // needs is its OBSERVABLE effects, and for v1.24 that is one effect above
+  // all: an import that was told to remember something leaves a memory behind,
+  // so the next „KI-Kontext kopieren" says something different than before.
+  //
+  // The rules that decide WHAT is remembered are reproduced here rather than
+  // trusted to the caller, because they are the ones a screen can get wrong:
+  //   • nothing is learned unless the human corrected the row AND chose a scope;
+  //   • the note is never learned;
+  //   • type and inclusion only when they differ from the model's suggestion;
+  //   • one active strong rule per merchant — a new one replaces the old, and
+  //     provider and merchant rule cannot both be active for the same name.
+  function memoryKey(name) {
+    const text = String(name ?? '')
+      .normalize('NFKC')
+      .toUpperCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim()
+    return text === '' ? null : text
+  }
+
+  function applyAiImport(body) {
+    const p = body ?? {}
+    const owned = (list) => list.filter((r) => r.user_id === TEST_USER_ID)
+    const found = owned(tables.finance_imports).find((row) => row.id === p.p_import_id)
+    if (!found) return { message: 'finance: Import nicht gefunden' }
+    if (found.account_id !== p.p_account_id) {
+      return { message: 'finance: der Import gehoert zu einem anderen Konto' }
+    }
+    if (found.status === 'imported') {
+      return { ...(found.apply_result ?? { import_id: found.id }), replayed: true }
+    }
+
+    let created = 0
+    let suggestions = 0
+    let decisions = 0
+    let memories = 0
+
+    for (const booking of p.p_bookings ?? []) {
+      const s = booking.suggestion ?? {}
+      const d = booking.user_decision ?? null
+      const type = booking.transaction_type || 'purchase'
+      const include = booking.include_in_analytics !== false
+
+      const transaction = financeRow({
+        user_id: TEST_USER_ID,
+        account_id: p.p_account_id,
+        import_id: p.p_import_id,
+        booking_date: booking.booking_date,
+        amount_minor: booking.amount_minor,
+        currency: booking.currency ?? 'EUR',
+        raw_description: booking.raw_description,
+        normalized_tokens: booking.normalized_tokens ?? [],
+        category_id: booking.category_id ?? null,
+        transaction_type: type,
+        include_in_analytics: include,
+        manual_lock: false,
+        source_metadata: booking.source_metadata ?? null,
+      })
+      tables.finance_transactions.push(transaction)
+      created += 1
+
+      const review = ['confirmed', 'corrected'].includes(s.human_review) ? s.human_review : 'none'
+      const sugType = s.transaction_type || type
+      const sugInclude = s.include_in_analytics !== false
+      const suggestion = financeRow({
+        user_id: TEST_USER_ID,
+        transaction_id: transaction.id,
+        import_id: p.p_import_id,
+        merchant_name: s.merchant_name ?? null,
+        category_id: s.category_id ?? null,
+        transaction_type: sugType,
+        include_in_analytics: sugInclude,
+        note: s.note ?? null,
+        needs_review: s.needs_review === true,
+        human_review: review,
+        format_version: s.format_version ?? 1,
+      })
+      tables.finance_transaction_ai_suggestions.push(suggestion)
+      suggestions += 1
+
+      let decidedName = null
+      if (d) {
+        decidedName = (d.merchant_name ?? '').trim() || null
+        const classifies = Boolean(d.merchant_id || decidedName || d.category_id)
+        if (classifies || d.note || d.include_in_analytics === false) {
+          tables.finance_transaction_overrides.push(
+            financeRow({
+              user_id: TEST_USER_ID,
+              transaction_id: transaction.id,
+              merchant_id: d.merchant_id ?? null,
+              merchant_name: decidedName,
+              category_id: d.category_id ?? null,
+              include_in_analytics: d.include_in_analytics === false ? false : null,
+              transaction_type: d.transaction_type ?? null,
+              note: d.note ?? null,
+            })
+          )
+          decisions += 1
+        }
+        if (classifies) transaction.manual_lock = true
+      }
+
+      const mode = booking.learning?.mode ?? 'none'
+      if (mode === 'none') continue
+      if (review !== 'corrected') {
+        return { message: 'finance: gemerkt wird nur, was der Mensch korrigiert hat' }
+      }
+
+      const name =
+        decidedName ??
+        owned(tables.finance_merchants).find((m) => m.id === d?.merchant_id)?.canonical_name ??
+        null
+      const key = memoryKey(name)
+      const learnedCategory = d?.category_id ?? null
+      const learnedType =
+        d?.transaction_type && d.transaction_type !== sugType ? d.transaction_type : null
+      const learnedInclude =
+        typeof d?.include_in_analytics === 'boolean' && d.include_in_analytics !== sugInclude
+          ? d.include_in_analytics
+          : null
+
+      const common = {
+        user_id: TEST_USER_ID,
+        merchant_name: name,
+        merchant_key: key,
+        source_description: booking.raw_description,
+        source_transaction_id: transaction.id,
+        source_suggestion_id: suggestion.id,
+        suggested_merchant_name: s.merchant_name ?? null,
+        suggested_category_id: s.category_id ?? null,
+        suggested_transaction_type: sugType,
+        suggested_include_in_analytics: sugInclude,
+        active: true,
+      }
+
+      if (mode === 'similar') {
+        const exampleKey = [
+          memoryKey(booking.raw_description), memoryKey(s.merchant_name),
+          s.category_id ?? '', sugType, String(sugInclude),
+          key ?? '', learnedCategory ?? '', learnedType ?? '', String(learnedInclude),
+        ].join('|')
+        const twice = owned(tables.finance_ai_learning_memories).some(
+          (m) => m.active && m.kind === 'similar_example' && m.example_key === exampleKey
+        )
+        if (twice) continue
+        tables.finance_ai_learning_memories.push(
+          financeRow({
+            ...common,
+            kind: 'similar_example',
+            category_id: learnedCategory,
+            transaction_type: learnedType,
+            include_in_analytics: learnedInclude,
+            example_key: exampleKey,
+          })
+        )
+        memories += 1
+        continue
+      }
+
+      if (!key) return { message: 'finance: eine Regel fuer die Zukunft braucht einen Haendler' }
+      const kind = mode === 'merchant_rule' ? 'merchant_rule' : 'payment_provider'
+      if (kind === 'merchant_rule' && !learnedCategory && !learnedType && learnedInclude === null) {
+        return { message: 'finance: eine Haendlerregel braucht eine Kategorie oder eine Abweichung' }
+      }
+
+      for (const memory of owned(tables.finance_ai_learning_memories)) {
+        if (!memory.active || memory.merchant_key !== key) continue
+        if (memory.kind === 'similar_example') continue
+        if (memory.kind === kind) {
+          Object.assign(memory, common, {
+            category_id: kind === 'merchant_rule' ? learnedCategory : null,
+            transaction_type: kind === 'merchant_rule' ? learnedType : null,
+            include_in_analytics: kind === 'merchant_rule' ? learnedInclude : null,
+            updated_at: nowIso(),
+          })
+          memory.replaced = true
+        } else {
+          memory.active = false
+          memory.updated_at = nowIso()
+        }
+      }
+      const replaced = owned(tables.finance_ai_learning_memories).find((m) => m.replaced)
+      if (replaced) {
+        delete replaced.replaced
+        memories += 1
+        continue
+      }
+      tables.finance_ai_learning_memories.push(
+        financeRow({
+          ...common,
+          kind,
+          category_id: kind === 'merchant_rule' ? learnedCategory : null,
+          transaction_type: kind === 'merchant_rule' ? learnedType : null,
+          include_in_analytics: kind === 'merchant_rule' ? learnedInclude : null,
+          example_key: null,
+        })
+      )
+      memories += 1
+    }
+
+    const result = {
+      import_id: p.p_import_id,
+      account_id: p.p_account_id,
+      created,
+      suggestions,
+      decisions,
+      memories,
+    }
+    found.status = 'imported'
+    found.imported_at = nowIso()
+    found.apply_result = result
+    found.updated_at = nowIso()
+    return { ...result, replayed: false }
   }
 
   // ── finance_learn_merchant_rule, as far as a screen can tell ─────────────

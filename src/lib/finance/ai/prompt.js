@@ -3,6 +3,7 @@ import { patternText, transactionTokens } from '../normalize'
 import { formatAmountMinor } from '../importFlow'
 import { AI_CSV_COLUMNS, AI_CSV_HEADER, formatExampleTable } from './format'
 import { PAYMENT_SERVICE_PROVIDERS, knownProviders } from './providers'
+import { MAX_PROMPT_EXAMPLES, promptMemories } from './memories'
 
 // „KI-Kontext kopieren" — der ganze Prompt, von der App geschrieben.
 //
@@ -116,6 +117,9 @@ export function buildAIContextPrompt({
   patterns = [],
   categoryRules = [],
   transactions = [],
+  // Was der Nutzer sich ausdrücklich gemerkt hat (v1.24). Die App besitzt das
+  // Gedächtnis; ChatGPT bekommt es hier mitgeteilt und behält selbst nichts.
+  memories = [],
   accountName = null,
   currency = 'EUR',
 } = {}) {
@@ -125,6 +129,11 @@ export function buildAIContextPrompt({
     .filter((c) => c?.slug)
 
   const known = relevantMerchants({ merchants, patterns, transactions, categoryRules, categories })
+  const learned = promptMemories(memories, { limit: MAX_PROMPT_EXAMPLES })
+  const labelOf = (id) => {
+    const category = categoryList.find((c) => c.id === id)
+    return category?.slug ?? null
+  }
   const seenProviders = knownProviders(transactions)
   const otherProviders = PAYMENT_SERVICE_PROVIDERS.filter((p) => !seenProviders.includes(p))
 
@@ -189,14 +198,34 @@ export function buildAIContextPrompt({
       }
     }
   }
-  lines.push('## Persönliche Regeln')
+  // Die starken Regeln aus dem Gedächtnis. Sie stehen bei den persönlichen
+  // Regeln, weil sie dasselbe sind: eine Entscheidung, die der Nutzer
+  // ausdrücklich getroffen hat. Woher sie technisch kommt — aus der
+  // Pattern-Engine oder aus einer Korrektur im KI-Preview — ist für ChatGPT
+  // ohne Bedeutung und wäre nur eine Einladung, zwischen ihnen zu wählen.
+  const fixed = []
+  for (const rule of learned.rules) {
+    const says = []
+    const slug = labelOf(rule.category_id)
+    if (slug) says.push(`Kategorie = ${slug}`)
+    if (rule.transaction_type) says.push(`Art = ${rule.transaction_type}`)
+    if (rule.include_in_analytics === false) says.push('include_in_analytics: false')
+    if (rule.include_in_analytics === true) says.push('include_in_analytics: true')
+    if (says.length === 0) continue
+    fixed.push(
+      `- ${rule.merchant_name}: Wenn du ${rule.merchant_name} als Händler erkennst, ${says.join(', ')}.`
+    )
+  }
+
+  lines.push('## Persönliche feste Regeln')
   lines.push('')
-  if (personal.length === 0) {
+  if (personal.length === 0 && fixed.length === 0) {
     lines.push('Es sind noch keine persönlichen Regeln hinterlegt.')
   } else {
     lines.push('Diese Entscheidungen hat der Nutzer bereits getroffen. Sie gehen jeder')
     lines.push('allgemeinen Annahme vor — auch wenn du es anders einsortieren würdest.')
     lines.push('')
+    lines.push(...fixed.sort())
     lines.push(...personal.sort())
   }
   lines.push('')
@@ -210,6 +239,17 @@ export function buildAIContextPrompt({
   lines.push('„Händler" leer und setze „Prüfen" auf true. Trage nie den Dienstleister als')
   lines.push('Händler ein.')
   lines.push('')
+  if (learned.providers.length > 0) {
+    lines.push('Der Nutzer hat ausdrücklich gesagt, dass diese Namen Dienstleister sind und')
+    lines.push('nicht der Händler:')
+    lines.push('')
+    for (const provider of learned.providers) {
+      lines.push(`- ${provider.merchant_name}: nicht zwingend der Händler. Suche im selben Text`)
+      lines.push(`  nach dem tatsächlichen Empfänger und kategorisiere nach ihm. Findest du ihn`)
+      lines.push('  nicht eindeutig, setze „Prüfen" auf true.')
+    }
+    lines.push('')
+  }
   if (seenProviders.length > 0) {
     lines.push(`Auf diesem Konto bereits aufgetaucht: ${seenProviders.join(', ')}.`)
   }
@@ -218,7 +258,54 @@ export function buildAIContextPrompt({
   }
   lines.push('')
 
-  // ── 5. Händler erkennen ───────────────────────────────────────────────────
+  // ── 5. Beispiele aus den Korrekturen des Nutzers ──────────────────────────
+  // Der eigentliche Gedanke von v1.24: ein konkreter Fall, keine Regel. Die App
+  // baut daraus ausdrücklich KEIN Ähnlichkeitsmaß — das Übertragen auf „REWE
+  // Stuttgart" ist eine semantische Leistung, und die erbringt das Modell
+  // besser als jeder Tokenvergleich. Was die App dazu sagen muss, ist nur, wie
+  // weit es gehen darf.
+  if (learned.examples.length > 0) {
+    lines.push('## Beispiele aus meinen Korrekturen')
+    lines.push('')
+    lines.push('So habe ich frühere Vorschläge korrigiert. Übertrage das vorsichtig auf')
+    lines.push('inhaltlich ähnliche Buchungen — es sind Hinweise, keine festen Regeln. Leite')
+    lines.push('daraus keine Regel für alles ab, und wenn ein Fall nur entfernt ähnlich ist,')
+    lines.push('setze „Prüfen" auf true.')
+    lines.push('')
+    for (const example of learned.examples) {
+      const hadMerchant = example.suggested_merchant_name ?? '(leer)'
+      const hadCategory = labelOf(example.suggested_category_id) ?? '(leer)'
+      const gotMerchant = example.merchant_name ?? '(leer)'
+      const gotCategory = labelOf(example.category_id) ?? '(leer)'
+      lines.push(`- Original: ${example.source_description}`)
+      lines.push(`  Du hattest: Händler ${hadMerchant}, Kategorie ${hadCategory}`)
+      lines.push(`  Richtig ist: Händler ${gotMerchant}, Kategorie ${gotCategory}`)
+      if (example.transaction_type) lines.push(`  Art: ${example.transaction_type}`)
+      if (example.include_in_analytics === false) lines.push('  include_in_analytics: false')
+      if (example.include_in_analytics === true) lines.push('  include_in_analytics: true')
+    }
+    lines.push('')
+  }
+
+  // ── 6. Was gilt, wenn zwei Dinge sich widersprechen ───────────────────────
+  // Ausdrücklich, weil ein Modell einen Widerspruch sonst auflöst, ohne es zu
+  // sagen — und eine still getroffene Entscheidung ist genau das, was der
+  // Nutzer hier nicht bekommen soll.
+  lines.push('## Wenn etwas sich widerspricht')
+  lines.push('')
+  lines.push('In dieser Reihenfolge:')
+  lines.push('')
+  lines.push('1. Persönliche feste Regeln.')
+  lines.push('2. Zahlungsdienstleister-Verhalten.')
+  lines.push('3. Beispiele aus meinen Korrekturen.')
+  lines.push('4. Deine allgemeinen Annahmen.')
+  lines.push('')
+  lines.push('Löse einen Widerspruch nie still auf. Die ausdrücklichste Regel des Nutzers')
+  lines.push('gewinnt; lassen zwei Regeln sich nicht vereinbaren, entscheide nichts und setze')
+  lines.push('„Prüfen" auf true.')
+  lines.push('')
+
+  // ── 7. Händler erkennen ───────────────────────────────────────────────────
   lines.push('## Händler erkennen')
   lines.push('')
   lines.push('- Erkenne den Händler inhaltlich, nicht buchstäblich. "REWE SAGT DANKE 8407" ist REWE.')
@@ -229,7 +316,7 @@ export function buildAIContextPrompt({
   lines.push('  auf true. Ein leeres Feld ist richtig, ein geratener Name ist falsch.')
   lines.push('')
 
-  // ── 6. Das Format ─────────────────────────────────────────────────────────
+  // ── 8. Das Format ─────────────────────────────────────────────────────────
   lines.push('## Antwortformat')
   lines.push('')
   lines.push('Antworte ausschließlich mit einer Tabelle: erst genau diese Kopfzeile, dann eine')
@@ -272,7 +359,7 @@ export function buildAIContextPrompt({
   lines.push('Vergib keine IDs und keine laufenden Nummern. Die Zuordnung macht die App.')
   lines.push('')
 
-  // ── 7. Unsicherheit ───────────────────────────────────────────────────────
+  // ── 9. Unsicherheit ───────────────────────────────────────────────────────
   lines.push('## Im Zweifel')
   lines.push('')
   lines.push('Lieber „Prüfen" auf true als ein geratener Wert. Eine Buchung, die der Nutzer')

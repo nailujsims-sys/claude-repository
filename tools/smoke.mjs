@@ -120,6 +120,15 @@ function makeBareDom(hash, search = '') {
   window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
   window.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} takeRecords() { return [] } }
   window.scrollTo = () => {}
+  // jsdom has no clipboard, and the one button of the AI import flow writes to
+  // it. The stub records instead of swallowing: what the app copied is what the
+  // next ChatGPT conversation would be told, so a test can read it.
+  const copied = []
+  Object.defineProperty(window.navigator, 'clipboard', {
+    value: { writeText: async (text) => { copied.push(String(text)) } },
+    configurable: true,
+  })
+  window.__copied = copied
   return window
 }
 
@@ -201,8 +210,11 @@ const locked = (window) => window.document.documentElement.hasAttribute('data-ov
 function typeInto(window, selector, text) {
   const el = window.document.querySelector(selector)
   if (!el) return false
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
-  setter.call(el, text)
+  // A textarea is not an input: jsdom's value setter refuses the wrong
+  // prototype, and the AI import's paste field is a textarea.
+  const proto =
+    el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype
+  Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, text)
   el.dispatchEvent(new window.Event('input', { bubbles: true }))
   return true
 }
@@ -3891,6 +3903,296 @@ async function run() {
       errors.push('[Finanzen] the module is missing from the sidebar')
   }
 
+  // ── 16e) v1.24: aus einer Korrektur wird Wissen ───────────────────────────
+  //
+  //  Die ganze Strecke, so wie ein Mensch sie geht: korrigieren, entscheiden wie
+  //  weit es gelten soll, importieren — und beim nächsten Mal steht es im
+  //  Kontext. Und daneben die Gegenprobe, die den Kern des Moduls ausmacht: aus
+  //  keiner dieser Entscheidungen wird ein Händler, ein Muster oder eine
+  //  Kategorieregel. Was ChatGPT gesagt bekommt, ist Text; was die Lern-Engine
+  //  aus 0008 entscheidet, bleibt ihr überlassen.
+  {
+    const HEADER = 'Datum;Beschreibung;Betrag;Währung;Händler;Kategorie;Typ;Auswertung;Notiz;Prüfen'
+    const answer = (line) => [HEADER, line].join('\n')
+
+    // Der Weg bis in den geöffneten Editor einer Zeile — von hier ab
+    // unterscheiden sich die vier Fälle nur noch in dem, was der Nutzer wählt.
+    const toPreview = async (label, line, seed = financeSeed) => {
+      const window = makeDom('#/finanzen', { finance: seed })
+      mount(window, code, label)
+      await wait(420)
+      if (!click(window, (el) => el.textContent.trim() === 'Hinzufügen'))
+        errors.push(`[${label}] „Hinzufügen" ist nicht klickbar`)
+      await wait(320)
+      if (!click(window, (el) => el.textContent.includes('KI-Import')))
+        errors.push(`[${label}] der KI-Import ist nicht klickbar`)
+      await wait(340)
+      if (!typeInto(window, 'textarea', answer(line)))
+        errors.push(`[${label}] es gibt kein Feld für die Antwort`)
+      await wait(120)
+      if (!click(window, (el) => el.textContent.trim() === 'Prüfen'))
+        errors.push(`[${label}] „Prüfen" ist nicht klickbar`)
+      await wait(420)
+      // Die Zeile aufklappen.
+      if (!click(window, (el) => el.tagName === 'BUTTON' && /Prüfen/.test(el.textContent) &&
+                                 el.getAttribute('aria-expanded') === 'false'))
+        errors.push(`[${label}] die Prüfen-Zeile lässt sich nicht öffnen`)
+      await wait(320)
+      return window
+    }
+
+    const copyContext = async (window) => {
+      if (!click(window, (el) => el.textContent.includes('KI-Kontext kopieren')))
+        errors.push('[Finanzen/Lernen] der Kopier-Knopf fehlt')
+      await wait(260)
+      return window.__copied[window.__copied.length - 1] ?? ''
+    }
+
+    const engineUntouched = (window, label) => {
+      const t = window.__backend.tables
+      if (t.finance_merchants.length !== (label === 'REWE' ? 0 : t.finance_merchants.length))
+        errors.push(`[${label}] aus einer KI-Korrektur ist ein Händler geworden`)
+      if (t.finance_merchant_patterns.length !== 0)
+        errors.push(`[${label}] aus einer KI-Korrektur ist ein Muster geworden`)
+      if (t.finance_category_rules.length !== 0)
+        errors.push(`[${label}] aus einer KI-Korrektur ist eine Kategorieregel geworden`)
+    }
+
+    // a) „Immer für REWE" — die starke Regel.
+    {
+      const label = 'Finanzen/Lernen-REWE'
+      const window = await toPreview(
+        label, '2026-09-20;REWE TROISDORF SAGT DANKE 8407;-24,95;EUR;REWE;sonstige;purchase;true;;true'
+      )
+      // Der Nutzer korrigiert die Kategorie.
+      if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Lebensmittel'))
+        errors.push(`[${label}] die Kategorie lässt sich nicht korrigieren`)
+      await wait(300)
+      const editor = nb(txt(window))
+      if (!editor.includes('Für die Zukunft merken'))
+        errors.push(`[${label}] nach einer Korrektur fehlt das Angebot zu merken`)
+      if (!editor.includes('Nur diese Buchung'))
+        errors.push(`[${label}] die Voreinstellung ist nicht „Nur diese Buchung"`)
+
+      if (!click(window, (el) => el.textContent.includes('Für die Zukunft merken')))
+        errors.push(`[${label}] die Zeile ist nicht klickbar`)
+      await wait(340)
+      const scope = nb(txt(window))
+      if (!scope.includes('Ähnliche Buchungen') || !scope.includes('Immer für REWE'))
+        errors.push(`[${label}] die Umfänge fehlen: ${scope.slice(-240)}`)
+      if (!click(window, (el) => el.textContent.trim().startsWith('Immer für REWE')))
+        errors.push(`[${label}] „Immer für REWE" ist nicht wählbar`)
+      await wait(340)
+      if (!nb(txt(window)).includes('Immer für REWE'))
+        errors.push(`[${label}] die Wahl steht nicht in der Zeile`)
+
+      if (!click(window, (el) => el.textContent.trim() === 'Importieren'))
+        errors.push(`[${label}] „Importieren" ist nicht klickbar`)
+      await wait(700)
+
+      const memories = window.__backend.tables.finance_ai_learning_memories
+      if (memories.length !== 1)
+        errors.push(`[${label}] es entstand nicht genau eine Erinnerung (${memories.length})`)
+      else {
+        const memory = memories[0]
+        if (memory.kind !== 'merchant_rule')
+          errors.push(`[${label}] die Erinnerung ist keine feste Regel (${memory.kind})`)
+        if (memory.merchant_name !== 'REWE')
+          errors.push(`[${label}] die Regel trägt nicht den Händler`)
+        const lebensmittel = FIN_CATEGORIES.find((c) => c.slug === 'lebensmittel').id
+        if (memory.category_id !== lebensmittel)
+          errors.push(`[${label}] die Regel trägt nicht die korrigierte Kategorie`)
+      }
+      engineUntouched(window, label)
+
+      // Zurück in den Import: die Zeile ist da, und der Kontext sagt es ChatGPT.
+      if (!click(window, (el) => el.textContent.trim() === 'Fertig'))
+        errors.push(`[${label}] der Import lässt sich nicht abschließen`)
+      await wait(340)
+      if (!click(window, (el) => el.textContent.trim() === 'Hinzufügen'))
+        errors.push(`[${label}] „Hinzufügen" öffnet nicht wieder`)
+      await wait(320)
+      click(window, (el) => el.textContent.includes('KI-Import'))
+      await wait(360)
+      const again = nb(txt(window))
+      console.log(`=== Finanzen — Gelerntes Wissen ===\n  ${again.slice(0, 200)}`)
+      if (!again.includes('Gelerntes Wissen'))
+        errors.push(`[${label}] die Zeile „Gelerntes Wissen" fehlt: ${again.slice(0, 240)}`)
+
+      const prompt = await copyContext(window)
+      if (!prompt.includes('REWE: Wenn du REWE als Händler erkennst, Kategorie = lebensmittel.'))
+        errors.push(`[${label}] der neue Kontext enthält die Regel nicht`)
+      if (!prompt.includes('Persönliche feste Regeln'))
+        errors.push(`[${label}] der Kontext hat keinen Abschnitt für feste Regeln`)
+
+      // MANAGEMENT: abschalten, Toast, rückgängig.
+      if (!click(window, (el) => el.textContent.includes('Gelerntes Wissen')))
+        errors.push(`[${label}] die Liste lässt sich nicht öffnen`)
+      await wait(340)
+      const list = nb(txt(window))
+      if (!list.includes('Feste Regeln') || !list.includes('REWE'))
+        errors.push(`[${label}] die Liste zeigt die Regel nicht: ${list.slice(-240)}`)
+      const forget = () =>
+        click(window, (el) => /nicht mehr merken/.test(el.getAttribute?.('aria-label') || ''))
+
+      if (!forget()) errors.push(`[${label}] eine Erinnerung lässt sich nicht entfernen`)
+      await wait(520)
+      const stored = window.__backend.tables.finance_ai_learning_memories[0]
+      if (stored.active !== false)
+        errors.push(`[${label}] das Entfernen hat die Datenbank nicht erreicht`)
+      const toast = nb(txt(window))
+      if (!toast.includes('Rückgängig'))
+        errors.push(`[${label}] es gibt kein Rückgängig: ${toast.slice(-200)}`)
+
+      // Rückgängig zuerst: ein Toast ist flüchtig, und jeder andere Handgriff —
+      // auch das Kopieren, das selbst einen zeigt — nimmt ihm den Platz.
+      if (!click(window, (el) => el.textContent.trim() === 'Rückgängig'))
+        errors.push(`[${label}] „Rückgängig" ist nicht klickbar`)
+      await wait(520)
+      if (window.__backend.tables.finance_ai_learning_memories[0].active !== true)
+        errors.push(`[${label}] Rückgängig hat die Erinnerung nicht zurückgeholt`)
+      const back = await copyContext(window)
+      if (!back.includes('REWE: Wenn du REWE als Händler erkennst'))
+        errors.push(`[${label}] die Regel fehlt nach dem Rückgängig im Kontext`)
+
+      // Und einmal ohne Rückgängig: was abgeschaltet ist, geht nicht mit.
+      if (!forget()) errors.push(`[${label}] die Erinnerung ist nach dem Rückgängig nicht mehr in der Liste`)
+      await wait(520)
+      const without = await copyContext(window)
+      if (without.includes('REWE: Wenn du REWE als Händler erkennst'))
+        errors.push(`[${label}] die abgeschaltete Regel steht weiter im Kontext`)
+      if (nb(txt(window)).includes('Gelerntes Wissen1'))
+        errors.push(`[${label}] die Zählung berücksichtigt die abgeschaltete Regel noch`)
+      window.__restoreConsole?.()
+    }
+
+    // b) „Ähnliche Buchungen" — der Fall als Hinweis.
+    {
+      const label = 'Finanzen/Lernen-Ähnlich'
+      const window = await toPreview(
+        label, '2026-09-20;REWE TROISDORF SAGT DANKE 8407;-24,95;EUR;Troisdorf;sonstige;purchase;true;;true'
+      )
+      if (!typeInto(window, 'input[aria-label="Händler"]', 'REWE'))
+        errors.push(`[${label}] der Händler lässt sich nicht korrigieren`)
+      await wait(260)
+      click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Lebensmittel')
+      await wait(300)
+      click(window, (el) => el.textContent.includes('Für die Zukunft merken'))
+      await wait(340)
+      if (!click(window, (el) => el.textContent.trim().startsWith('Ähnliche Buchungen')))
+        errors.push(`[${label}] „Ähnliche Buchungen" ist nicht wählbar`)
+      await wait(340)
+      click(window, (el) => el.textContent.trim() === 'Importieren')
+      await wait(700)
+
+      const memories = window.__backend.tables.finance_ai_learning_memories
+      if (memories.length !== 1 || memories[0].kind !== 'similar_example')
+        errors.push(`[${label}] es entstand kein Beispiel (${memories.map((m) => m.kind).join(',')})`)
+      click(window, (el) => el.textContent.trim() === 'Fertig')
+      await wait(320)
+      click(window, (el) => el.textContent.trim() === 'Hinzufügen')
+      await wait(320)
+      click(window, (el) => el.textContent.includes('KI-Import'))
+      await wait(360)
+      const prompt = await copyContext(window)
+      if (!prompt.includes('Beispiele aus meinen Korrekturen'))
+        errors.push(`[${label}] der Kontext hat keinen Abschnitt für Beispiele`)
+      if (!prompt.includes('Original: REWE TROISDORF SAGT DANKE 8407'))
+        errors.push(`[${label}] der Originaltext fehlt im Beispiel`)
+      if (!prompt.includes('Du hattest: Händler Troisdorf, Kategorie sonstige'))
+        errors.push(`[${label}] der ursprüngliche Vorschlag fehlt im Beispiel`)
+      if (!prompt.includes('Richtig ist: Händler REWE, Kategorie lebensmittel'))
+        errors.push(`[${label}] die Korrektur fehlt im Beispiel`)
+      if (!prompt.includes('es sind Hinweise, keine festen Regeln'))
+        errors.push(`[${label}] das Beispiel wird nicht als Hinweis eingeführt`)
+      engineUntouched(window, label)
+      window.__restoreConsole?.()
+    }
+
+    // c) „Als Zahlungsdienstleister behandeln".
+    {
+      const label = 'Finanzen/Lernen-PayPal'
+      const window = await toPreview(
+        label, '2026-09-20;PAYPAL .Zalando SE 4711;-8,99;EUR;PayPal;sonstige;purchase;true;;true'
+      )
+      if (!typeInto(window, 'input[aria-label="Händler"]', 'PayPal Europe'))
+        errors.push(`[${label}] der Händler lässt sich nicht korrigieren`)
+      await wait(300)
+      click(window, (el) => el.textContent.includes('Für die Zukunft merken'))
+      await wait(340)
+      const scope = nb(txt(window))
+      if (!scope.includes('PayPal Europe als Zahlungsdienstleister behandeln'))
+        errors.push(`[${label}] die Dienstleister-Option fehlt: ${scope.slice(-240)}`)
+      if (!click(window, (el) => el.textContent.includes('als Zahlungsdienstleister behandeln')))
+        errors.push(`[${label}] die Dienstleister-Option ist nicht wählbar`)
+      await wait(340)
+      click(window, (el) => el.textContent.trim() === 'Importieren')
+      await wait(700)
+
+      const memories = window.__backend.tables.finance_ai_learning_memories
+      if (memories.length !== 1 || memories[0].kind !== 'payment_provider')
+        errors.push(`[${label}] es entstand keine Dienstleister-Regel`)
+      else if (memories[0].category_id !== null)
+        errors.push(`[${label}] der Dienstleister hat eine feste Kategorie bekommen`)
+
+      click(window, (el) => el.textContent.trim() === 'Fertig')
+      await wait(320)
+      click(window, (el) => el.textContent.trim() === 'Hinzufügen')
+      await wait(320)
+      click(window, (el) => el.textContent.includes('KI-Import'))
+      await wait(360)
+      const prompt = await copyContext(window)
+      if (!prompt.includes('PayPal Europe: nicht zwingend der Händler'))
+        errors.push(`[${label}] das Dienstleister-Verhalten fehlt im Kontext`)
+      if (/PayPal Europe: Wenn du/.test(prompt))
+        errors.push(`[${label}] aus dem Dienstleister wurde eine feste Kategorie-Regel`)
+      engineUntouched(window, label)
+      window.__restoreConsole?.()
+    }
+
+    // d) Korrektur ohne Wahl: nichts wird gemerkt. Und „Passt so" erst recht nicht.
+    {
+      const label = 'Finanzen/Lernen-Nichts'
+      const window = await toPreview(
+        label, '2026-09-20;EDEKA MUELLER 1122;-12,30;EUR;Mueller;sonstige;purchase;true;;true'
+      )
+      click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Lebensmittel')
+      await wait(300)
+      click(window, (el) => el.textContent.trim() === 'Importieren')
+      await wait(700)
+      if (window.__backend.tables.finance_ai_learning_memories.length !== 0)
+        errors.push(`[${label}] eine Korrektur ohne Wahl hat etwas gemerkt`)
+      const done = nb(txt(window))
+      if (!done.includes('Import abgeschlossen'))
+        errors.push(`[${label}] der Import ist nicht durchgelaufen: ${done.slice(-200)}`)
+      window.__restoreConsole?.()
+    }
+
+    // e) „Passt so": bestätigt, nicht korrigiert — also nichts zu merken.
+    {
+      const label = 'Finanzen/Lernen-Passt'
+      const window = await toPreview(
+        label, '2026-09-20;REWE TROISDORF SAGT DANKE 8407;-24,95;EUR;REWE;lebensmittel;purchase;true;;true'
+      )
+      const editor = nb(txt(window))
+      if (editor.includes('Für die Zukunft merken'))
+        errors.push(`[${label}] eine unkorrigierte Zeile bietet das Merken an`)
+      if (!click(window, (el) => el.textContent.trim() === 'Passt so'))
+        errors.push(`[${label}] „Passt so" ist nicht klickbar`)
+      await wait(320)
+      if (nb(txt(window)).includes('Für die Zukunft merken'))
+        errors.push(`[${label}] eine Bestätigung bietet das Merken an`)
+      click(window, (el) => el.textContent.trim() === 'Importieren')
+      await wait(700)
+      if (window.__backend.tables.finance_ai_learning_memories.length !== 0)
+        errors.push(`[${label}] aus einer Bestätigung ist eine Erinnerung geworden`)
+      const suggestion = window.__backend.tables.finance_transaction_ai_suggestions[0]
+      if (suggestion?.human_review !== 'confirmed')
+        errors.push(`[${label}] die Bestätigung wurde nicht gespeichert (${suggestion?.human_review})`)
+      window.__restoreConsole?.()
+    }
+  }
+
   console.log('\n--- result ---')
   if (errors.length) {
     console.log('FAILURES:')
@@ -3903,7 +4205,12 @@ async function run() {
   process.exit(0)
 }
 
+// `mount` replaces console.error while a window is alive, so a harness error
+// raised before the matching restore would be swallowed — the one failure mode
+// in which the run says nothing at all. The real one is captured up front.
+const realError = console.error.bind(console)
 run().catch((e) => {
-  console.error('smoke harness error:', e)
+  console.error = realError
+  realError('smoke harness error:', e)
   process.exit(1)
 })
