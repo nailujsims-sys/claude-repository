@@ -481,6 +481,259 @@ begin
 end
 $$;
 
+-- ── Relationen und die Auswertung ───────────────────────────────────────────
+--
+-- Eigener Block mit eigenen Nutzern: die Fälle hier brauchen einen Ausgangs-
+-- stand, den der Reset oben gerade weggeräumt hat.
+--
+-- WORUM ES GEHT. Eine Relation aus 0009 ist nicht nur eine Aussage über
+-- Buchungen, sie legt welche still (`include_in_analytics = false`) und schreibt
+-- in ihr eigenes `evidence.analytics_deactivated`, welche das waren. Verschwindet
+-- die Relation, weil eine ihrer Buchungen gelöscht wurde, darf eine ÜBERLEBENDE
+-- Buchung nicht als „zählt nicht" zurückbleiben — deaktiviert von etwas, das es
+-- nicht mehr gibt.
+--
+-- Und genauso wenig darf pauschal alles wieder eingeschaltet werden: nicht, was
+-- ein Mensch selbst ausgeschlossen hat, und nicht, was eine ANDERE bestehende
+-- Relation weiterhin stilllegt.
+
+do $$
+declare
+  u        uuid := gen_random_uuid();
+  acct     uuid;
+  tx_a     uuid; tx_b uuid;   -- A: bestaetigte Abloesung
+  tx_c     uuid; tx_d uuid;   -- B: vorgeschlagen, Ersatz geparkt
+  tx_e     uuid; tx_f uuid;   -- C: Ueberlebende manuell ausgeschlossen
+  tx_p     uuid; tx_h uuid; tx_j uuid;  -- D: Kette
+  tx_z     uuid; tx_x uuid;   -- E: unbeteiligt
+  cat_leaf uuid;
+  rel      uuid;
+  rel_keep uuid;
+  flag     boolean;
+  n        integer;
+begin
+  -- Der Block oben endete als `authenticated`; `auth.users` gehoert der
+  -- Plattform. Also erst zurueck in die eigene Rolle, dann der neue Nutzer.
+  execute 'set local role postgres';
+  insert into auth.users (id, email) values (u, 'rel@mindwhiteboard.test');
+  execute 'set local role authenticated';
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', u, 'role', 'authenticated')::text, true);
+
+  select id into cat_leaf from public.finance_categories
+    where user_id = u and slug = 'lebensmittel';
+  insert into public.finance_accounts (user_id, name, currency)
+    values (u, 'Konto', 'EUR') returning id into acct;
+
+  -- ── A. Bestaetigte Abloesung: Vorgaenger ist still, Ersatz wird geloescht ──
+  insert into public.finance_transactions
+    (user_id, account_id, booking_date, amount_minor, currency, raw_description,
+     normalized_tokens, include_in_analytics)
+    values (u, acct, date '2026-09-01', -5000, 'EUR', 'A VORGAENGER',
+            array['A','VORGAENGER'], false)
+    returning id into tx_a;
+  insert into public.finance_transactions
+    (user_id, account_id, booking_date, amount_minor, currency, raw_description,
+     normalized_tokens, include_in_analytics)
+    values (u, acct, date '2026-09-02', -5000, 'EUR', 'A ERSATZ',
+            array['A','ERSATZ'], true)
+    returning id into tx_b;
+
+  insert into public.finance_transaction_relations
+    (user_id, relation_type, status, relation_key, confirmed_at, evidence)
+    values (u, 'supersession', 'confirmed', 'rel-a', now(),
+            jsonb_build_object('analytics_deactivated', jsonb_build_array(tx_a::text)))
+    returning id into rel;
+  insert into public.finance_transaction_relation_members
+    (user_id, relation_id, relation_type, relation_status, transaction_id, role)
+    values (u, rel, 'supersession', 'confirmed', tx_a, 'predecessor'),
+           (u, rel, 'supersession', 'confirmed', tx_b, 'replacement');
+
+  perform public.finance_delete_transaction(tx_b);
+
+  select count(*) into n from public.finance_transactions where id = tx_b;
+  if n <> 0 then raise exception 'DATA: die Ersatzbuchung ist noch da'; end if;
+  select count(*) into n from public.finance_transaction_relations where id = rel;
+  if n <> 0 then raise exception 'DATA: die Relation ueberlebte ihre zweite Seite'; end if;
+  select include_in_analytics into flag from public.finance_transactions where id = tx_a;
+  if flag is not true then
+    raise exception 'DATAFAIL: der Vorgaenger bleibt nach dem Loeschen der Abloesung stillgelegt';
+  end if;
+
+  -- ── B. Vorgeschlagene Abloesung vor geschuetzter Buchung ──────────────────
+  -- Der Vorgaenger traegt eine manuelle Entscheidung, also stand der ERSATZ
+  -- still. Geloescht wird hier der Vorgaenger.
+  insert into public.finance_transactions
+    (user_id, account_id, booking_date, amount_minor, currency, raw_description,
+     normalized_tokens, include_in_analytics, manual_lock)
+    values (u, acct, date '2026-09-03', -6000, 'EUR', 'B GESCHUETZT',
+            array['B','GESCHUETZT'], true, true)
+    returning id into tx_c;
+  insert into public.finance_transactions
+    (user_id, account_id, booking_date, amount_minor, currency, raw_description,
+     normalized_tokens, include_in_analytics)
+    values (u, acct, date '2026-09-04', -6000, 'EUR', 'B GEPARKT',
+            array['B','GEPARKT'], false)
+    returning id into tx_d;
+
+  insert into public.finance_transaction_relations
+    (user_id, relation_type, status, relation_key, evidence)
+    values (u, 'supersession', 'proposed', 'rel-b',
+            jsonb_build_object('analytics_deactivated', jsonb_build_array(tx_d::text)))
+    returning id into rel;
+  insert into public.finance_transaction_relation_members
+    (user_id, relation_id, relation_type, relation_status, transaction_id, role)
+    values (u, rel, 'supersession', 'proposed', tx_c, 'predecessor'),
+           (u, rel, 'supersession', 'proposed', tx_d, 'replacement');
+
+  perform public.finance_delete_transaction(tx_c);
+
+  select count(*) into n from public.finance_transactions where id = tx_d;
+  if n <> 1 then raise exception 'DATA: die geparkte Buchung wurde mitgenommen'; end if;
+  select include_in_analytics into flag from public.finance_transactions where id = tx_d;
+  if flag is not true then
+    raise exception 'DATAFAIL: die geparkte Buchung zaehlt nach dem Wegfall der Relation nicht wieder';
+  end if;
+
+  -- ── C. Die Ueberlebende ist manuell ausgeschlossen ───────────────────────
+  insert into public.finance_transactions
+    (user_id, account_id, booking_date, amount_minor, currency, raw_description,
+     normalized_tokens, include_in_analytics)
+    values (u, acct, date '2026-09-05', -7000, 'EUR', 'C VORGAENGER',
+            array['C','VORGAENGER'], true)
+    returning id into tx_e;
+  insert into public.finance_transactions
+    (user_id, account_id, booking_date, amount_minor, currency, raw_description,
+     normalized_tokens, include_in_analytics)
+    values (u, acct, date '2026-09-06', -7000, 'EUR', 'C GEPARKT',
+            array['C','GEPARKT'], false)
+    returning id into tx_f;
+  -- Die manuelle Entscheidung: ein Override macht die Buchung `protected`.
+  insert into public.finance_transaction_overrides
+    (user_id, transaction_id, category_id, include_in_analytics)
+    values (u, tx_f, cat_leaf, false);
+
+  insert into public.finance_transaction_relations
+    (user_id, relation_type, status, relation_key, evidence)
+    values (u, 'supersession', 'proposed', 'rel-c',
+            jsonb_build_object('analytics_deactivated', jsonb_build_array(tx_f::text)))
+    returning id into rel;
+  insert into public.finance_transaction_relation_members
+    (user_id, relation_id, relation_type, relation_status, transaction_id, role)
+    values (u, rel, 'supersession', 'proposed', tx_e, 'predecessor'),
+           (u, rel, 'supersession', 'proposed', tx_f, 'replacement');
+
+  perform public.finance_delete_transaction(tx_e);
+
+  select include_in_analytics into flag from public.finance_transactions where id = tx_f;
+  if flag is not false then
+    raise exception 'DATAFAIL: eine manuell ausgeschlossene Buchung wurde wieder eingeschaltet';
+  end if;
+
+  -- ── D. Die Kette ──────────────────────────────────────────────────────────
+  -- P (geschuetzt) ←proposed→ H, und H ←confirmed→ J.
+  --
+  -- Erst parkte die vorgeschlagene Relation H (sie steht in ihrem
+  -- analytics_deactivated). Danach wurde H selbst abgeloest; die Bestaetigung
+  -- fand H bereits auf `false` vor und schrieb sie deshalb NICHT in ihre eigene
+  -- Liste. Faellt jetzt die erste Relation weg, nennt sie H — aber H ist
+  -- Vorgaenger einer bestaetigten Abloesung, und J zaehlt an ihrer Stelle.
+  -- Genau hier reicht die Buchfuehrung allein nicht.
+  insert into public.finance_transactions
+    (user_id, account_id, booking_date, amount_minor, currency, raw_description,
+     normalized_tokens, include_in_analytics, manual_lock)
+    values (u, acct, date '2026-09-07', -8000, 'EUR', 'D GESCHUETZT',
+            array['D','GESCHUETZT'], true, true)
+    returning id into tx_p;
+  insert into public.finance_transactions
+    (user_id, account_id, booking_date, amount_minor, currency, raw_description,
+     normalized_tokens, include_in_analytics)
+    values (u, acct, date '2026-09-08', -8000, 'EUR', 'D MITTE',
+            array['D','MITTE'], false)
+    returning id into tx_h;
+  insert into public.finance_transactions
+    (user_id, account_id, booking_date, amount_minor, currency, raw_description,
+     normalized_tokens, include_in_analytics)
+    values (u, acct, date '2026-09-09', -8000, 'EUR', 'D ENDE',
+            array['D','ENDE'], true)
+    returning id into tx_j;
+
+  insert into public.finance_transaction_relations
+    (user_id, relation_type, status, relation_key, evidence)
+    values (u, 'supersession', 'proposed', 'rel-d1',
+            jsonb_build_object('analytics_deactivated', jsonb_build_array(tx_h::text)))
+    returning id into rel;
+  insert into public.finance_transaction_relation_members
+    (user_id, relation_id, relation_type, relation_status, transaction_id, role)
+    values (u, rel, 'supersession', 'proposed', tx_p, 'predecessor'),
+           (u, rel, 'supersession', 'proposed', tx_h, 'replacement');
+
+  insert into public.finance_transaction_relations
+    (user_id, relation_type, status, relation_key, confirmed_at, evidence)
+    values (u, 'supersession', 'confirmed', 'rel-d2', now(),
+            jsonb_build_object('analytics_deactivated', '[]'::jsonb))
+    returning id into rel_keep;
+  insert into public.finance_transaction_relation_members
+    (user_id, relation_id, relation_type, relation_status, transaction_id, role)
+    values (u, rel_keep, 'supersession', 'confirmed', tx_h, 'predecessor'),
+           (u, rel_keep, 'supersession', 'confirmed', tx_j, 'replacement');
+
+  perform public.finance_delete_transaction(tx_p);
+
+  select count(*) into n from public.finance_transaction_relations where id = rel;
+  if n <> 0 then raise exception 'DATA: die einseitige Relation der Kette blieb stehen'; end if;
+  select count(*) into n from public.finance_transaction_relations where id = rel_keep;
+  if n <> 1 then raise exception 'DATA: die zweite Relation der Kette verschwand'; end if;
+  select include_in_analytics into flag from public.finance_transactions where id = tx_h;
+  if flag is not false then
+    raise exception 'DATAFAIL: eine Buchung, die eine andere bestaetigte Abloesung stilllegt, wurde wieder eingeschaltet';
+  end if;
+  select include_in_analytics into flag from public.finance_transactions where id = tx_j;
+  if flag is not true then
+    raise exception 'DATA: die Nachfolgebuchung der Kette wurde angefasst';
+  end if;
+
+  -- ── E. Eine unbeteiligte Buchung ─────────────────────────────────────────
+  insert into public.finance_transactions
+    (user_id, account_id, booking_date, amount_minor, currency, raw_description,
+     normalized_tokens, include_in_analytics)
+    values (u, acct, date '2026-09-10', -900, 'EUR', 'E UNBETEILIGT',
+            array['E','UNBETEILIGT'], false)
+    returning id into tx_z;
+
+  insert into public.finance_transactions
+    (user_id, account_id, booking_date, amount_minor, currency, raw_description,
+     normalized_tokens, include_in_analytics)
+    values (u, acct, date '2026-09-11', -950, 'EUR', 'E EGAL', array['E','EGAL'], true)
+    returning id into tx_x;
+  perform public.finance_delete_transaction(tx_x);
+
+  select include_in_analytics into flag from public.finance_transactions where id = tx_z;
+  if flag is not false then
+    raise exception 'DATAFAIL: eine unbeteiligte Buchung wurde eingeschaltet';
+  end if;
+
+  -- Die Hilfsfunktion selbst, direkt befragt.
+  if public.finance_relation_reactivatable(tx_z) is not true then
+    raise exception 'DATA: die Hilfsfunktion haelt eine freie Buchung fuer gesperrt';
+  end if;
+  if public.finance_relation_reactivatable(tx_f) is not false then
+    raise exception 'DATAFAIL: die Hilfsfunktion uebergeht eine manuelle Entscheidung';
+  end if;
+  if public.finance_relation_reactivatable(tx_h) is not false then
+    raise exception 'DATAFAIL: die Hilfsfunktion uebergeht eine bestehende bestaetigte Abloesung';
+  end if;
+
+  -- Die aufgeschobenen Pruefungen, jetzt — wie oben.
+  set constraints all immediate;
+  set constraints all deferred;
+
+  raise notice 'DATA-REL: all assertions passed';
+end
+$$;
+
+select 'DATA-REL: all assertions passed' as result;
+
 select 'DATA: all assertions passed' as result;
 
 rollback;

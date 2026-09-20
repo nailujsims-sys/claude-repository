@@ -165,14 +165,19 @@ try {
     { file: 'supabase/tests/rls.sql', marker: 'RLS: all assertions passed' },
     { file: 'supabase/tests/finance_import.sql', marker: 'FINANCE-IMPORT: all assertions passed' },
     { file: 'supabase/tests/finance_category_hierarchy.sql', marker: 'CATS: all assertions passed' },
-    { file: 'supabase/tests/finance_data_control.sql', marker: 'DATA: all assertions passed' },
+    // Zwei Marker, ein Lauf: die Datei hat einen zweiten `do`-Block für die
+    // Relationen. Ohne beide Namen bliebe ein stillgelegter Block unbemerkt.
+    { file: 'supabase/tests/finance_data_control.sql',
+      marker: ['DATA: all assertions passed', 'DATA-REL: all assertions passed'] },
   ]
 
   for (const suite of suites) {
     const out = psql(['-f', suite.file])
     process.stdout.write(out.split('\n').filter((l) => l.trim()).map((l) => `  ${l}`).join('\n') + '\n')
-    if (!out.includes(suite.marker)) {
-      console.error(`rls: ${suite.file} lief durch, meldete aber keinen Erfolg.`)
+    const markers = Array.isArray(suite.marker) ? suite.marker : [suite.marker]
+    const missing = markers.filter((m) => !out.includes(m))
+    if (missing.length > 0) {
+      console.error(`rls: ${suite.file} lief durch, meldete aber keinen Erfolg (${missing.join(', ')}).`)
       process.exit(1)
     }
   }
@@ -298,6 +303,47 @@ try {
             begin
               delete from public.finance_transactions where id = p_transaction_id and user_id = v_user;
               return p_transaction_id;
+            end $fn$;`,
+    },
+    {
+      // GENAU DIE FASSUNG AUS c4f5c34, Zeile für Zeile — nur ohne den
+      // Auswertungsteil. Sie räumt die einseitige Relation strukturell sauber
+      // weg und lässt trotzdem eine überlebende Buchung stillgelegt zurück,
+      // deaktiviert von einer Relation, die es nicht mehr gibt. Genau das war
+      // der Review-Befund, und die Suite muss ihn ohne Hilfe finden.
+      what: 'das Wiedereinschalten der von einer weggefallenen Relation stillgelegten Buchungen',
+      sql: `create or replace function public.finance_delete_transaction(p_transaction_id uuid)
+            returns uuid language plpgsql security invoker set search_path = '' as $fn$
+            declare
+              v_user uuid := (select auth.uid());
+              v_tx public.finance_transactions%rowtype;
+              v_relations uuid[];
+              v_reviews uuid[];
+            begin
+              if v_user is null then
+                raise exception 'finance: kein angemeldeter Benutzer' using errcode = '28000';
+              end if;
+              select * into v_tx from public.finance_transactions
+                where id = p_transaction_id and user_id = v_user for update;
+              if not found then
+                raise exception 'finance: diese Buchung gibt es nicht' using errcode = 'P0002';
+              end if;
+              select coalesce(array_agg(distinct m.relation_id), '{}') into v_relations
+                from public.finance_transaction_relation_members m
+                where m.user_id = v_user and m.transaction_id = v_tx.id;
+              select coalesce(array_agg(distinct t.review_item_id), '{}') into v_reviews
+                from public.finance_import_review_item_transactions t
+                where t.user_id = v_user and t.transaction_id = v_tx.id;
+              delete from public.finance_transactions where id = v_tx.id and user_id = v_user;
+              delete from public.finance_transaction_relations r
+                where r.user_id = v_user and r.id = any (v_relations)
+                  and (select count(*) from public.finance_transaction_relation_members m
+                       where m.relation_id = r.id) < 2;
+              delete from public.finance_import_review_items i
+                where i.user_id = v_user and i.id = any (v_reviews) and i.status = 'open'
+                  and not exists (select 1 from public.finance_import_review_item_transactions t
+                                  where t.review_item_id = i.id);
+              return v_tx.id;
             end $fn$;`,
     },
     {

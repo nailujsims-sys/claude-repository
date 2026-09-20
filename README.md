@@ -1417,6 +1417,24 @@ ein **offener Prüfposten**, der seine letzte Buchung verliert (eine Frage, die
 niemand mehr beantworten kann). Ein bereits beantworteter Prüfposten bleibt: er
 ist Geschichte, und sein `payload` trägt den eingefrorenen Stand.
 
+**Und die Auswertung der Relation.** Eine Relation ist nicht nur eine Aussage
+über Buchungen, sie legt welche still: eine bestätigte Ablösung nimmt den
+Vorgänger aus der Auswertung, eine vorgeschlagene Ablösung vor einer manuell
+entschiedenen alten Buchung nimmt stattdessen die neue heraus. Verschwindet die
+Relation, verschwindet der Grund — und eine überlebende Buchung darf nicht als
+„zählt nicht" zurückbleiben, deaktiviert von etwas, das es nicht mehr gibt.
+Welche Zeilen das sind, steht in `evidence.analytics_deactivated` und wird
+gelesen, **bevor** die Relation gelöscht wird; ob eine davon wirklich wieder
+zählen darf, beantwortet `finance_relation_reactivatable` an einer Stelle:
+nicht, wenn ein Mensch selbst entschieden hat (`finance_transaction_protected`,
+derselbe Maßstab wie in `finance_resolve_relation`), nicht, wenn eine andere
+bestehende Relation sie weiterhin stilllegt, und nicht, wenn sie Vorgänger einer
+anderen **bestätigten** Ablösung ist. Der letzte Punkt ist der Kettenfall: wurde
+eine Buchung erst von einer vorgeschlagenen Ablösung geparkt und danach selbst
+abgelöst, fand die Bestätigung sie schon auf `false` vor und schrieb sie deshalb
+nicht in ihre eigene Liste — ihr Ausschluss steht trotzdem, und die
+Nachfolgebuchung zählt an ihrer Stelle.
+
 **Was bewusst bleibt:** der Import mitsamt `source_hash` — eine Buchung aus einem
 Kontoauszug zu entfernen heißt nicht, dass der Auszug nie eingelesen wurde,
 und dieselbe Datei wird weiterhin als „schon eingelesen" erkannt. Ebenso das
