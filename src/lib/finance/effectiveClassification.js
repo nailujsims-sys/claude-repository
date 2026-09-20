@@ -52,11 +52,24 @@ import { resolveCategory } from './categoryRules'
  * eine von Hand notierte Buchung ohne Einordnung in der Zuordnung bleibt,
  * während eine im Preview korrigierte daraus verschwindet.
  *
- * @param {{category_id?: string|null, merchant_id?: string|null, merchant_name?: string|null}|null} override
+ * SEIT v1.26.2 IST „UMBUCHUNG" DIE VIERTE ANTWORT, und sie ist eine
+ * vollständige. Wer sagt „das ist eine Umbuchung", hat diese Buchung fertig
+ * eingeordnet: eine Umbuchung braucht keine Kategorie (sie taucht in keiner
+ * Auswertung auf) und keinen Händler (das eigene zweite Konto ist keiner). Ohne
+ * diese Zeile bliebe eine als Umbuchung markierte Buchung für immer in der
+ * Warteschlange — der Nutzer hätte geantwortet und würde weiter gefragt.
+ *
+ * Nur `transfer`, und ausdrücklich keine andere Buchungsart: bei einem Kauf,
+ * einer Retoure oder einer Einnahme bleibt die Frage nach Händler und Kategorie
+ * offen, und eine Buchungsart allein beantwortet sie nicht.
+ *
+ * @param {{category_id?: string|null, merchant_id?: string|null,
+ *          merchant_name?: string|null, transaction_type?: string|null}|null} override
  * @returns {boolean}
  */
 export function overrideDecidesClassification(override) {
   if (!override || typeof override !== 'object') return false
+  if (override.transaction_type === 'transfer') return true
   if (override.category_id) return true
   if (override.merchant_id) return true
   return typeof override.merchant_name === 'string' && override.merchant_name.trim() !== ''

@@ -38,6 +38,7 @@ import {
   resolveEffectiveClassification,
 } from './src/lib/finance/effectiveClassification.js'
 import { buildClassificationQueue, needsDecision } from './src/lib/finance/classificationQueue.js'
+import { buildOverride } from './src/lib/finance/classificationFlow.js'
 import { FINANCE_STATUS } from './src/lib/finance/merchantMatching.js'
 import { amountToMinor, parseAIImport, validateAIImport } from './src/lib/finance/ai/parse.js'
 import { aiDedupeKey, matchExisting } from './src/lib/finance/ai/dedupe.js'
@@ -1003,6 +1004,79 @@ const stored = (over = {}) => ({
      overrideDecidesClassification({ note: 'nur eine Notiz' }) === false &&
      overrideDecidesClassification({ merchant_name: '   ' }) === false &&
      overrideDecidesClassification(null) === false)
+
+  // ── „Umbuchung" ist die vierte vollständige Antwort (v1.26.2) ────────────
+  //
+  // Wer sagt „das ist eine Umbuchung", hat diese Buchung fertig eingeordnet:
+  // sie braucht keine Kategorie (sie erscheint in keiner Auswertung) und keinen
+  // Händler (das eigene zweite Konto ist keiner). Ohne diese Zeile bliebe sie
+  // für immer in der Warteschlange — der Nutzer hätte geantwortet und würde
+  // weiter gefragt.
+  ok('eine Umbuchung entscheidet die Einordnung für sich allein',
+     overrideDecidesClassification({ transaction_type: 'transfer' }) === true)
+  ok('… und wirklich nur sie: jede andere Buchungsart lässt die Frage offen',
+     ['purchase', 'refund', 'income', 'fee', 'other'].every(
+       (type) => overrideDecidesClassification({ transaction_type: type }) === false))
+
+  const umbuchung = { ...savedTx, manual_lock: false, category_id: null, merchant_id: null }
+  const alsUmbuchung = buildClassificationQueue({
+    transactions: [umbuchung],
+    overrides: [{ transaction_id: umbuchung.id, transaction_type: 'transfer',
+                  category_id: null, merchant_id: null, merchant_name: null }],
+  })
+  ok('in der Warteschlange kommt dieselbe Antwort heraus',
+     alsUmbuchung.summary.offen === 0 && alsUmbuchung.queue.length === 0)
+  ok('… ohne dass ihr jemand eine Kategorie gegeben hätte',
+     alsUmbuchung.entries[0].categoryId === null)
+  ok('… und sie steht als Entscheidung eines Menschen da',
+     alsUmbuchung.entries[0].source === CLASSIFICATION_SOURCE.OVERRIDE &&
+     alsUmbuchung.entries[0].needsDecision === false)
+
+  const nurArt = buildClassificationQueue({
+    transactions: [umbuchung],
+    overrides: [{ transaction_id: umbuchung.id, transaction_type: 'purchase',
+                  category_id: null, merchant_id: null, merchant_name: null }],
+  })
+  ok('ein Kauf ohne Händler und Kategorie bleibt dagegen offen',
+     nurArt.summary.offen === 1)
+}
+
+// ── 15b. Der Override, wie das Zuordnungs-Sheet ihn baut (v1.26.2) ──────────
+//
+// "buildOverride" ist seit v1.26.2 der Weg „nur diese Buchung": kein Muster,
+// keine Kategorieregel, kein Händler-Eintrag. Er trägt deshalb drei Felder
+// mehr — und jedes davon fehlt im Patch, wenn niemand es gesetzt hat. Ein Feld,
+// das nicht im Patch steht, lässt "saveOverride" den alten Wert stehen; ein
+// Feld, das mit null darin steht, löscht ihn. Der Unterschied ist die Notiz
+// von letzter Woche.
+{
+  const leer = buildOverride({})
+  ok('ohne Angaben bleiben genau die beiden alten Felder',
+     Object.keys(leer).sort().join(',') === 'category_id,merchant_id' &&
+     leer.merchant_id === null && leer.category_id === null)
+
+  const getippt = buildOverride({ merchantName: '  REWE  ' })
+  ok('ein getippter Händlername kommt getrimmt mit',
+     getippt.merchant_name === 'REWE')
+  ok('… und legt ausdrücklich keine Händlerzeile an',
+     getippt.merchant_id === null)
+
+  const gewaehlt = buildOverride({ merchantId: 'm-rewe', merchantName: 'Etwas anderes' })
+  ok('ein gewählter Händler schlägt den getippten Namen',
+     gewaehlt.merchant_id === 'm-rewe' && !('merchant_name' in gewaehlt))
+  ok('ein leerer Name ist kein Name',
+     !('merchant_name' in buildOverride({ merchantName: '   ' })))
+
+  const transfer = buildOverride({ transactionType: 'transfer', include: false })
+  ok('die Buchungsart steht im Patch, wenn sie gesetzt wurde',
+     transfer.transaction_type === 'transfer' && transfer.include_in_analytics === false)
+  ok('… und fehlt darin, wenn nicht',
+     !('transaction_type' in buildOverride({ categoryId: 'c-1' })))
+  ok('nur ein echtes Ja oder Nein schreibt den Analyse-Schalter',
+     !('include_in_analytics' in buildOverride({ include: null })) &&
+     buildOverride({ include: true }).include_in_analytics === true)
+  ok('und eine Umbuchung braucht in alldem keine Kategorie',
+     transfer.category_id === null)
 }
 
 // ── 16. Die manuelle Buchung: zwei Fälle ────────────────────────────────────

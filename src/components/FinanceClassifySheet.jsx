@@ -9,6 +9,11 @@ import { buildClassificationQueue } from '../lib/finance/classificationQueue'
 import { buildLearnRequest } from '../lib/finance/learning'
 import { analyticsInclusion } from '../lib/finance/analytics'
 import { assignableCategories, categoryTree } from '../lib/finance/categories'
+import {
+  DEFAULT_TRANSACTION_TYPE,
+  TRANSACTION_TYPES,
+  transactionTypeLabel,
+} from '../config/finance'
 import { failureLog } from '../lib/finance/importFlow'
 import {
   DECISION,
@@ -309,7 +314,13 @@ export function BookingStep({
     () => categories.find((c) => c.id === entry.category?.suggestedCategoryId)?.slug ?? null
   )
   const [note, setNote] = useState(override?.note ?? '')
-  const [picker, setPicker] = useState(null) // 'merchant' | 'category' | null
+  const [picker, setPicker] = useState(null) // 'merchant' | 'category' | 'type' | null
+
+  // Die Buchungsart — aus dem, was heute gilt, nicht aus einer Annahme: die
+  // Entscheidung eines Menschen schlägt, was der Import geschrieben hat.
+  const bookedType = override?.transaction_type ?? transaction.transaction_type ?? DEFAULT_TRANSACTION_TYPE
+  const [transactionType, setTransactionType] = useState(bookedType)
+  const transfer = transactionType === 'transfer'
 
   // Whether this booking counts — started from the answer that is true today,
   // so the switch shows the state rather than a guess about it.
@@ -318,6 +329,27 @@ export function BookingStep({
   })
   const [include, setInclude] = useState(current.included)
   const [scope, setScope] = useState('transaction') // 'transaction' | 'merchant'
+
+  /**
+   * Buchungsart wählen — und bei „Umbuchung" gleich die zweite Hälfte der
+   * Aussage mit.
+   *
+   * Eine Umbuchung ist Geld, das zwischen den eigenen Konten wandert. Sie ist
+   * keine Ausgabe und keine Einnahme, also zählt sie in keiner Auswertung. Den
+   * Nutzer danach noch einen Schalter umlegen zu lassen hieße, ihn zweimal
+   * dasselbe sagen zu lassen — und der zweite Halbsatz wäre der, den man
+   * vergisst.
+   */
+  const pickType = (next) => {
+    setTransactionType(next)
+    if (next === 'transfer') {
+      setInclude(false)
+      setScope('transaction')
+    } else if (transactionType === 'transfer') {
+      // Zurück aus der Umbuchung: wieder das, was ohne diese Entscheidung gilt.
+      setInclude(current.included)
+    }
+  }
 
   const onWord = useCallback(
     (segment) => {
@@ -347,8 +379,16 @@ export function BookingStep({
   const reviewMode = !merchantId && alwaysReview ? 'always_review' : null
   const learning = kind === DECISION.LEARN
 
+  // MUSTER ODER NUR DIESE BUCHUNG — und der Unterschied ist genau eine Frage:
+  // hat der Nutzer Wörter markiert? Ohne Markierung wird nichts gelernt, und
+  // das ist seit v1.26.2 ein gültiger, gleichberechtigter Weg (siehe unten).
+  // Eine Umbuchung nimmt den Musterpfad nie: sie braucht weder Kategorie noch
+  // Händlerregel, und ein Muster „alles von X ist eine Umbuchung" wäre eine
+  // Behauptung über künftige Buchungen, die hier niemand aufgestellt hat.
+  const patternPath = learning && !transfer && tokens.length > 0
+
   const built = useMemo(() => {
-    if (!learning || tokens.length === 0 || !categorySlug) return null
+    if (!learning || transfer || tokens.length === 0 || !categorySlug) return null
     return buildLearnRequest({
       transaction,
       selection: tokens,
@@ -362,7 +402,7 @@ export function BookingStep({
       patterns,
       overrides,
     })
-  }, [learning, transaction, tokens, categorySlug, categories, merchantId, merchantName,
+  }, [learning, transfer, transaction, tokens, categorySlug, categories, merchantId, merchantName,
       reviewMode, transactions, patterns, overrides])
 
   const numbers = built?.backtest
@@ -386,7 +426,9 @@ export function BookingStep({
   // merchant-wide „nicht berücksichtigen" that could not be taken back would be
   // a one-way door, and this screen is the only place the door is.
   const includeChanged = include !== current.included
-  const scopeOffered = includeChanged && merchantKnown
+  // Bei einer Umbuchung gar nicht erst: „alle Buchungen dieses Händlers zählen
+  // nicht" ist eine Aussage über einen Händler, und eine Umbuchung hat keinen.
+  const scopeOffered = includeChanged && merchantKnown && !transfer
 
   const noteValue = normalizeNote(note)
   const noteChanged = noteValue !== (override?.note ?? null)
@@ -400,9 +442,24 @@ export function BookingStep({
   const clearsIndividual =
     scope === 'merchant' && typeof override?.include_in_analytics === 'boolean'
 
-  const canSave = learning
-    ? Boolean(built?.valid) && !blocking && !saving
-    : Boolean(chosenCategory) && Boolean(merchantId) && !saving
+  // Was diese Buchung entscheidet, wenn kein Muster gelernt wird. Dieselben vier
+  // Angaben, die `overrideDecidesClassification` als Einordnung gelten lässt —
+  // eine davon reicht, sonst wäre „Speichern" ein Knopf, der nichts beantwortet.
+  const decides =
+    transfer || Boolean(chosenCategory) || Boolean(merchantId) || chosenMerchantName.trim() !== ''
+
+  const canSave = saving
+    ? false
+    : patternPath
+      ? Boolean(built?.valid) && !blocking
+      // Eine Umbuchung ist überall eine vollständige Antwort.
+      : transfer
+        ? true
+        : learning
+          // „Nur diese Buchung": Kategorie, Händler oder getippter Name.
+          ? decides
+          // Konflikt und Prüfung entscheiden wie bisher über beides.
+          : Boolean(chosenCategory) && Boolean(merchantId)
 
   const submit = () => {
     const labels = { merchantName: chosenMerchantName, categoryName }
@@ -415,27 +472,44 @@ export function BookingStep({
         ? (clearsIndividual ? { include_in_analytics: null } : {})
         : (includeChanged ? { include_in_analytics: include } : {})
 
-    const overridePatch = learning
-      ? (noteChanged || Object.keys(individual).length > 0
-          ? { ...(noteChanged ? { note: noteValue } : {}), ...individual }
+    // Die Buchungsart wandert nur mit, wenn der Nutzer sie WIRKLICH gesetzt hat
+    // — eine Umbuchung immer (sie ist die Entscheidung selbst und muss im
+    // Override stehen, auch wenn der Import dasselbe schon behauptete), sonst
+    // nur bei einer Änderung. So entsteht auf dem Musterpfad kein Override, den
+    // niemand bestellt hat.
+    const typeDecided = transfer || transactionType !== bookedType
+    const typePatch = typeDecided ? { transaction_type: transactionType } : {}
+
+    const overridePatch = patternPath
+      ? (noteChanged || typeDecided || Object.keys(individual).length > 0
+          ? { ...(noteChanged ? { note: noteValue } : {}), ...typePatch, ...individual }
           : null)
       : {
-          ...buildOverride({ merchantId, categoryId: chosenCategory.id }),
+          // „Nur diese Buchung." Kein Muster, keine Kategorieregel, kein
+          // Händler-Eintrag — was hier steht, gilt für diese eine Zeile.
+          ...buildOverride({
+            merchantId,
+            // Der getippte Name zählt nur ohne gewählten Händler, und nur wo
+            // ein neuer Händler überhaupt angeboten wird.
+            merchantName: learning ? merchantName : null,
+            categoryId: transfer ? null : chosenCategory?.id ?? null,
+            transactionType: typeDecided ? transactionType : null,
+            // Eine Umbuchung zählt nicht, ohne dass jemand einen Schalter
+            // umlegen musste.
+            include: transfer ? false : scope === 'merchant' ? null : include,
+          }),
           note: noteValue,
-          // A conflict or a review always writes the row anyway, so the
-          // individual decision is written with it — or cleared, when the user
-          // just said the merchant decides.
-          ...(scope === 'merchant' ? { include_in_analytics: null } : { include_in_analytics: include }),
+          ...(scope === 'merchant' && !transfer ? { include_in_analytics: null } : {}),
         }
 
     onSave({
-      learnRequest: learning ? built.request : null,
+      learnRequest: patternPath ? built.request : null,
       transactionId: transaction.id,
       override: overridePatch,
       // null unless the user chose the merchant-wide scope. `merchantId` may be
       // null here for a merchant that is about to be created — the learn call
       // returns its id.
-      merchantScope: scope === 'merchant' && merchantKnown ? { merchantId, include } : null,
+      merchantScope: scope === 'merchant' && merchantKnown && !transfer ? { merchantId, include } : null,
       labels,
       kind,
       reason: entry.category?.reason ?? null,
@@ -476,8 +550,11 @@ export function BookingStep({
       {/* ── the gesture, only where a pattern is what is missing ── */}
       {learning && (
         <>
+          {/* „optional" steht seit v1.26.2 in der Überschrift und nicht als
+              eigene Hinweiszeile darunter: es ist dieselbe Aussage, und dieses
+              Sheet muss ohne Scrollen passen. */}
           <p className="pb-1.5 pt-4 text-meta font-semibold uppercase tracking-[0.08em] text-section-label">
-            Wörter markieren
+            Wörter markieren — optional
           </p>
           {/* Capped and scrollable on its own: a five-line booking text may not
               push the buttons off the screen. */}
@@ -499,39 +576,65 @@ export function BookingStep({
 
       {/* ── the decisions, one compact row each ── */}
       <div className="mt-4 overflow-hidden rounded-card bg-bg-card">
-        {kind === DECISION.RESOLVE_CONFLICT ? (
+        {/* Wählbar bei einem Konflikt (zwei Händler streiten) und beim Lernen —
+            seit v1.26.2 auch ohne markierte Wörter. Bei einer Prüfung ist der
+            Händler erkannt und steht fest. */}
+        {kind === DECISION.RESOLVE_CONFLICT || learning ? (
           <PickerRow
             label="Händler"
             value={chosenMerchantName || 'Wählen'}
-            onClick={() => setPicker('merchant')}
-          />
-        ) : learning ? (
-          <PickerRow
-            label="Händler"
-            value={chosenMerchantName || 'Wählen'}
-            disabled={tokens.length === 0}
-            hint={tokens.length === 0 ? 'Erst Wörter markieren' : undefined}
             onClick={() => setPicker('merchant')}
           />
         ) : (
           <StaticRow label="Händler" value={chosenMerchantName || '—'} />
         )}
-        <PickerRow label="Kategorie" value={chosenCategory?.label ?? 'Wählen'} onClick={() => setPicker('category')} />
-        <div className="flex min-h-[44px] items-center justify-between gap-3 border-t border-subtle px-4 py-2">
-          <span className="min-w-0 flex-1 text-body text-text-primary">
-            In Auswertung berücksichtigen
-          </span>
-          <Toggle
-            checked={include}
-            onChange={(next) => {
-              setInclude(next)
-              // Back to the value it already had? Then there is nothing to
-              // scope, and a stale „alle Buchungen von …" must not survive it.
-              if (next === current.included) setScope('transaction')
-            }}
-            label="In Auswertung berücksichtigen"
+        {!transfer && (
+          <PickerRow
+            label="Kategorie"
+            value={chosenCategory?.label ?? 'Wählen'}
+            onClick={() => setPicker('category')}
           />
-        </div>
+        )}
+        {/* Buchungsart — eine Zeile wie Händler und Kategorie, kein Chip-Feld.
+            Sechs Chips wären auf 390 px zwei Reihen und damit rund 100 px, und
+            dieses Sheet muss seit v1.22 ohne Scrollen passen (siehe
+            tools/financeClassifyLayout.mjs). Dieselbe Zeile, dieselbe Geste,
+            derselbe Picker. */}
+        <PickerRow
+          label="Buchungsart"
+          value={transactionTypeLabel(transactionType)}
+          onClick={() => setPicker('type')}
+        />
+        {transfer ? (
+          <div className="border-t border-subtle px-4 py-2">
+            <div className="flex min-h-[44px] items-center justify-between gap-3">
+              <span className="min-w-0 flex-1 text-body text-text-primary">
+                In Auswertung berücksichtigen
+              </span>
+              <span className="shrink-0 text-body text-text-secondary">Nein</span>
+            </div>
+            <p className="pb-1 text-caption text-text-muted">
+              Eine Umbuchung verschiebt Geld zwischen eigenen Konten. Sie ist weder Ausgabe noch
+              Einnahme und zählt in keiner Auswertung mit.
+            </p>
+          </div>
+        ) : (
+          <div className="flex min-h-[44px] items-center justify-between gap-3 border-t border-subtle px-4 py-2">
+            <span className="min-w-0 flex-1 text-body text-text-primary">
+              In Auswertung berücksichtigen
+            </span>
+            <Toggle
+              checked={include}
+              onChange={(next) => {
+                setInclude(next)
+                // Back to the value it already had? Then there is nothing to
+                // scope, and a stale „alle Buchungen von …" must not survive it.
+                if (next === current.included) setScope('transaction')
+              }}
+              label="In Auswertung berücksichtigen"
+            />
+          </div>
+        )}
         {scopeOffered && (
           <div className="border-t border-subtle px-4 py-2">
             <p className="text-caption text-text-muted">Gilt für</p>
@@ -645,6 +748,16 @@ export function BookingStep({
             setNameTouched(true)
             setMerchantId(null)
             setMerchantName(value)
+          }}
+        />
+      )}
+      {picker === 'type' && (
+        <TypePicker
+          value={transactionType}
+          onClose={() => setPicker(null)}
+          onPick={(type) => {
+            pickType(type)
+            setPicker(null)
           }}
         />
       )}
@@ -840,6 +953,47 @@ function MerchantPicker({
 // sie gliedert die Liste und ist keine Zuordnung (0014). Wäre sie antippbar,
 // würde die Datenbank den Speichervorgang ablehnen, und der Nutzer hätte eine
 // Kategorie gewählt, die es für seine Buchung nie gab.
+/**
+ * Die Buchungsart, in derselben Liste wie jede andere Wahl in diesem Sheet.
+ *
+ * Sechs feste Werte, aus `src/config/finance.js` — die Oberfläche denkt sich
+ * hier keine eigene Übersetzung aus und kennt keine siebte Art. „Umbuchung"
+ * trägt die einzige Zeile Erklärung, weil sie als einzige nebenbei etwas
+ * anderes entscheidet: eine Umbuchung zählt in keiner Auswertung.
+ */
+function TypePicker({ value, onPick, onClose }) {
+  return (
+    <BottomSheet open onClose={onClose} title="Buchungsart" z="z-[60]">
+      <div className="overflow-y-auto px-5 pb-6">
+        {TRANSACTION_TYPES.map((type) => (
+          <button
+            key={type}
+            onClick={() => onPick(type)}
+            aria-pressed={value === type}
+            className="press-tint mt-1 flex min-h-[44px] w-full items-center justify-between gap-3 rounded-chip px-3 py-2 text-left first:mt-0"
+          >
+            <span className="min-w-0 flex-1">
+              <span
+                className={`block truncate text-body ${
+                  value === type ? 'font-semibold text-text-primary' : 'text-text-secondary'
+                }`}
+              >
+                {transactionTypeLabel(type)}
+              </span>
+              {type === 'transfer' && (
+                <span className="mt-0.5 block text-caption text-text-muted">
+                  Zwischen eigenen Konten — zählt in keiner Auswertung.
+                </span>
+              )}
+            </span>
+            {value === type && <Check size={18} className="shrink-0 text-accent" />}
+          </button>
+        ))}
+      </div>
+    </BottomSheet>
+  )
+}
+
 function CategoryPicker({ categories, value, onPick, onClose }) {
   const groups = categoryTree(categories).filter((node) => node.children.length > 0)
   const grouped = new Set(groups.flatMap((node) => node.children.map((c) => c.id)))

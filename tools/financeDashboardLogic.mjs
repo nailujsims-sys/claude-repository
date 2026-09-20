@@ -862,6 +862,127 @@ const dash = (over = {}) =>
      after.trend.buckets.at(-1).amount === 1500)
 }
 
+// == Die Review-Inbox kennt keinen Zeitraum und kein Konto (v1.26.2) =======
+//
+// DER FEHLER, DEN DIESER BLOCK FESTNAGELT: bis v1.26.1 wurde
+// "openClassifications" aus den Buchungen DES GEWAEHLTEN ZEITRAUMS gezaehlt.
+// Wer „Letzte 30 Tage" waehlte, sah die offenen Buchungen von 2025 nicht mehr
+// — die Warteschlange versteckte sich hinter einem Filter, der ueber sie
+// nichts aussagt. Die Arbeit blieb, nur der Hinweis darauf verschwand.
+//
+// Der Aufbau ist deshalb genau der Fall aus dem Bericht: eine alte, offene
+// Buchung ausserhalb jedes kurzen Zeitraums, und eine frische daneben.
+{
+  const alt = tx({ booking_date: '2025-03-04', amount_minor: -4200,
+                   raw_description: 'ALTE OFFENE BUCHUNG' })
+  const neu = tx({ booking_date: '2026-09-10', amount_minor: -1900,
+                   raw_description: 'NEUE OFFENE BUCHUNG' })
+  // Eine dritte, die niemanden mehr beschaeftigt: sie darf nie mitzaehlen.
+  const fertig = tx({ booking_date: '2026-09-11', amount_minor: -800,
+                      category_id: cat('lebensmittel'), manual_lock: true })
+  const alle = [alt, neu, fertig]
+
+  const monat = dash({ transactions: alle, period: { kind: 'month', year: 2026, month: 9 } })
+  const dreissig = dash({ transactions: alle, period: { kind: 'last30' } })
+  const jahr = dash({ transactions: alle, period: { kind: 'year', year: 2026 } })
+
+  ok('die alte offene Buchung liegt ausserhalb von „Letzte 30 Tage"',
+     dreissig.periodEntries.every((e) => e.id !== alt.id))
+  ok('… und wird trotzdem als offen gezaehlt',
+     dreissig.summary.openClassifications === 2)
+  ok('… beim Monat genauso',
+     monat.summary.openClassifications === 2)
+  ok('… und beim Jahr genauso',
+     jahr.summary.openClassifications === 2)
+  ok('die Zahl aendert sich durch den Zeitraum ueberhaupt nicht',
+     new Set([monat, dreissig, jahr].map((d) => d.summary.openClassifications)).size === 1)
+  ok('eine entschiedene Buchung zaehlt nie mit',
+     dreissig.review.entries.every((e) => e.id !== fertig.id))
+  ok('die Inbox liefert auch die Buchungen selbst, nicht nur eine Zahl',
+     dreissig.review.count === dreissig.review.entries.length &&
+     dreissig.review.entries.map((e) => e.id).sort().join(',') ===
+       [alt.id, neu.id].sort().join(','))
+
+  // Und dasselbe ueber Konten: eine offene Buchung auf dem zweiten Konto
+  // verschwindet aus der Auswertung, sobald ein Konto gewaehlt ist — aus der
+  // Warteschlange nicht.
+  const fremd = tx({ account_id: A2, booking_date: '2026-09-09', amount_minor: -700,
+                     raw_description: 'OFFEN AUF KONTO ZWEI' })
+  const beide = dash({ transactions: [...alle, fremd] })
+  const nurA1 = dash({ transactions: [...alle, fremd], accountId: A1 })
+
+  ok('der Kontenfilter schneidet die Auswertung',
+     beide.entries.length === 4 && nurA1.entries.length === 3 &&
+     nurA1.entries.every((e) => e.accountId === A1))
+  ok('… und laesst die Review-Inbox unberuehrt',
+     beide.summary.openClassifications === 3 && nurA1.summary.openClassifications === 3)
+  ok('… inklusive der Buchung des anderen Kontos',
+     nurA1.review.entries.some((e) => e.id === fremd.id))
+  ok('"allEntries" ist die ungefilterte Wahrheit daneben',
+     nurA1.allEntries.length === 4 && nurA1.entries.length === 3)
+  ok('… und die Summen bleiben die des gewaehlten Kontos',
+     nurA1.summary.expenses === 2700)
+}
+
+// == Eine Umbuchung ist keine Ausgabe und keine Frage (v1.26.2) ============
+//
+// Zwei Zusagen in einem Block, weil sie zusammengehoeren: „Umbuchung" ist eine
+// VOLLSTAENDIGE Antwort (die Buchung verlaesst die Warteschlange, ohne dass
+// jemand eine Kategorie erfindet), und sie taucht in KEINER Auswertung auf.
+{
+  const umbuchung = tx({ booking_date: '2026-09-08', amount_minor: -50000,
+                         raw_description: 'UEBERTRAG TAGESGELD' })
+  // manual_lock, damit diese Buchung sicher NICHT in der Warteschlange steht —
+  // sie ist hier die Kontrolle, nicht der Fall.
+  const kauf = tx({ booking_date: '2026-09-09', amount_minor: -2500,
+                    category_id: cat('lebensmittel'), manual_lock: true })
+
+  const offen = dash({ transactions: [umbuchung, kauf] })
+  ok('ohne Entscheidung ist die Umbuchung eine offene Buchung wie jede andere',
+     offen.summary.openClassifications === 1 &&
+     offen.review.entries[0].id === umbuchung.id)
+
+  // Genau das, was das Zuordnungs-Sheet schreibt: Buchungsart und der
+  // Analyse-Schalter, und ausdruecklich KEINE Kategorie.
+  const entschieden = dash({
+    transactions: [umbuchung, kauf],
+    overrides: [{ transaction_id: umbuchung.id, transaction_type: 'transfer',
+                  include_in_analytics: false, category_id: null, merchant_id: null }],
+  })
+
+  ok('als Umbuchung markiert, verlaesst sie die Warteschlange',
+     entschieden.summary.openClassifications === 0 && entschieden.review.count === 0)
+  ok('… ohne dass ihr jemand eine Kategorie gegeben hat',
+     entschieden.entries.find((e) => e.id === umbuchung.id).categoryId === null)
+  ok('… und sie zaehlt in keiner Summe mit',
+     entschieden.summary.expenses === 2500 && entschieden.summary.cashflow === -2500)
+  ok('… in keiner Kategorie',
+     entschieden.categories.parents.every((p) => p.amount !== 50000) &&
+     entschieden.categories.unassigned.amount === 0)
+  ok('… bei keinem Haendler',
+     entschieden.merchants.merchants.every((m) => m.amount !== 50000))
+  ok('… unter keiner grossen Ausgabe',
+     entschieden.biggest.every((b) => b.id !== umbuchung.id))
+  ok('… und in keinem Balken des Verlaufs',
+     entschieden.trend.buckets.every((b) => b.amount !== 50000))
+  ok('sie bleibt trotzdem eine Buchung, die es gibt',
+     entschieden.periodEntries.some((e) => e.id === umbuchung.id) &&
+     entschieden.entries.find((e) => e.id === umbuchung.id).transactionType === 'transfer')
+
+  // Auch ohne den Schalter: die Vorzeichenregel kennt „transfer" laengst, und
+  // eine Umbuchung, die versehentlich in der Auswertung landet, darf trotzdem
+  // keine Ausgabe sein.
+  const nurArt = dash({
+    transactions: [umbuchung, kauf],
+    overrides: [{ transaction_id: umbuchung.id, transaction_type: 'transfer',
+                  category_id: null, merchant_id: null }],
+  })
+  ok('die Buchungsart allein macht sie schon zu keiner Ausgabe',
+     nurArt.summary.expenses === 2500)
+  ok('… und beantwortet die Frage nach ihr trotzdem',
+     nurArt.summary.openClassifications === 0)
+}
+
 console.log((fail === 0 ? '' : '\\n') + 'finance dashboard: ' + pass + ' passed, ' + fail + ' failed')
 if (fail > 0) process.exit(1)
 `

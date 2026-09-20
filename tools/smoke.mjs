@@ -4180,6 +4180,200 @@ async function run() {
       errors.push(`[${label}] there is no way back through the skipped bookings`)
   }
 
+  // 16b6e2) v1.26.2: zuordnen OHNE Wörter zu markieren — und die Umbuchung.
+  //
+  //         DREI WEGE, DIE ES VORHER NICHT GAB. Bis v1.26.1 war die
+  //         Händler-Zeile gesperrt, solange kein Wort markiert war („Erst
+  //         Wörter markieren"), und „Speichern" verlangte ein gültiges Muster.
+  //         Wer eine Buchung nur EINMAL einordnen wollte — weil der Text nichts
+  //         Wiederverwendbares enthält — kam nicht durch. Seit v1.26.2 ist das
+  //         Markieren optional, und wer nichts markiert, entscheidet genau
+  //         diese eine Buchung.
+  //
+  //         Drei Buchungen, drei Wege: Kategorie, getippter Händler, Umbuchung.
+  //         Keiner von ihnen darf eine Regel lernen.
+  {
+    const label = 'Finanzen/Ohne-Wörter'
+    const booking = (n, text) => ({
+      id: '11111111-2222-4333-8444-00000000032' + n, user_id: TEST_USER_ID,
+      account_id: FIN_ACCOUNT,
+      // Die Warteschlange sortiert neueste zuerst — also bekommt Buchung 1 das
+      // jüngste Datum, damit die drei Wege in der Reihenfolge drankommen, in
+      // der sie hier stehen.
+      booking_date: '2026-09-1' + (4 - n),
+      amount_minor: -(1000 * n + 11), currency: 'EUR',
+      raw_description: text, normalized_tokens: text.toUpperCase().split(' '),
+      include_in_analytics: true, manual_lock: false,
+    })
+    const window = makeDom('#/finanzen', {
+      finance: {
+        ...financeSeed,
+        finance_transactions: [
+          booking(1, 'KARTENZAHLUNG 884213'),
+          booking(2, 'LASTSCHRIFT EINZUG 5512'),
+          booking(3, 'UEBERTRAG TAGESGELD'),
+        ],
+      },
+    })
+    mount(window, code, label)
+    await wait(400)
+    window.__restoreConsole?.()
+    const backend = window.__backend
+
+    click(window, (el) => /^\d+ Buchung(en)? prüfen$/.test(el.textContent.trim()))
+    await wait(320)
+
+    const rules = () => backend.rpcCalls.filter((c) => c.name === 'finance_learn_merchant_rule').length
+    const overrideOf = (id) => backend.tables.finance_transaction_overrides.find(
+      (o) => o.transaction_id === '11111111-2222-4333-8444-00000000032' + id)
+
+    // ── Weg 1: kein Wort, nur eine Kategorie ────────────────────────────────
+    const first = nb(txt(window))
+    if (!first.includes('Buchung 1 von 3'))
+      errors.push(`[${label}] the queue did not start at the first booking: ${first.slice(-260)}`)
+    if (!first.includes('Wörter markieren'))
+      errors.push(`[${label}] the word gesture is gone entirely`)
+    if (!first.includes('Wörter markieren — optional'))
+      errors.push(`[${label}] nothing says that marking words is optional: ${first.slice(-300)}`)
+    if (first.includes('Erst Wörter markieren'))
+      errors.push(`[${label}] the merchant row still demands a marked word: ${first.slice(-260)}`)
+
+    // Die Händler-Zeile ist jetzt anklickbar, ohne dass ein Wort markiert ist.
+    const merchantRow = [...window.document.querySelectorAll('button')].find(
+      (b) => b.textContent.trim().startsWith('Händler'))
+    if (!merchantRow) errors.push(`[${label}] there is no merchant row`)
+    else if (merchantRow.disabled)
+      errors.push(`[${label}] the merchant row is still disabled without a marked word`)
+
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Kategorie'))
+    await wait(300)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Allgemeines Sonstiges')
+    await wait(300)
+
+    const armed = [...window.document.querySelectorAll('button')].find(
+      (b) => b.textContent.trim() === 'Speichern')
+    if (armed?.disabled)
+      errors.push(`[${label}] saving is refused although a category was chosen`)
+    armed?.click()
+    await wait(520)
+
+    if (rules() !== 0)
+      errors.push(`[${label}] a rule was learned although no word was marked (${rules()})`)
+    if (!overrideOf(1))
+      errors.push(`[${label}] the single-booking decision was not written`)
+    else if (!overrideOf(1).category_id)
+      errors.push(`[${label}] the decision did not carry the category`)
+
+    // ── Weg 2: kein Wort, ein getippter Händlername ─────────────────────────
+    const second = nb(txt(window))
+    if (!second.includes('Buchung 2 von 3'))
+      errors.push(`[${label}] saving without a pattern did not move on: ${second.slice(-300)}`)
+
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Händler'))
+    await wait(300)
+    const nameField = [...window.document.querySelectorAll('input')].find(
+      (i) => (i.previousSibling?.textContent || i.parentElement?.textContent || '')
+        .includes('Neuer Händler'))
+    if (!nameField) errors.push(`[${label}] a new merchant cannot be named without a marked word`)
+    else {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype, 'value').set
+      setter.call(nameField, 'Stadtwerke')
+      nameField.dispatchEvent(new window.Event('input', { bubbles: true }))
+      await wait(80)
+    }
+    const layers = [...window.document.querySelectorAll('.ov-backdrop')]
+    layers[layers.length - 1]?.click()
+    await wait(300)
+
+    const typed = nb(txt(window))
+    if (!typed.includes('Stadtwerke'))
+      errors.push(`[${label}] the typed merchant does not show in the row: ${typed.slice(-300)}`)
+    const save2 = [...window.document.querySelectorAll('button')].find(
+      (b) => b.textContent.trim() === 'Speichern')
+    if (save2?.disabled)
+      errors.push(`[${label}] a typed merchant alone is not accepted as a decision`)
+    save2?.click()
+    await wait(520)
+
+    if (rules() !== 0)
+      errors.push(`[${label}] naming a merchant learned a rule (${rules()})`)
+    if (backend.tables.finance_merchants.some((m) => m.canonical_name === 'Stadtwerke'))
+      errors.push(`[${label}] a typed name created a merchant row of its own`)
+    const o2 = overrideOf(2)
+    if (!o2) errors.push(`[${label}] the typed decision was not written`)
+    else {
+      if (o2.merchant_name !== 'Stadtwerke')
+        errors.push(`[${label}] the typed merchant did not reach the override`)
+      if (o2.merchant_id) errors.push(`[${label}] the override invented a merchant id`)
+    }
+
+    // ── Weg 3: die Umbuchung ────────────────────────────────────────────────
+    const third = nb(txt(window))
+    if (!third.includes('Letzte offene Buchung'))
+      errors.push(`[${label}] the third booking is not the last one: ${third.slice(-300)}`)
+    if (!third.includes('Buchungsart'))
+      errors.push(`[${label}] the booking type cannot be set here: ${third.slice(-300)}`)
+    if (!third.includes('Kategorie'))
+      errors.push(`[${label}] the category row is gone before a transfer was chosen`)
+
+    if (!click(window, (el) => el.tagName === 'BUTTON' &&
+        el.textContent.trim().startsWith('Buchungsart')))
+      errors.push(`[${label}] the booking type row is not tappable`)
+    await wait(300)
+    const typeSheet = nb(txt(window))
+    if (!typeSheet.includes('Umbuchung'))
+      errors.push(`[${label}] „Umbuchung" is not offered: ${typeSheet.slice(-300)}`)
+    if (!typeSheet.includes('Zwischen eigenen Konten'))
+      errors.push(`[${label}] the transfer option does not explain itself`)
+    if (!click(window, (el) => el.tagName === 'BUTTON' &&
+        el.textContent.trim().startsWith('Umbuchung')))
+      errors.push(`[${label}] the transfer cannot be picked`)
+    await wait(300)
+
+    const transfer = nb(txt(window))
+    console.log(`=== Finanzen — Umbuchung ===\n  ${transfer.slice(-320)}`)
+    if (!transfer.includes('BuchungsartUmbuchung'))
+      errors.push(`[${label}] the chosen booking type is not shown in its row: ${transfer.slice(-320)}`)
+    if (transfer.includes('KategorieWählen'))
+      errors.push(`[${label}] a transfer still demands a category: ${transfer.slice(-320)}`)
+    if (!transfer.includes('In Auswertung berücksichtigenNein'))
+      errors.push(`[${label}] a transfer does not turn analytics off by itself: ${transfer.slice(-320)}`)
+    if (window.document.querySelector('[role="switch"]'))
+      errors.push(`[${label}] a transfer still asks the user to flip a switch`)
+
+    const save3 = [...window.document.querySelectorAll('button')].find(
+      (b) => b.textContent.trim() === 'Speichern')
+    if (save3?.disabled)
+      errors.push(`[${label}] a transfer alone is not accepted as a complete answer`)
+    save3?.click()
+    await wait(520)
+
+    const o3 = overrideOf(3)
+    if (!o3) errors.push(`[${label}] the transfer decision was not written`)
+    else {
+      if (o3.transaction_type !== 'transfer')
+        errors.push(`[${label}] the booking type did not reach the database: ${JSON.stringify(o3)}`)
+      if (o3.include_in_analytics !== false)
+        errors.push(`[${label}] a transfer was not excluded from analytics`)
+      if (o3.category_id)
+        errors.push(`[${label}] a category was invented for a transfer`)
+    }
+    if (rules() !== 0)
+      errors.push(`[${label}] a transfer learned a rule (${rules()})`)
+
+    // Der v1.26.1-Flow bleibt exakt: nach der letzten Buchung schliesst sich
+    // das Sheet von selbst, ohne Bestätigungsschritt.
+    const end = nb(txt(window))
+    if (!end.includes('Alle offenen Buchungen bearbeitet'))
+      errors.push(`[${label}] the sheet did not close with a toast: ${end.slice(-300)}`)
+    if (/Gespeichert/.test(end))
+      errors.push(`[${label}] a confirmation step came back: ${end.slice(-300)}`)
+    if (backend.tables.finance_transaction_overrides.length !== 3)
+      errors.push(`[${label}] three decisions should have been written, not ` +
+        backend.tables.finance_transaction_overrides.length)
+  }
+
   // 16b6f) v1.26.1: eine Buchung ansehen und löschen.
   {
     const label = 'Finanzen/Löschen'

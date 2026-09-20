@@ -545,11 +545,39 @@ export function decisionExplanation(entry, merchants = []) {
  * user just picked one of the claimants, for a review because the engine
  * already knows it. A category alone would leave the booking's merchant
  * permanently ambiguous.
+ *
+ * SEIT v1.26.2 TRÄGT ER DREI DINGE MEHR, weil es seitdem einen Weg gibt, der
+ * ohne Muster auskommt („nur diese Buchung"):
+ *
+ *   merchantName      der Händler, den ein Mensch GETIPPT hat. Nur dort, wo
+ *                     keine Händlerzeile gewählt wurde — sonst stünden zwei
+ *                     Wahrheiten nebeneinander. Er legt ausdrücklich KEINEN
+ *                     `finance_merchants`-Eintrag an; das ist der Unterschied
+ *                     zwischen „diese Buchung ist von REWE" und „REWE ist ein
+ *                     Händler, den ich ab jetzt kenne".
+ *   transactionType   die Buchungsart, wenn der Nutzer sie gesetzt hat.
+ *   include           ob diese eine Buchung zählt.
+ *
+ * Weggelassen statt auf `null` gesetzt: ein Feld, das nicht im Patch steht,
+ * lässt `financeRepository.saveOverride` unangetastet — eine Notiz von letzter
+ * Woche überlebt eine Entscheidung über die Buchungsart.
  */
-export const buildOverride = ({ merchantId = null, categoryId }) => ({
-  merchant_id: merchantId ?? null,
-  category_id: categoryId,
-})
+export const buildOverride = ({
+  merchantId = null,
+  merchantName = null,
+  categoryId = null,
+  transactionType = null,
+  include = null,
+} = {}) => {
+  const typed = typeof merchantName === 'string' ? merchantName.trim() : ''
+  return {
+    merchant_id: merchantId ?? null,
+    ...(!merchantId && typed !== '' ? { merchant_name: typed } : {}),
+    category_id: categoryId ?? null,
+    ...(transactionType ? { transaction_type: transactionType } : {}),
+    ...(typeof include === 'boolean' ? { include_in_analytics: include } : {}),
+  }
+}
 
 /** What was decided, once it is written. */
 export function describeOverrideResult({ kind, reason = null, merchantName, categoryName }) {

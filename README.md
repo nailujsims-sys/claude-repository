@@ -1501,6 +1501,100 @@ bei zwölf Monatsbalken ist eine Spalte auf 390 Pixeln rund 19 Pixel breit, und
 `tools/financeDashboardLayout.mjs` misst nach, dass sich zwei Beträge nie
 berühren.
 
+## 🧭 Finanzen v1.26.2 — Review-Inbox, Umbuchungen, Zuordnen ohne Wörter
+
+Drei Dinge, die in der Benutzung aufgefallen sind. Keine Migration: die
+Datenbank konnte das alles schon.
+
+### Die Review-Inbox hat keinen Zeitraum mehr
+
+**Der Fehler.** `openClassifications` — die Zahl über „N Buchungen prüfen" —
+wurde aus den Buchungen des GEWÄHLTEN ZEITRAUMS gezählt. Wer „Letzte 30 Tage"
+wählte, sah die offenen Buchungen von 2025 nicht mehr. Die Arbeit verschwand
+nicht, nur der Hinweis darauf: die Warteschlange versteckte sich hinter einem
+Filter, der über sie gar nichts aussagt.
+
+**Die Ursache steckte in der Reihenfolge.** `buildFinanceDashboard` filterte
+erst auf das Konto, ordnete dann ein und schnitt danach den Zeitraum — und die
+Zahl entstand am Ende dieser Kette, in `dashboardSummary`, aus den Einträgen des
+Zeitraums. Die Einordnung hängt aber gar nicht am Konto (Muster und Regeln
+gelten kontoübergreifend) und erst recht nicht am Monat.
+
+**Die neue Regel: zwei Scopes, die nichts miteinander zu tun haben.**
+
+| | beantwortet | gefiltert nach |
+|---|---|---|
+| Auswertung | „was ist in diesem Zeitraum auf diesen Konten passiert?" | Zeitraum **und** Konto |
+| Review-Inbox | „was braucht noch meine Entscheidung?" | **nichts** |
+
+Eingeordnet wird jetzt einmal über **alle** Buchungen, die Inbox wird **vor**
+jedem Schnitt gebildet (`review: { entries, count }`), und `dashboardSummary`
+bekommt die Zahl durchgereicht statt sie zu zählen — sie kann dort nicht mehr
+versehentlich entstehen. Es gibt weiterhin nur eine Definition von „offen":
+`needsDecision` aus `classificationQueue.js`, dieselbe Antwort, die auch das
+Zuordnungs-Sheet benutzt. Das Sheet war immer schon zeitraumunabhängig; seit
+v1.26.2 stimmen Zahl und Warteschlange wieder überein.
+
+### Buchungsart „Umbuchung"
+
+Eigenübertrag zwischen eigenen Konten — Girokonto → Tagesgeld, Kreditkarten-
+ausgleich. Kein neuer Datentyp: `transaction_type = 'transfer'` gibt es seit
+0001, die Vorzeichenregel (`isRealExpense`) kennt es, und
+`finance_transaction_overrides.transaction_type` durfte den Wert schon. Deshalb
+**keine Migration** — eine künstliche wäre eine Datei, die nichts tut.
+
+Wer „Umbuchung" wählt, hat die Buchung **fertig eingeordnet**:
+
+- `include_in_analytics` wird automatisch `false` — ohne dass jemand einen
+  zweiten Schalter umlegen muss. Der zweite Halbsatz ist der, den man vergisst.
+- Eine **Kategorie ist nicht nötig**; die Kategoriezeile verschwindet, statt als
+  unnötiger Pflichtpunkt stehen zu bleiben.
+- Die Buchung zählt in **keiner** Auswertung: nicht in Ausgaben, Einnahmen oder
+  Cashflow, in keiner Kategorie, bei keinem Händler, unter keiner großen Ausgabe
+  und in keinem Balken des Verlaufs.
+- Sie **verlässt die Warteschlange**. `overrideDecidesClassification` zählt
+  „Umbuchung" seitdem als vierte vollständige Antwort neben Kategorie,
+  Händler-Verknüpfung und getipptem Händlernamen — sonst hätte der Nutzer
+  geantwortet und würde weiter gefragt.
+
+Ausdrücklich nur `transfer`: bei Kauf, Retoure oder Einnahme bleibt die Frage
+nach Händler und Kategorie offen, und eine Buchungsart allein beantwortet sie
+nicht. Ein Muster „alles von X ist eine Umbuchung" wird nie gelernt — das wäre
+eine Behauptung über künftige Buchungen, die niemand aufgestellt hat.
+
+### Zuordnen ohne Wörter zu markieren
+
+Die Händlerzeile war gesperrt, solange kein Wort markiert war („Erst Wörter
+markieren"), und „Speichern" verlangte ein gültiges Muster. Wer eine Buchung
+nur **einmal** einordnen wollte — weil im Text nichts Wiederverwendbares steht —
+kam nicht durch.
+
+Jetzt entscheidet genau eine Frage, welchen Weg das Speichern nimmt: **hat der
+Nutzer Wörter markiert?**
+
+- **Mit Markierung** — unverändert der Musterpfad: `finance_learn_merchant_rule`
+  mit Backtest, Vorschau und Konfliktprüfung.
+- **Ohne Markierung** — nur ein Override für diese eine Buchung. Kein Muster,
+  keine Kategorieregel, kein `finance_merchants`-Eintrag. Ein getippter
+  Händlername landet als `merchant_name` im Override (seit 0011 genau dafür da)
+  und legt keine Händlerzeile an.
+
+Kein Fehlerzustand, keine Warnung — die Überschrift heißt „Wörter markieren —
+optional". Gespeichert werden kann, sobald **eine** Angabe die Buchung
+einordnet: Kategorie, Händler, getippter Name oder „Umbuchung".
+
+### UX: eine Zeile, kein Chip-Feld
+
+„Buchungsart" ist eine Zeile wie „Händler" und „Kategorie" und öffnet denselben
+kleinen Picker — sechs Chips wären auf 390 px zwei Reihen und rund 100 px, und
+dieses Sheet muss seit v1.22 ohne Scrollen passen. Gemessen auf dem iPhone SE:
+der Bildschirm passt weiterhin vollständig, die freie Reserve unter den
+Entscheidungen ist von 92 auf 48 Pixel gefallen — genau die eine neue Zeile.
+`tools/financeClassifyLayout.mjs` prüft beides nach.
+
+Der v1.26.1-Flow „Speichern → direkt die nächste" bleibt exakt erhalten,
+inklusive Teilerfolg, Festhalten der Buchung und Wiederholung nur des Fehlenden.
+
 ## 🎨 Design system
 
 The binding product-design standard (visual, UX, interaction, motion,
