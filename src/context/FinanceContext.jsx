@@ -252,6 +252,42 @@ export function FinanceProvider({ children }) {
   )
 
   /**
+   * Eine einzelne Buchung löschen.
+   *
+   * Was dabei mitgeht und was bleibt, entscheidet `finance_delete_transaction`
+   * (0015) und nicht dieser Aufruf — insbesondere bleibt der Import, aus dem die
+   * Buchung stammt, und das gelernte Wissen über ihren Händler. Danach wird
+   * gelesen statt gepatcht: welche Relation, welcher Prüfposten und welche
+   * Zuordnung dieses Löschen noch berührt hat, weiß nur die Datenbank.
+   */
+  const deleteTransaction = useCallback(
+    async (transactionId) => {
+      const id = await repo.deleteTransaction(user.id, transactionId)
+      await load({ silent: true })
+      return id
+    },
+    [user, repo, load]
+  )
+
+  /**
+   * Alle Finanzdaten zurücksetzen.
+   *
+   * Ein Aufruf, eine Transaktion, kein Parameter — die Funktion in 0015 liest
+   * `auth.uid()` selbst, und es gibt deshalb nichts, was diese Zeile falsch
+   * adressieren könnte. Danach derselbe kanonische Reload wie überall sonst:
+   * der Screen zeigt anschließend den echten Leerzustand, weil er ihn gelesen
+   * hat und nicht, weil hier jemand elf Arrays auf `[]` gesetzt hat.
+   */
+  const resetFinanceData = useCallback(
+    async () => {
+      const result = await repo.resetFinanceData(user.id)
+      await load({ silent: true })
+      return result
+    },
+    [user, repo, load]
+  )
+
+  /**
    * One booking, entered by hand.
    *
    * The booking and the decision behind it are one database function and
@@ -454,6 +490,8 @@ export function FinanceProvider({ children }) {
       createManualTransaction,
       applyAiImport,
       setAiMemoryActive,
+      deleteTransaction,
+      resetFinanceData,
       learnRule,
       saveOverride,
       setMerchantAnalytics,
@@ -464,6 +502,7 @@ export function FinanceProvider({ children }) {
      overrides, aiSuggestions, aiMemories, loading, error, load, createAccount, findImport, openImport,
      applyPlan, learnRule, saveOverride, setMerchantAnalytics, saveClassification,
      createManualTransaction, applyAiImport, setAiMemoryActive,
+     deleteTransaction, resetFinanceData,
      updateAccount, archiveAccount, reactivateAccount, deleteEmptyAccount]
   )
 

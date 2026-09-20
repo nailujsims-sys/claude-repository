@@ -130,16 +130,24 @@ try {
   // aus 0008 ihre `id`, und zeigt danach jeder Fremdschlüssel noch auf dieselbe
   // Zeile? Also eine eigene Datenbank, die bis 0013 gebaut, dann mit echten
   // Daten befüllt und erst danach auf 0014 gehoben wird.
+  //
+  // AN 0014 FESTGEMACHT, NICHT AN „DER NEUESTEN". Diese Probe fragt, was
+  // GENAU DIESE Migration mit bestehenden Daten macht; ihr Seed baut deshalb
+  // den Stand von 0013 auf und zählt dort fünf Kategorien. Mit „alles außer
+  // der letzten" lief sie ab 0015 gegen ein Schema, das 0014 schon enthielt —
+  // und scheiterte an der eigenen Ausgangslage statt an einem Fehler.
+  const CATEGORY_MIGRATION = '0014_finance_category_hierarchy.sql'
+  const beforeCategories = migrations.slice(0, migrations.indexOf(CATEGORY_MIGRATION))
   psql(['-c', 'create database category_probe'])
   const catProbe = (args) =>
     pg(exe('psql'), ['-h', sock, '-U', 'postgres', '-d', 'category_probe', '-v', 'ON_ERROR_STOP=1', ...args], {
       cwd: process.cwd(),
     })
   catProbe(['-f', 'tools/pgtest/supabase-stub.sql'])
-  for (const file of earlier) catProbe(['-f', join('supabase/migrations', file)])
+  for (const file of beforeCategories) catProbe(['-f', join('supabase/migrations', file)])
   catProbe(['-f', 'supabase/tests/finance_category_upgrade_seed.sql'])
-  catProbe(['-f', join('supabase/migrations', latest)])
-  catProbe(['-f', join('supabase/migrations', latest)])
+  catProbe(['-f', join('supabase/migrations', CATEGORY_MIGRATION)])
+  catProbe(['-f', join('supabase/migrations', CATEGORY_MIGRATION)])
   const catUpgrade = catProbe(['-f', 'supabase/tests/finance_category_upgrade_verify.sql'])
   if (!catUpgrade.includes('FINANCE-CATEGORY-UPGRADE: all assertions passed')) {
     console.error('rls: die Kategorie-Hierarchie meldete auf bestehenden Daten keinen Erfolg.')
@@ -157,13 +165,19 @@ try {
     { file: 'supabase/tests/rls.sql', marker: 'RLS: all assertions passed' },
     { file: 'supabase/tests/finance_import.sql', marker: 'FINANCE-IMPORT: all assertions passed' },
     { file: 'supabase/tests/finance_category_hierarchy.sql', marker: 'CATS: all assertions passed' },
+    // Zwei Marker, ein Lauf: die Datei hat einen zweiten `do`-Block für die
+    // Relationen. Ohne beide Namen bliebe ein stillgelegter Block unbemerkt.
+    { file: 'supabase/tests/finance_data_control.sql',
+      marker: ['DATA: all assertions passed', 'DATA-REL: all assertions passed'] },
   ]
 
   for (const suite of suites) {
     const out = psql(['-f', suite.file])
     process.stdout.write(out.split('\n').filter((l) => l.trim()).map((l) => `  ${l}`).join('\n') + '\n')
-    if (!out.includes(suite.marker)) {
-      console.error(`rls: ${suite.file} lief durch, meldete aber keinen Erfolg.`)
+    const markers = Array.isArray(suite.marker) ? suite.marker : [suite.marker]
+    const missing = markers.filter((m) => !out.includes(m))
+    if (missing.length > 0) {
+      console.error(`rls: ${suite.file} lief durch, meldete aber keinen Erfolg (${missing.join(', ')}).`)
       process.exit(1)
     }
   }
@@ -273,6 +287,127 @@ try {
     }
     console.log(`  Gegenprobe: ohne ${guard.what} schlägt finance_category_hierarchy.sql fehl`)
     psql(['-f', 'supabase/migrations/0014_finance_category_hierarchy.sql'])
+  }
+
+  // Und dasselbe für 0015. Hier ist die Gegenprobe kein weggenommener Trigger,
+  // sondern eine NAIVE Fassung der jeweiligen Funktion — genau die, die man
+  // schreibt, wenn man „löschen" für ein `delete` hält. Merkt die Suite den
+  // Unterschied nicht, prüft sie nicht die Semantik, sondern nur, dass die
+  // Datenbank antwortet.
+  const dataGuards = [
+    {
+      what: 'das Aufräumen einseitiger Relationen und leerer Prüfposten',
+      sql: `create or replace function public.finance_delete_transaction(p_transaction_id uuid)
+            returns uuid language plpgsql security invoker set search_path = '' as $fn$
+            declare v_user uuid := (select auth.uid());
+            begin
+              delete from public.finance_transactions where id = p_transaction_id and user_id = v_user;
+              return p_transaction_id;
+            end $fn$;`,
+    },
+    {
+      // GENAU DIE FASSUNG AUS c4f5c34, Zeile für Zeile — nur ohne den
+      // Auswertungsteil. Sie räumt die einseitige Relation strukturell sauber
+      // weg und lässt trotzdem eine überlebende Buchung stillgelegt zurück,
+      // deaktiviert von einer Relation, die es nicht mehr gibt. Genau das war
+      // der Review-Befund, und die Suite muss ihn ohne Hilfe finden.
+      what: 'das Wiedereinschalten der von einer weggefallenen Relation stillgelegten Buchungen',
+      sql: `create or replace function public.finance_delete_transaction(p_transaction_id uuid)
+            returns uuid language plpgsql security invoker set search_path = '' as $fn$
+            declare
+              v_user uuid := (select auth.uid());
+              v_tx public.finance_transactions%rowtype;
+              v_relations uuid[];
+              v_reviews uuid[];
+            begin
+              if v_user is null then
+                raise exception 'finance: kein angemeldeter Benutzer' using errcode = '28000';
+              end if;
+              select * into v_tx from public.finance_transactions
+                where id = p_transaction_id and user_id = v_user for update;
+              if not found then
+                raise exception 'finance: diese Buchung gibt es nicht' using errcode = 'P0002';
+              end if;
+              select coalesce(array_agg(distinct m.relation_id), '{}') into v_relations
+                from public.finance_transaction_relation_members m
+                where m.user_id = v_user and m.transaction_id = v_tx.id;
+              select coalesce(array_agg(distinct t.review_item_id), '{}') into v_reviews
+                from public.finance_import_review_item_transactions t
+                where t.user_id = v_user and t.transaction_id = v_tx.id;
+              delete from public.finance_transactions where id = v_tx.id and user_id = v_user;
+              delete from public.finance_transaction_relations r
+                where r.user_id = v_user and r.id = any (v_relations)
+                  and (select count(*) from public.finance_transaction_relation_members m
+                       where m.relation_id = r.id) < 2;
+              delete from public.finance_import_review_items i
+                where i.user_id = v_user and i.id = any (v_reviews) and i.status = 'open'
+                  and not exists (select 1 from public.finance_import_review_item_transactions t
+                                  where t.review_item_id = i.id);
+              return v_tx.id;
+            end $fn$;`,
+    },
+    {
+      what: 'das Wiederherstellen der Taxonomie nach dem Zurücksetzen',
+      sql: `create or replace function public.finance_reset_user_data()
+            returns jsonb language plpgsql security definer set search_path = '' as $fn$
+            declare v_user uuid := (select auth.uid());
+            begin
+              if v_user is null then
+                raise exception 'finance: kein angemeldeter Benutzer' using errcode = '28000';
+              end if;
+              delete from public.finance_transactions where user_id = v_user;
+              delete from public.finance_merchants where user_id = v_user;
+              delete from public.finance_imports where user_id = v_user;
+              delete from public.finance_accounts where user_id = v_user;
+              delete from public.finance_categories where user_id = v_user;
+              return jsonb_build_object('categories', 0);
+            end $fn$;`,
+    },
+    {
+      what: 'die Einschränkung des Zurücksetzens auf den eigenen Benutzer',
+      sql: `create or replace function public.finance_reset_user_data()
+            returns jsonb language plpgsql security definer set search_path = '' as $fn$
+            declare v_user uuid := (select auth.uid()); v_n integer;
+            begin
+              if v_user is null then
+                raise exception 'finance: kein angemeldeter Benutzer' using errcode = '28000';
+              end if;
+              delete from public.finance_transaction_observation_sightings;
+              delete from public.finance_transaction_observations;
+              delete from public.finance_transaction_relation_members;
+              delete from public.finance_transaction_relations;
+              delete from public.finance_import_review_item_transactions;
+              delete from public.finance_import_review_items;
+              delete from public.finance_ai_learning_memories;
+              delete from public.finance_transaction_ai_suggestions;
+              delete from public.finance_transaction_overrides;
+              delete from public.finance_category_rules;
+              delete from public.finance_merchant_patterns;
+              delete from public.finance_transactions;
+              delete from public.finance_merchants;
+              delete from public.finance_imports;
+              delete from public.finance_accounts;
+              delete from public.finance_categories;
+              perform public.finance_apply_category_taxonomy(v_user);
+              select count(*) into v_n from public.finance_categories where user_id = v_user;
+              return jsonb_build_object('categories', v_n, 'accounts', 1);
+            end $fn$;`,
+    },
+  ]
+  for (const guard of dataGuards) {
+    psql(['-c', guard.sql])
+    let caught = false
+    try {
+      psql(['-f', 'supabase/tests/finance_data_control.sql'])
+    } catch {
+      caught = true
+    }
+    if (!caught) {
+      console.error(`rls: Gegenprobe bestanden — ohne ${guard.what} merkt die Datenkontroll-Suite nichts.`)
+      process.exit(1)
+    }
+    console.log(`  Gegenprobe: ohne ${guard.what} schlägt finance_data_control.sql fehl`)
+    psql(['-f', 'supabase/migrations/0015_finance_data_control.sql'])
   }
 
   console.log('\nrls: alle Policies verhalten sich wie erwartet.')

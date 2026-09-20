@@ -3861,8 +3861,10 @@ async function run() {
     const done = nb(txt(window))
     if (done.includes('Teilweise gespeichert'))
       errors.push('[Finanzen/Teilweise] the retry did not clear the partial state')
-    if (!done.includes('Gespeichert'))
-      errors.push(`[Finanzen/Teilweise] the retry is not reported as done: ${done.slice(-220)}`)
+    // Seit v1.26.1 gibt es keinen Bestätigungsschritt mehr: ein vollständiger
+    // Save führt direkt weiter.
+    if (/Gespeichert/.test(done))
+      errors.push(`[Finanzen/Teilweise] the retry still shows a confirmation step: ${done.slice(-220)}`)
     window.__restoreConsole?.()
   }
 
@@ -3957,10 +3959,12 @@ async function run() {
     const done = nb(txt(window))
     if (done.includes('Teilweise gespeichert'))
       errors.push(`[${label}] the retry did not clear the partial state`)
-    if (!done.includes('Gespeichert'))
-      errors.push(`[${label}] the retry is not reported: ${done.slice(-240)}`)
-    if (!done.includes('Es wartet keine Buchung mehr'))
-      errors.push(`[${label}] the confirmation does not say the queue is empty`)
+    // War es die letzte offene Buchung, schliesst sich das Sheet selbst und
+    // hinterlaesst einen Toast — kein Schlussbildschirm mehr.
+    if (!done.includes('Alle offenen Buchungen bearbeitet'))
+      errors.push(`[${label}] the sheet did not close with a toast: ${done.slice(-240)}`)
+    if (/Gespeichert|Es wartet keine Buchung mehr/.test(done))
+      errors.push(`[${label}] the confirmation step is still there: ${done.slice(-240)}`)
     const stored = window.__backend.tables.finance_transaction_overrides.find(
       (o) => o.transaction_id === '11111111-2222-4333-8444-000000000107')
     if (stored?.note !== 'Bahnfahrt nach Köln')
@@ -3992,8 +3996,10 @@ async function run() {
     const again = backend.rpcCalls.filter((c) => c.name === 'finance_learn_merchant_rule').length
     if (again !== 1) errors.push(`[${label}] the retry learned the rule a second time (${again})`)
     const done = nb(txt(window))
-    if (!done.includes('Gespeichert') || done.includes('Teilweise'))
-      errors.push(`[${label}] the retry is not reported as done: ${done.slice(-240)}`)
+    if (done.includes('Teilweise'))
+      errors.push(`[${label}] the retry did not clear the partial state: ${done.slice(-240)}`)
+    if (!done.includes('Alle offenen Buchungen bearbeitet'))
+      errors.push(`[${label}] the sheet did not close with a toast: ${done.slice(-240)}`)
     const merchant = window.__backend.tables.finance_merchants.find(
       (m) => m.canonical_name === 'DB')
     if (merchant?.default_include_in_analytics !== false)
@@ -4022,6 +4028,343 @@ async function run() {
     // ausgewertete Buchung.
     if (!text.includes('Ausgaben60,65 €'))
       errors.push(`[Finanzen/Fertig] the decided booking is missing from the KPI: ${text.slice(0, 240)}`)
+  }
+
+  // 16b6d) v1.26.1: Speichern führt direkt zur nächsten Buchung.
+  //
+  //        Bis v1.26 folgte auf jedes Speichern ein Bestätigungsschritt mit
+  //        einem „Weiter"-Knopf. Bei achtzehn offenen Buchungen sind das
+  //        achtzehn Taps auf einen Bildschirm, der nichts Neues sagt. Geprüft
+  //        wird deshalb dreierlei: dass der Zwischenschritt weg ist, dass die
+  //        nächste Buchung wirklich da steht, und dass sich das Sheet nach der
+  //        letzten von selbst schließt.
+  {
+    const label = 'Finanzen/Schnell'
+    const M_A = '11111111-2222-4333-8444-000000000201'
+    const M_B = '11111111-2222-4333-8444-000000000202'
+    const amount = (n) => ({
+      id: '11111111-2222-4333-8444-00000000030' + n, user_id: TEST_USER_ID,
+      account_id: FIN_ACCOUNT, booking_date: '2026-09-1' + n,
+      amount_minor: -(1000 * n + 11), currency: 'EUR',
+      raw_description: 'REWE Frankfurt Filiale ' + n,
+      normalized_tokens: ['REWE', 'FRANKFURT', 'FILIALE'],
+      include_in_analytics: true, manual_lock: false,
+    })
+    const queueSeed = {
+      ...financeSeed,
+      // Drei Buchungen, die alle beide Muster treffen: jede ist ein Konflikt
+      // und wird deshalb einzeln entschieden — ohne dass eine gelernte Regel
+      // die übrigen mitnimmt und die Warteschlange überspringt.
+      finance_transactions: [amount(1), amount(2), amount(3)],
+      finance_merchants: [
+        { id: M_A, user_id: TEST_USER_ID, canonical_name: 'Edeka', review_mode: 'auto' },
+        { id: M_B, user_id: TEST_USER_ID, canonical_name: 'Nahkauf', review_mode: 'auto' },
+      ],
+      finance_merchant_patterns: [
+        { id: '11111111-2222-4333-8444-000000000211', user_id: TEST_USER_ID, merchant_id: M_A,
+          pattern_type: 'exact_token', tokens: ['REWE'], active: true },
+        { id: '11111111-2222-4333-8444-000000000212', user_id: TEST_USER_ID, merchant_id: M_B,
+          pattern_type: 'exact_token', tokens: ['FRANKFURT'], active: true },
+      ],
+    }
+
+    const window = makeDom('#/finanzen', { finance: queueSeed })
+    mount(window, code, label)
+    await wait(400)
+    window.__restoreConsole?.()
+
+    click(window, (el) => /^\d+ Buchung(en)? prüfen$/.test(el.textContent.trim()))
+    await wait(320)
+
+    const decide = async () => {
+      click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Händler'))
+      await wait(280)
+      click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Edeka')
+      await wait(280)
+      click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Kategorie'))
+      await wait(280)
+      click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Allgemeines Sonstiges')
+      await wait(280)
+      if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Speichern'))
+        errors.push(`[${label}] the save button was not clickable`)
+      await wait(520)
+    }
+
+    const first = nb(txt(window))
+    if (!first.includes('Buchung 1 von 3'))
+      errors.push(`[${label}] the progress does not say where in the queue we are: ${first.slice(-260)}`)
+    if (!first.includes('10,11 €'))
+      errors.push(`[${label}] the first booking is not on screen: ${first.slice(-260)}`)
+
+    await decide()
+    const second = nb(txt(window))
+    console.log(`=== Finanzen — Speichern führt weiter ===\n  ${second.slice(-300)}`)
+    if (/Gespeichert/.test(second))
+      errors.push(`[${label}] a confirmation step is still shown after saving: ${second.slice(-260)}`)
+    if ([...window.document.querySelectorAll('button')]
+        .some((b) => b.textContent.trim() === 'Weiter'))
+      errors.push(`[${label}] the „Weiter" button is still there`)
+    if (!second.includes('20,11 €'))
+      errors.push(`[${label}] the next booking did not come up by itself: ${second.slice(-260)}`)
+    if (!second.includes('Buchung 2 von 3'))
+      errors.push(`[${label}] the progress did not advance: ${second.slice(-260)}`)
+
+    await decide()
+    const third = nb(txt(window))
+    if (!third.includes('30,11 €'))
+      errors.push(`[${label}] the third booking did not come up: ${third.slice(-260)}`)
+    if (!third.includes('Letzte offene Buchung'))
+      errors.push(`[${label}] the last booking is not announced as the last one`)
+
+    await decide()
+    const end = nb(txt(window))
+    if (!end.includes('Alle offenen Buchungen bearbeitet'))
+      errors.push(`[${label}] the sheet did not close with a toast: ${end.slice(-260)}`)
+    if (end.includes('Keine offenen Zuordnungen'))
+      errors.push(`[${label}] a finish screen was shown instead of closing`)
+    if (!end.includes('Übersicht'))
+      errors.push(`[${label}] the dashboard is not back: ${end.slice(0, 200)}`)
+    const overrides = window.__backend.tables.finance_transaction_overrides.length
+    if (overrides !== 3)
+      errors.push(`[${label}] three decisions should have been written, not ${overrides}`)
+  }
+
+  // 16b6e) „Später" bleibt „Später": wer Buchungen bewusst überspringt,
+  //        bekommt weiterhin den Zustand „Für jetzt fertig" und nicht ein
+  //        Sheet, das sich wortlos schließt.
+  {
+    const label = 'Finanzen/Später'
+    const M_A = '11111111-2222-4333-8444-000000000201'
+    const M_B = '11111111-2222-4333-8444-000000000202'
+    const amount = (n) => ({
+      id: '11111111-2222-4333-8444-00000000031' + n, user_id: TEST_USER_ID,
+      account_id: FIN_ACCOUNT, booking_date: '2026-09-1' + n,
+      amount_minor: -(1000 * n + 11), currency: 'EUR',
+      raw_description: 'REWE Frankfurt Filiale ' + n,
+      normalized_tokens: ['REWE', 'FRANKFURT', 'FILIALE'],
+      include_in_analytics: true, manual_lock: false,
+    })
+    const window = makeDom('#/finanzen', {
+      finance: {
+        ...financeSeed,
+        finance_transactions: [amount(1), amount(2)],
+        finance_merchants: [
+          { id: M_A, user_id: TEST_USER_ID, canonical_name: 'Edeka', review_mode: 'auto' },
+          { id: M_B, user_id: TEST_USER_ID, canonical_name: 'Nahkauf', review_mode: 'auto' },
+        ],
+        finance_merchant_patterns: [
+          { id: '11111111-2222-4333-8444-000000000211', user_id: TEST_USER_ID, merchant_id: M_A,
+            pattern_type: 'exact_token', tokens: ['REWE'], active: true },
+          { id: '11111111-2222-4333-8444-000000000212', user_id: TEST_USER_ID, merchant_id: M_B,
+            pattern_type: 'exact_token', tokens: ['FRANKFURT'], active: true },
+        ],
+      },
+    })
+    mount(window, code, label)
+    await wait(400)
+    window.__restoreConsole?.()
+
+    click(window, (el) => /^\d+ Buchung(en)? prüfen$/.test(el.textContent.trim()))
+    await wait(320)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Später')
+    await wait(280)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Später')
+    await wait(320)
+
+    const text = nb(txt(window))
+    if (!text.includes('Für jetzt fertig'))
+      errors.push(`[${label}] skipped bookings do not reach the postponed state: ${text.slice(-260)}`)
+    if (text.includes('Alle offenen Buchungen bearbeitet'))
+      errors.push(`[${label}] skipping counted as finishing`)
+    if (!text.includes('Noch einmal durchgehen'))
+      errors.push(`[${label}] there is no way back through the skipped bookings`)
+  }
+
+  // 16b6f) v1.26.1: eine Buchung ansehen und löschen.
+  {
+    const label = 'Finanzen/Löschen'
+    const TX = '11111111-2222-4333-8444-000000000401'
+    const KEEP = '11111111-2222-4333-8444-000000000402'
+    const IMPORT = '11111111-2222-4333-8444-000000000403'
+    const window = makeDom('#/finanzen', {
+      finance: {
+        ...financeSeed,
+        finance_imports: [
+          { id: IMPORT, user_id: TEST_USER_ID, account_id: FIN_ACCOUNT, source_type: 'pdf',
+            source_name: 'Auszug.pdf', source_hash: 'hash-1', status: 'imported' },
+        ],
+        finance_transactions: [
+          { id: TX, user_id: TEST_USER_ID, account_id: FIN_ACCOUNT,
+            import_id: IMPORT, booking_date: '2026-09-12', amount_minor: -1234,
+            currency: 'EUR', raw_description: 'BAECKEREI MUELLER',
+            normalized_tokens: ['BAECKEREI', 'MUELLER'], manual_lock: true,
+            include_in_analytics: true },
+          { id: KEEP, user_id: TEST_USER_ID, account_id: FIN_ACCOUNT,
+            booking_date: '2026-09-13', amount_minor: -5000, currency: 'EUR',
+            raw_description: 'BLEIBT STEHEN', normalized_tokens: ['BLEIBT', 'STEHEN'],
+            manual_lock: true, include_in_analytics: true },
+        ],
+      },
+    })
+    mount(window, code, label)
+    await wait(400)
+    window.__restoreConsole?.()
+
+    // In den Buchungen-Tab und die Zeile antippen.
+    if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Buchungen'))
+      errors.push(`[${label}] the bookings tab is missing`)
+    await wait(200)
+    if (!click(window, (el) =>
+        (el.getAttribute?.('aria-label') || '').startsWith('Buchung öffnen: BAECKEREI')))
+      errors.push(`[${label}] the booking row is not tappable`)
+    await wait(320)
+
+    const sheet = nb(txt(window))
+    console.log(`=== Finanzen — Buchung löschen ===\n  ${sheet.slice(-320)}`)
+    for (const field of ['Konto', 'Kategorie', 'Buchungsart', 'In Auswertung']) {
+      if (!sheet.includes(field))
+        errors.push(`[${label}] the sheet does not show „${field}": ${sheet.slice(-320)}`)
+    }
+    if (!sheet.includes('12,34 €'))
+      errors.push(`[${label}] the sheet does not show the amount`)
+    if (!sheet.includes('Buchung löschen'))
+      errors.push(`[${label}] the sheet offers no way to delete the booking`)
+
+    // Abbrechen löscht nichts.
+    const deleteRow = [...window.document.querySelectorAll('button')]
+      .filter((b) => b.textContent.trim() === 'Buchung löschen')[0]
+    deleteRow?.click()
+    await wait(280)
+    const asked = nb(txt(window))
+    if (!asked.includes('Buchung löschen?'))
+      errors.push(`[${label}] there is no confirmation: ${asked.slice(-260)}`)
+    if (!asked.includes('dauerhaft aus Finanzen entfernt'))
+      errors.push(`[${label}] the confirmation does not say what happens`)
+    if (!asked.includes('Import bleibt'))
+      errors.push(`[${label}] an imported booking does not mention the import history`)
+    if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Abbrechen'))
+      errors.push(`[${label}] the confirmation cannot be cancelled`)
+    await wait(300)
+    if (window.__backend.rpcCalls.some((c) => c.name === 'finance_delete_transaction'))
+      errors.push(`[${label}] cancelling still deleted the booking`)
+
+    // Und jetzt wirklich.
+    //
+    // ACHTUNG, EINE FALLE: `role="dialog"` tragen BEIDE — das BottomSheet und
+    // der ConfirmDialog darüber. Ein `querySelector` liefert das Sheet, und der
+    // Knopf im Dialog bliebe unberührt. Also wird der Dialog an seinem Titel
+    // erkannt, nicht an seiner Rolle allein.
+    const dialogConfirm = () => {
+      const dialog = [...window.document.querySelectorAll('[role="dialog"]')]
+        .find((d) => d.textContent.includes('Buchung löschen?'))
+      const button = [...(dialog?.querySelectorAll('button') ?? [])]
+        .find((b) => b.textContent.trim() === 'Buchung löschen')
+      button?.click()
+      return Boolean(button)
+    }
+    ;[...window.document.querySelectorAll('button')]
+      .filter((b) => b.textContent.trim() === 'Buchung löschen')[0]?.click()
+    await wait(280)
+    if (!dialogConfirm())
+      errors.push(`[${label}] the confirmation has no confirm button`)
+    await wait(520)
+
+    const done = nb(txt(window))
+    const calls = window.__backend.rpcCalls.filter((c) => c.name === 'finance_delete_transaction')
+    if (calls.length !== 1)
+      errors.push(`[${label}] the delete ran ${calls.length} times instead of once`)
+    if (calls[0]?.body?.p_transaction_id !== TX)
+      errors.push(`[${label}] the wrong booking was sent: ${JSON.stringify(calls[0]?.body)}`)
+    if (window.__backend.tables.finance_transactions.some((t) => t.id === TX))
+      errors.push(`[${label}] the booking is still in the database`)
+    if (!window.__backend.tables.finance_transactions.some((t) => t.id === KEEP))
+      errors.push(`[${label}] the other booking was taken along`)
+    if (!window.__backend.tables.finance_imports.some((i) => i.id === IMPORT))
+      errors.push(`[${label}] the import row was deleted with the booking`)
+    if (!done.includes('Buchung gelöscht'))
+      errors.push(`[${label}] there is no confirmation toast: ${done.slice(-260)}`)
+    if (done.includes('Rückgängig'))
+      errors.push(`[${label}] the toast promises an undo that does not exist`)
+    if (done.includes('BAECKEREI'))
+      errors.push(`[${label}] the deleted booking is still on screen: ${done.slice(-260)}`)
+    if (!done.includes('BLEIBT STEHEN'))
+      errors.push(`[${label}] the list lost the booking that was not deleted`)
+    // Das Dashboard rechnet mit: 62,34 € minus 12,34 € = 50,00 €.
+    if (!click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Übersicht'))
+      errors.push(`[${label}] the overview tab is missing`)
+    await wait(220)
+    if (!nb(txt(window)).includes('Ausgaben50,00 €'))
+      errors.push(`[${label}] the dashboard did not recalculate: ${nb(txt(window)).slice(0, 220)}`)
+  }
+
+  // 16b6g) v1.26.1: der Gefahrenbereich in der Kontoverwaltung.
+  {
+    const label = 'Finanzen/Zurücksetzen'
+    const window = makeDom('#/finanzen', { finance: financeSeed })
+    mount(window, code, label)
+    await wait(400)
+    window.__restoreConsole?.()
+
+    if (!click(window, (el) => el.textContent.trim() === 'Konten verwalten'))
+      errors.push(`[${label}] the account management is not reachable`)
+    await wait(320)
+
+    const list = nb(txt(window))
+    if (!list.includes('Finanzdaten zurücksetzen'))
+      errors.push(`[${label}] the danger action is missing: ${list.slice(-260)}`)
+    // Leise: sie steht unter allem anderen, nicht als Primärknopf oben.
+    if (list.indexOf('Finanzdaten zurücksetzen') < list.indexOf('Neues Konto'))
+      errors.push(`[${label}] the danger action is more prominent than adding an account`)
+
+    if (!click(window, (el) =>
+        el.tagName === 'BUTTON' && el.textContent.trim() === 'Finanzdaten zurücksetzen'))
+      errors.push(`[${label}] the danger action is not clickable`)
+    await wait(280)
+    const asked = nb(txt(window))
+    if (!asked.includes('Finanzdaten zurücksetzen?'))
+      errors.push(`[${label}] there is no confirmation: ${asked.slice(-260)}`)
+    if (!asked.includes('Standardkategorien bleiben erhalten'))
+      errors.push(`[${label}] the confirmation does not say what survives`)
+    if (!asked.includes('kann nicht rückgängig gemacht werden'))
+      errors.push(`[${label}] the confirmation does not say it is final`)
+    if (!asked.includes('Andere Bereiche der App sind nicht betroffen'))
+      errors.push(`[${label}] the confirmation does not limit its scope`)
+
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Abbrechen')
+    await wait(300)
+    if (window.__backend.rpcCalls.some((c) => c.name === 'finance_reset_user_data'))
+      errors.push(`[${label}] cancelling still reset the data`)
+
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Finanzdaten zurücksetzen')
+    await wait(280)
+    const dialog = [...window.document.querySelectorAll('[role="dialog"]')]
+      .find((d) => d.textContent.includes('Finanzdaten zurücksetzen?'))
+    const confirm = [...(dialog?.querySelectorAll('button') ?? [])]
+      .find((b) => b.textContent.trim() === 'Alles zurücksetzen')
+    if (!confirm) errors.push(`[${label}] the confirmation has no confirm button`)
+    confirm?.click()
+    await wait(600)
+
+    const calls = window.__backend.rpcCalls.filter((c) => c.name === 'finance_reset_user_data')
+    if (calls.length !== 1)
+      errors.push(`[${label}] the reset ran ${calls.length} times instead of once`)
+    if (Object.keys(calls[0]?.body ?? {}).length !== 0)
+      errors.push(`[${label}] the reset sent a parameter: ${JSON.stringify(calls[0]?.body)}`)
+    const tables = window.__backend.tables
+    if (tables.finance_transactions.length !== 0 || tables.finance_accounts.length !== 0 ||
+        tables.finance_merchants.length !== 0 || tables.finance_imports.length !== 0)
+      errors.push(`[${label}] the finance data is still there`)
+    if (tables.finance_categories.length === 0)
+      errors.push(`[${label}] the default categories were thrown away too`)
+    if (tables.tasks.length === 0)
+      errors.push(`[${label}] the reset reached outside the finance module`)
+
+    const after = nb(txt(window))
+    console.log(`=== Finanzen — zurückgesetzt ===\n  ${after.slice(0, 260)}`)
+    if (!after.includes('Finanzdaten zurückgesetzt'))
+      errors.push(`[${label}] there is no confirmation toast: ${after.slice(-260)}`)
+    if (!after.includes('Noch keine Umsätze'))
+      errors.push(`[${label}] the screen does not show the empty state: ${after.slice(0, 260)}`)
   }
 
   // 16b7) The way back out of a global exclusion. A merchant switched off is

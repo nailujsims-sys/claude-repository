@@ -1396,6 +1396,111 @@ Buchungssuche. „Alle anzeigen" ist deshalb eine Beschriftung und kein Knopf: e
 Link auf eine halbfertige Seite wäre die Fake-Funktionalität, die dieses Modul
 nicht hat.
 
+## 🧹 Finanzen v1.26.1 — Datenkontrolle, schneller Zuordnen, lesbare Balken
+
+Drei Dinge, die v1.26 offengelassen hat.
+
+### Eine Buchung löschen (`0015_finance_data_control.sql`)
+
+Der Buchungen-Tab war eine Liste, die aussah, als könnte man auf eine Zeile
+tippen, und auf ein Antippen nicht reagierte. Jetzt öffnet jede Zeile ein
+kompaktes Detail-Sheet — Konto, Kategoriepfad, Buchungsart, Notiz, „zählt in der
+Auswertung" — und darunter steht die eine Handlung, die es bisher nirgends gab.
+
+`finance_delete_transaction` ist **`security invoker`**: die DELETE-Policy aus
+0008 und die `on delete cascade`-Fremdschlüssel machen die Arbeit, und eine
+`security definer`-Funktion hätte hier nichts gekonnt, was diese nicht kann —
+außer die Rechteprüfung abzuschalten. Zwei Dinge räumt sie zusätzlich auf, weil
+kein Fremdschlüssel es kann: eine **Relation**, die durch das Löschen unter zwei
+Mitglieder fällt (eine Aussage über eine Buchung, die es nicht mehr gibt), und
+ein **offener Prüfposten**, der seine letzte Buchung verliert (eine Frage, die
+niemand mehr beantworten kann). Ein bereits beantworteter Prüfposten bleibt: er
+ist Geschichte, und sein `payload` trägt den eingefrorenen Stand.
+
+**Und die Auswertung der Relation.** Eine Relation ist nicht nur eine Aussage
+über Buchungen, sie legt welche still: eine bestätigte Ablösung nimmt den
+Vorgänger aus der Auswertung, eine vorgeschlagene Ablösung vor einer manuell
+entschiedenen alten Buchung nimmt stattdessen die neue heraus. Verschwindet die
+Relation, verschwindet der Grund — und eine überlebende Buchung darf nicht als
+„zählt nicht" zurückbleiben, deaktiviert von etwas, das es nicht mehr gibt.
+Welche Zeilen das sind, steht in `evidence.analytics_deactivated` und wird
+gelesen, **bevor** die Relation gelöscht wird; ob eine davon wirklich wieder
+zählen darf, beantwortet `finance_relation_reactivatable` an einer Stelle:
+nicht, wenn ein Mensch selbst entschieden hat (`finance_transaction_protected`,
+derselbe Maßstab wie in `finance_resolve_relation`), nicht, wenn eine andere
+bestehende Relation sie weiterhin stilllegt, und nicht, wenn sie Vorgänger einer
+anderen **bestätigten** Ablösung ist. Der letzte Punkt ist der Kettenfall: wurde
+eine Buchung erst von einer vorgeschlagenen Ablösung geparkt und danach selbst
+abgelöst, fand die Bestätigung sie schon auf `false` vor und schrieb sie deshalb
+nicht in ihre eigene Liste — ihr Ausschluss steht trotzdem, und die
+Nachfolgebuchung zählt an ihrer Stelle.
+
+**Was bewusst bleibt:** der Import mitsamt `source_hash` — eine Buchung aus einem
+Kontoauszug zu entfernen heißt nicht, dass der Auszug nie eingelesen wurde,
+und dieselbe Datei wird weiterhin als „schon eingelesen" erkannt. Ebenso das
+gelernte Wissen: Händler, Muster, Kategorieregeln und das KI-Gedächtnis.
+`finance_ai_learning_memories.source_transaction_id` steht seit 0012 auf
+`set null` — die Regel überlebt ihre Ursprungsbuchung und verliert nur den
+Rückverweis.
+
+**Rückfrage statt Rückgängig**, gegen die Hausregel §18/§19 — und zwar mit
+Begründung: es gibt hier kein ehrliches Rückgängig, die Zeile ist samt Override,
+KI-Vorschlag und Beobachtungen weg. Ein Toast mit „Rückgängig", der nichts
+zurückholen kann, wäre schlimmer als die Frage vorher.
+
+### Finanzdaten zurücksetzen
+
+In „Konten verwalten", ganz unten, hinter einer eigenen Überschrift „Daten" —
+nicht auf dem Dashboard neben dem Knopf, der eine Buchung anlegt.
+
+`finance_reset_user_data()` **nimmt keine Benutzer-ID entgegen**. Das ist die
+eigentliche Zusage: es gibt keinen Parameter, den ein Client falsch oder
+böswillig setzen könnte. Die Funktion ist `security definer` — nötig, weil sie
+danach `finance_apply_category_taxonomy` aufrufen muss, die ihrerseits eine
+Benutzer-ID nimmt und deshalb für `authenticated` gesperrt ist — und trägt die
+vier Sicherungen, die dazugehören: `auth.uid()` statt Parameter,
+`set search_path = ''`, `user_id = v_user` an **jeder** Anweisung, und
+`execute` ausschließlich für `authenticated`.
+
+Sie löscht alle fünfzehn persönlichen `finance_*`-Tabellen in
+Fremdschlüssel-Reihenfolge und stellt danach die **vollständige
+Standardtaxonomie** wieder her: 9 Oberkategorien, 26 Unterkategorien, 35
+Zeilen. Keine Mischform — eine selbst angelegte Kategorie ohne Buchungen und
+eine umbenannte Standardkategorie wären ein Zustand, der weder der alte noch der
+neue ist. Kein anderes Modul wird berührt; der Test weist das nach, indem er
+eine Aufgabe anlegt und nach dem Reset nachsieht.
+
+### Zuordnung: Speichern → sofort die nächste
+
+Der Bestätigungsschritt nach jedem Speichern ist weg. Bei achtzehn offenen
+Buchungen waren das achtzehn Taps auf einen Bildschirm, der nichts sagt, was der
+nächste nicht auch zeigt — dass die Buchung erledigt ist, sieht man daran, dass
+die nächste da steht. Der Fortschritt steht als „Buchung 3 von 18" im Kopf.
+
+**Unverändert bleibt der Fehlerfall.** Ein Teilerfolg hält seine Buchung fest,
+sagt genau, was geschrieben wurde und was nicht, und ein erneuter Versuch
+wiederholt nur das Fehlende. Nur der vollständig erfolgreiche Weg ist kürzer
+geworden. Nach der letzten Buchung schließt sich das Sheet von selbst und
+hinterlässt einen Toast; wurden Buchungen bewusst auf später geschoben, bleibt
+der bestehende Zustand „Für jetzt fertig".
+
+### Ausgabenentwicklung: der Betrag steht über dem Balken
+
+`formatCompactAmountMinor` ist die zweite Formatierung neben
+`formatAmountMinor` — unter 1.000 € volle Euro (`428 €`), darüber eine
+abgeschnittene Nachkommastelle (`1,2k €`). Abgeschnitten und nicht gerundet:
+über einem Balken ist zu wenig besser als zu viel. Die Cent stehen weiterhin im
+Tap-Detail unter dem Diagramm.
+
+Eine **Spalte ist jetzt ein Knopf**: Betrag, Balken und Zeitraum-Beschriftung
+liegen in derselben Schaltfläche, die Beschriftung war vorher nicht antippbar,
+obwohl sie so aussah. Der Abstand zwischen den Säulen ist von 6 auf 8 Pixel
+gewachsen — mehr geht nicht, jeder weitere Pixel ginge bei zwölf Eimern vom
+Balken selbst ab. Ab acht Eimern fällt das Währungszeichen über dem Balken weg:
+bei zwölf Monatsbalken ist eine Spalte auf 390 Pixeln rund 19 Pixel breit, und
+`tools/financeDashboardLayout.mjs` misst nach, dass sich zwei Beträge nie
+berühren.
+
 ## 🎨 Design system
 
 The binding product-design standard (visual, UX, interaction, motion,

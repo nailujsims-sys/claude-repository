@@ -102,6 +102,56 @@ export function formatAmountMinor(amountMinor, currency = 'EUR') {
 }
 
 /**
+ * Derselbe Betrag, so kurz, dass er über einen Balken passt.
+ *
+ * WARUM EINE ZWEITE FORMATIERUNG. Über einem Diagrammbalken stehen auf einem
+ * 390-Pixel-Schirm bis zu zwölf Zahlen nebeneinander; „1.284,37 €" braucht dort
+ * mehr Platz, als eine Spalte breit ist, und würde entweder abgeschnitten oder
+ * in den Nachbarn laufen. Also die Zahl, die ein Mensch beim Überfliegen
+ * wirklich liest — und die Cent dort, wo es um sie geht: im Tap-Detail unter
+ * dem Diagramm, das weiterhin `formatAmountMinor` benutzt.
+ *
+ * DIE REGEL, IN ZWEI ZEILEN:
+ *   unter 1.000 €   volle Euro, kaufmännisch gerundet   →  428 €
+ *   ab 1.000 €      eine Nachkommastelle, abgeschnitten →  1,2k €
+ *
+ * ABGESCHNITTEN UND NICHT GERUNDET, ab tausend: „1,0k €" für 1.049 € ist eine
+ * Untertreibung, die niemanden überrascht — „1,1k €" dafür wäre eine
+ * Übertreibung, und über einem Balken ist zu viel schlimmer als zu wenig.
+ * Unter tausend wird dagegen gerundet, weil dort jede Zahl noch für sich
+ * gelesen wird. Beide Stufen arbeiten auf vollen Euro: 999,50 € ist gerundet
+ * 1.000 € und steht deshalb zu Recht als „1,0k €" da.
+ *
+ * Das Minuszeichen ist das typografische „−" wie in `formatAmountMinor`; ein
+ * Balken zeigt Beträge normalerweise ohne Vorzeichen, ein negativer Eimer (mehr
+ * erstattet als ausgegeben) soll aber nicht als positiver erscheinen.
+ */
+export function formatCompactAmountMinor(amountMinor, currency = 'EUR') {
+  if (!Number.isInteger(amountMinor)) return ''
+  const negative = amountMinor < 0
+  const abs = Math.abs(amountMinor)
+  // Leere Währung heißt „das Zeichen steht schon woanders" — das Diagramm
+  // benutzt das, wenn eine Spalte zu schmal dafür ist.
+  const symbol = !currency ? '' : currency === 'EUR' ? ' €' : ` ${currency}`
+  const sign = negative ? '−' : ''
+
+  const euros = Math.round(abs / 100)
+  if (euros < 1000) return `${sign}${euros}${symbol}`
+
+  // Tausender: eine Nachkommastelle, ohne Aufrunden über die eigene Stufe.
+  const tenths = Math.floor(euros / 100)
+  const thousands = Math.floor(tenths / 10)
+  const rest = tenths % 10
+  if (thousands >= 1000) {
+    // Millionen kommen in einem privaten Haushalt nicht vor — aber „1234,5k €"
+    // wäre unlesbar, also bekommt auch dieser Fall seine eigene Stufe.
+    const mTenths = Math.floor(thousands / 100)
+    return `${sign}${Math.floor(mTenths / 10)},${mTenths % 10}M${symbol}`
+  }
+  return `${sign}${thousands},${rest}k${symbol}`
+}
+
+/**
  * The line a person recognises a booking by.
  *
  * The first line of the statement text, which is where DKB puts the merchant.

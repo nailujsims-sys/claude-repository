@@ -458,6 +458,11 @@ export function makeBackend({
         return json(result, result?.message ? 400 : 200)
       }
       if (name === 'finance_learn_merchant_rule') return json(learnMerchantRule(body))
+      if (name === 'finance_delete_transaction') {
+        const result = deleteTransaction(body)
+        return json(result, result?.message ? 400 : 200)
+      }
+      if (name === 'finance_reset_user_data') return json(resetUserData())
       if (name === 'finance_apply_ai_import') {
         const result = applyAiImport(body)
         return json(result, result?.message ? 400 : 200)
@@ -650,6 +655,61 @@ export function makeBackend({
     tables.finance_accounts = tables.finance_accounts.filter((a) => a.id !== account.id)
     onChange?.({ table: 'finance_accounts', type: 'DELETE', old_record: { id: account.id } })
     return account.id
+  }
+
+  // ── finance_delete_transaction / finance_reset_user_data (0015) ──────────
+  //
+  // Die echten Funktionen stehen in 0015 und werden gegen ein echtes Postgres
+  // geprüft (supabase/tests/finance_data_control.sql). Was ein DOM-Test braucht,
+  // sind ihre SICHTBAREN Folgen — und die nachzubilden ist hier keine Bequem-
+  // lichkeit, sondern der Punkt: gäbe der Stub nur `{ ok: true }` zurück, stünde
+  // die gelöschte Buchung nach dem Reload wieder da und der Test prüfte, dass
+  // die Oberfläche einen Aufruf abschickt, statt dass sie das Richtige zeigt.
+  //
+  // Nachgebildet wird deshalb genau das, was 0015 zusagt: die Buchung und was
+  // ausschließlich an ihr hängt verschwinden, der Import bleibt, und das
+  // gelernte Wissen bleibt — beim KI-Gedächtnis fällt nur der Rückverweis weg.
+  function deleteTransaction(body) {
+    const id = body?.p_transaction_id
+    const row = ownFinance('finance_transactions').find((t) => t.id === id) ?? null
+    if (!row) return { message: 'finance: diese Buchung gibt es nicht', code: 'P0002' }
+
+    const without = (table, match) => {
+      tables[table] = tables[table].filter((r) => !(r.user_id === TEST_USER_ID && match(r)))
+    }
+    const observationIds = ownFinance('finance_transaction_observations')
+      .filter((o) => o.transaction_id === id).map((o) => o.id)
+
+    without('finance_transactions', (r) => r.id === id)
+    without('finance_transaction_overrides', (r) => r.transaction_id === id)
+    without('finance_transaction_ai_suggestions', (r) => r.transaction_id === id)
+    without('finance_transaction_observations', (r) => r.transaction_id === id)
+    without('finance_transaction_observation_sightings',
+      (r) => observationIds.includes(r.observation_id))
+    without('finance_transaction_relation_members', (r) => r.transaction_id === id)
+    without('finance_import_review_item_transactions', (r) => r.transaction_id === id)
+
+    // `on delete set null` (0012), nicht `cascade`: die gelernte Regel bleibt.
+    for (const memory of ownFinance('finance_ai_learning_memories')) {
+      if (memory.source_transaction_id === id) memory.source_transaction_id = null
+    }
+
+    onChange?.({ table: 'finance_transactions', type: 'DELETE', old_record: { id } })
+    return id
+  }
+
+  function resetUserData() {
+    const counts = {}
+    for (const table of FINANCE_TABLES) {
+      // Die Kategorien bleiben stehen: in der echten Datenbank werden sie
+      // gelöscht und sofort als Standardtaxonomie neu angelegt — von außen
+      // sichtbar ist genau dasselbe Ergebnis.
+      if (table === 'finance_categories') continue
+      counts[table.replace('finance_', '')] = ownFinance(table).length
+      tables[table] = tables[table].filter((r) => r.user_id !== TEST_USER_ID)
+    }
+    counts.categories = ownFinance('finance_categories').length
+    return counts
   }
 
   // ── finance_apply_ai_import, as far as a screen can tell ─────────────────
