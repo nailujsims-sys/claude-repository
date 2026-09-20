@@ -4,6 +4,7 @@ import { formatAmountMinor } from '../importFlow'
 import { AI_CSV_COLUMNS, AI_CSV_HEADER, formatExampleTable } from './format'
 import { PAYMENT_SERVICE_PROVIDERS, knownProviders } from './providers'
 import { MAX_PROMPT_EXAMPLES, promptMemories } from './memories'
+import { assignableCategories, categoryTree } from '../categories'
 
 // „KI-Kontext kopieren" — der ganze Prompt, von der App geschrieben.
 //
@@ -123,10 +124,12 @@ export function buildAIContextPrompt({
   accountName = null,
   currency = 'EUR',
 } = {}) {
-  const categoryList = categories
-    .slice()
-    .sort((a, b) => (a?.sort_order ?? 0) - (b?.sort_order ?? 0) || String(a?.slug).localeCompare(String(b?.slug)))
-    .filter((c) => c?.slug)
+  // Die Oberkategorien strukturieren den Prompt, die Unterkategorien sind das
+  // Ergebnis. Beides aus derselben Hierarchie, damit ChatGPT dieselbe Taxonomie
+  // sieht, die die Datenbank durchsetzt (0014).
+  const tree = categoryTree(categories).filter((node) => node.children.length > 0)
+  // Was tatsächlich in der Spalte „Kategorie" stehen darf: die Blätter.
+  const categoryList = assignableCategories(categories).filter((c) => c?.slug)
 
   const known = relevantMerchants({ merchants, patterns, transactions, categoryRules, categories })
   const learned = promptMemories(memories, { limit: MAX_PROMPT_EXAMPLES })
@@ -150,18 +153,42 @@ export function buildAIContextPrompt({
   // ── 1. Kategorien ─────────────────────────────────────────────────────────
   lines.push('## Erlaubte Kategorien')
   lines.push('')
-  lines.push('Nur diese Werte sind in der Spalte „Kategorie" erlaubt. Erfinde keine neuen')
-  lines.push('Kategorien und benenne keine um. Wenn keine davon passt, lass die Spalte leer und')
-  lines.push('setze „Prüfen" auf true.')
+  lines.push('Die Kategorien sind zweistufig. Die fetten Zeilen mit Doppelpunkt sind')
+  lines.push('Oberkategorien — sie gliedern die Liste und sind KEINE gültige Antwort. Gültig')
+  lines.push('ist ausschließlich einer der eingerückten Slugs darunter, also immer die')
+  lines.push('konkrete Unterkategorie.')
+  lines.push('')
+  lines.push('Erfinde keine neuen Kategorien und benenne keine um. Wenn keine davon passt,')
+  lines.push('lass die Spalte leer und setze „Prüfen" auf true — eine Oberkategorie')
+  lines.push('einzutragen ist keine Notlösung, sondern ein ungültiger Wert.')
   lines.push('')
   if (categoryList.length === 0) {
     lines.push('- (noch keine Kategorien angelegt — lass die Spalte überall leer und setze „Prüfen" auf true)')
   } else {
-    for (const category of categoryList) {
-      lines.push(`- ${category.slug} — ${category.label ?? category.slug}`)
+    // Gruppiert, aber nicht auswählbar: die fette Zeile ist eine Überschrift.
+    // Der Satz darüber sagt es ausdrücklich, weil ein Modell sonst „Mobilität"
+    // zurückgibt und die App eine Kategorie ablehnen müsste, die sie selbst
+    // aufgelistet hat.
+    for (const node of tree) {
+      lines.push(`${node.parent.label ?? node.parent.slug}:`)
+      for (const child of node.children) {
+        lines.push(`- ${child.slug} — ${child.label ?? child.slug}`)
+      }
+      lines.push('')
+    }
+    // Eine Unterkategorie, deren Oberkategorie nicht mitgeladen wurde, fiele
+    // sonst aus dem Prompt — und wäre damit eine Kategorie, die es gibt und die
+    // ChatGPT nie vorschlägt.
+    const listed = new Set(tree.flatMap((node) => node.children.map((c) => c.slug)))
+    const orphans = categoryList.filter((c) => !listed.has(c.slug))
+    if (orphans.length > 0) {
+      lines.push('Ohne Oberkategorie:')
+      for (const category of orphans) {
+        lines.push(`- ${category.slug} — ${category.label ?? category.slug}`)
+      }
+      lines.push('')
     }
   }
-  lines.push('')
 
   // ── 2. Bekannte Händler ───────────────────────────────────────────────────
   lines.push('## Bekannte Händler')
@@ -367,7 +394,8 @@ export function buildAIContextPrompt({
   lines.push('  eine Fremdwährung, nimm den Betrag, der dem Konto belastet wurde, und dessen Währung.')
   lines.push(`- ${AI_CSV_COLUMNS[4]}: der erkannte Händler. Leer lassen, wenn du ihn nicht eindeutig`)
   lines.push('  erkennst.')
-  lines.push(`- ${AI_CSV_COLUMNS[5]}: einer der Slugs oben, oder leer.`)
+  lines.push(`- ${AI_CSV_COLUMNS[5]}: einer der eingerückten Unterkategorie-Slugs oben, oder leer.`)
+  lines.push('  Nie eine Oberkategorie, nie ein Label, nie ein selbst gebildeter Slug.')
   lines.push(`- ${AI_CSV_COLUMNS[6]}: purchase, refund, transfer, income, fee oder other.`)
   lines.push(`- ${AI_CSV_COLUMNS[7]}: false, wenn die Buchung keine echte Ausgabe ist — eine Umbuchung`)
   lines.push('  auf ein eigenes Konto, eine Sparrate, eine durchlaufende Zahlung. Sonst true.')

@@ -187,7 +187,7 @@ ${sql}`
 
   const categories = jsonAsUser(
     userId,
-    `select id, slug, label, sort_order from public.finance_categories
+    `select id, slug, label, sort_order, parent_id from public.finance_categories
      where user_id = '${userId}' order by sort_order`
   )
   const lebensmittel = categories.find((c) => c.slug === 'lebensmittel')

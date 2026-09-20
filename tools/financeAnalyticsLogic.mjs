@@ -15,7 +15,7 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY, installRealtimeStub } from './supabase
 
 const TEST = `
 import { analyticsInclusion, analyticsTransactions, excludedMerchants, resolveAnalyticsInclusion }
-  from './src/lib/finance/analytics.js'
+  from './src/lib/finance/analytics/index.js'
 import { matchMerchant, FINANCE_STATUS } from './src/lib/finance/merchantMatching.js'
 import { MAX_NOTE_LENGTH, compactPreview, describeSaveOutcome, normalizeNote, noteIsValid,
          shortDescription, DECISION } from './src/lib/finance/classificationFlow.js'

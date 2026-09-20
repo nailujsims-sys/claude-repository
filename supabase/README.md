@@ -23,6 +23,7 @@ Durchlauf ändert nichts und zerstört nichts.
 | `0005_google_calendar.sql` | Google-Kalender: `google_connections`, `google_credentials` (für Clients gesperrt), `google_calendars`, `google_channels`, `google_event_tombstones`, die Google-Spalten an `events`, die Sync-Trigger, RLS + Grants |
 | `0006_lists.sql` | Listen: Tabellen `lists` und `list_items` (Vorlage, Icon, Pin, Archiv, Menge/Einheit/Betrag/Kategorie), Indizes, Constraints, RLS + Policies, Realtime |
 | `0007_expenses.sql` | Ausgaben: Tabelle `expenses` (Titel, Originalbetrag, Eingabewährung AUD/EUR, Transaktionsdatum, verwendeter AUD/EUR-Kurs), Indizes, Constraints, RLS + Policies, Realtime |
+| `0014_finance_category_hierarchy.sql` | Zweistufige Kategorien: die additive Spalte `finance_categories.parent_id` (`null` = Oberkategorie) mit dem aufschiebbaren Fremdschlüssel `finance_categories_parent_fk` (`on delete no action deferrable initially deferred` — `restrict` ist nicht aufschiebbar und bricht jede Transaktion, die Eltern vor Kindern löscht), Index `(user_id, parent_id)` und `check (parent_id <> id)`; der Trigger `finance_categories_hierarchy` (genau zwei Ebenen — eine Oberkategorie, die selbst Kind ist, und eine Zeile mit Kindern, die Kind werden soll, werden abgelehnt); `finance_category_is_leaf` plus der EINE Wächter `finance_category_assignable_guard`, der an `finance_transactions`, `finance_transaction_overrides`, `finance_category_rules`, `finance_transaction_ai_suggestions` und `finance_ai_learning_memories` hängt und eine Oberkategorie auf **jedem** Schreibweg ablehnt (die drei RPCs aus 0008/0011/0012 bleiben unverändert und laufen als Aufrufer durch dieselben Trigger); `finance_default_categories` um `parent_slug` erweitert (neue Signatur, deshalb `drop function` davor) und `finance_category_taxonomy` (neuer Name statt einer Signaturänderung an `finance_default_categories`, sonst scheitert ein erneutes Einspielen von 0008 an „cannot change return type") und `finance_apply_category_taxonomy` als die eine idempotente Prozedur für Signup-Trigger **und** Backfill. **Keine einzige bestehende Kategorie-ID wird ersetzt**: die fünf Slugs aus 0008 behalten ihre Zeile, bekommen nur `parent_id` und `sort_order`, und drei Labels werden nur dort ersetzt, wo noch das ursprünglich ausgelieferte Label steht. Additiv und zweimal einspielbar |
 | `0013_finance_account_management.sql` | Kontoverwaltung: die additive Spalte `finance_accounts.archived_at` (`null` = aktiv, kein bestehendes Konto wird archiviert) plus Index `(user_id, archived_at)`, die Funktion `finance_account_dependency` (hängt Finanzhistorie an diesem Konto? — liest die Fremdschlüssel des Schemas aus `pg_constraint`, damit eine künftige Tabelle die Prüfung nicht stillschweigend aushebelt) und `finance_account_for_update` (Konto sperren + Eigentümer prüfen), die drei RPCs `finance_update_account` (Name/Anbieter jederzeit, Währung nur bei leerem Konto — sonst `FIN01`), `finance_set_account_archived` (archivieren/reaktivieren, ein bereits archiviertes Konto behält seinen Zeitstempel) und `finance_delete_empty_account` (löscht nur, wenn keine einzige Zeile per Fremdschlüssel zeigt — sonst `FIN02`; verlässt sich ausdrücklich **nicht** auf `on delete cascade`). Dieselben beiden Invarianten zusätzlich an der Tabelle, damit sie nicht am Aufrufweg hängen: Trigger `finance_accounts_guard_currency` (`before update of currency`, derselbe Satz und derselbe Code wie der RPC) und die Policy `finance_accounts_delete_own` aus 0008, verschärft um `finance_account_dependency(id) is null` — bewusst eine Policy und kein `before delete`-Trigger, damit der Cascade beim Löschen eines `auth.users`-Datensatzes unangetastet bleibt (E2E Fall P). Alle `security invoker`, `search_path = ''`, `execute` nur für `authenticated` |
 | `0012_finance_ai_learning.sql` | Lernen aus Korrekturen: die Funktionen `finance_memory_key` (kanonische Vergleichsform eines Händlernamens, mit ausdrücklicher Kollation) und `finance_memory_example_key` (die Identität eines Beispiels), neue Tabelle `finance_ai_learning_memories` (drei Arten — `similar_example`, `merchant_rule`, `payment_provider` —, was das Modell vorschlug *und* was der Mensch daraus machte, `active` statt Löschen), ein eindeutiger Teilindex „höchstens eine aktive starke Regel je Händler" (über beide starken Arten hinweg) und einer gegen doppelte Beispiele, `finance_apply_ai_import` um das Merken erweitert (in derselben Transaktion, nur bei `human_review = 'corrected'` **und** einer fachlichen Abweichung vom Vorschlag — eine reine Notizänderung wird abgelehnt —, die gelernten Felder von der Datenbank bestimmt), Indizes, Constraints, RLS + Policies |
 | `0011_finance_ai_import.sql` | Manuelle Buchung + KI-Import: `finance_imports.source_type` kennt zusätzlich `ai`, die additive Spalte `finance_transaction_overrides.merchant_name` (der von Hand benannte Händler als *Text*), neue Tabelle `finance_transaction_ai_suggestions` (was ein Sprachmodell zu einer Buchung vorgeschlagen hat — getrennt von Regel-Auflösung und Nutzerentscheidung, Händler ebenfalls als Text, damit weder Vorschlag noch Korrektur einen `finance_merchants`-Eintrag anlegt, mit `human_review` als `none`/`confirmed`/`corrected`), die Funktionen `finance_create_manual_transaction` (Buchung + Entscheidung in einer Transaktion, ohne Import-Zeile, und ohne Sperre, wenn der Mensch nichts eingeordnet hat) und `finance_apply_ai_import` (alles oder nichts, ein zweites Mal wirkungslos), Indizes, Constraints, RLS + Policies |
@@ -253,10 +254,14 @@ die beim Lesen Zeit sparen:
   genau einmal, in `src/lib/finance/normalize.js`, beim Anlegen der Buchung; die
   Tokens gehören danach zur eingefrorenen Rohhälfte.
 
-Die fünf Kategorien (`lebensmittel`, `restaurant`, `klamotten`, `drogerie`,
-`sonstige`) legt ein Trigger auf `auth.users` an, genau wie das Profil in
-`0001`; bestehende Konten bekommen sie am Ende der Migration nachgetragen.
-Eine Kategorie „Events" aus der alten Excel-Tabelle gibt es hier bewusst nicht.
+Die Kategorien legt ein Trigger auf `auth.users` an, genau wie das Profil in
+`0001`; bestehende Konten bekommen sie am Ende der Migration nachgetragen. In
+0008 waren das fünf flache Zeilen (`lebensmittel`, `restaurant`, `klamotten`,
+`drogerie`, `sonstige`); seit `0014` ist es eine zweistufige Taxonomie aus neun
+Oberkategorien und sechsundzwanzig zuordenbaren Unterkategorien — **mit
+denselben fünf IDs**, die nur ein `parent_id` dazubekommen haben (siehe
+„Zweistufige Kategorien" unten). Eine Kategorie „Events" aus der alten
+Excel-Tabelle gibt es hier weiterhin bewusst nicht.
 
 ### Eine Buchung von Hand, und ein Auszug ohne Bank
 
@@ -415,6 +420,60 @@ Wiederholung desselben Exports, die Kette A → B → C, n↔n, `manual_lock`,
 Override, Retouren-Vorschlag, Kontotrennung, Zeitraum, Betrags- und
 Währungsgleichheit, direkte Schreibwege an der RPC vorbei, Zurücknehmen und
 erneutes Ablösen, Provenienz der Beobachtungen, Nutzerisolation und `anon`.
+
+### Zweistufige Kategorien (`0014`)
+
+`finance_categories` bekommt eine Spalte, sonst nichts: `parent_id`. `null` heißt
+Oberkategorie, gesetzt heißt Unterkategorie. Drei Dinge machen daraus eine
+Invariante statt einer Konvention:
+
+- **`on delete no action deferrable initially deferred`** — und ausdrücklich
+  nicht `restrict`. Gebraucht werden drei Zusagen gleichzeitig: eine einzelne
+  Oberkategorie mit Kindern lässt sich nicht löschen, ein kompletter
+  Benutzer-Delete entfernt Eltern **und** Kinder, und verwaist committen lässt
+  sich nichts. `restrict` ist nicht aufschiebbar — auf einer echten Datenbank
+  gemessen hat `set constraints all deferred` auf ihn keine Wirkung, und damit
+  scheitert jede Transaktion, die eine Oberkategorie vor ihren Kindern löscht,
+  obwohl am Ende nichts verwaist wäre. Die aufgeschobene Prüfung stellt genau
+  die Frage, die zählt: „ist am Ende dieser Transaktion ein Kind ohne
+  Elternteil übrig?" Belegt in `supabase/tests/finance_category_hierarchy.sql`,
+  inklusive einer Gegenprobe, die den Fremdschlüssel auf `restrict`
+  zurückstellt und die Suite fehlschlagen sieht.
+- **`finance_categories_hierarchy`** (`before insert or update of parent_id,
+  user_id`) — lehnt eine Oberkategorie ab, die es nicht gibt, eine, die einem
+  anderen Benutzer gehört, eine, die selbst schon ein Kind ist, und eine Zeile
+  mit eigenen Kindern, die zum Kind gemacht werden soll. Damit gibt es keine
+  dritte Ebene.
+- **`finance_category_is_leaf` + `finance_category_assignable_guard`** — die
+  Regel „nur Blätter sind zuordenbar" steht einmal und wird von einem Wächter an
+  fünf Tabellen durchgesetzt (`finance_transactions`,
+  `finance_transaction_overrides`, `finance_category_rules`,
+  `finance_transaction_ai_suggestions`, `finance_ai_learning_memories`). Die
+  Spaltennamen kommen als Trigger-Argumente, damit dieselbe Funktion auch die
+  zwei Spalten der Gedächtnis-Tabelle prüfen kann.
+
+Das ist der Grund, warum `finance_learn_merchant_rule` (0008),
+`finance_create_manual_transaction` (0011) und `finance_apply_ai_import` (0012)
+**unverändert** bleiben: keine von ihnen ist `security definer`, alle schreiben
+in eine dieser Tabellen, also lehnt derselbe Satz eine Oberkategorie auf jedem
+dieser Wege ab — und auf dem vierten, den es heute noch nicht gibt. Drei große
+Funktionen nachzubauen, nur um dieselbe Bedingung ein zweites Mal
+hineinzuschreiben, wäre die Variante, bei der eine davon beim nächsten Mal
+vergessen wird.
+
+**Die Migration ersetzt keine ID.** `finance_apply_category_taxonomy` legt erst
+die Oberkategorien an, dann die Unterkategorien (`on conflict (user_id, slug) do
+nothing`), hängt anschließend vorhandene Zeilen per `update` unter ihr Elternteil
+und sortiert sie ein. Die fünf Slugs aus 0008 laufen genau durch diesen
+`update`-Zweig: ihre `id` bleibt, und mit ihr jeder Fremdschlüssel in
+`finance_transactions`, `finance_category_rules`,
+`finance_transaction_overrides`, `finance_transaction_ai_suggestions` und
+`finance_ai_learning_memories`. Drei Labels werden ersetzt
+(`restaurant` → „Restaurants & Cafés", `klamotten` → „Kleidung",
+`sonstige` → „Allgemeines Sonstiges") — und zwar nur dort, wo noch das
+ursprünglich ausgelieferte Label steht, damit eine eigene Umbenennung des
+Nutzers nicht überschrieben wird. Dieselbe Prozedur benutzt der Signup-Trigger,
+also können Seed und Backfill nicht auseinanderlaufen.
 
 ## 8. Eine neue persönliche Tabelle anlegen
 

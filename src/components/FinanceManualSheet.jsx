@@ -8,6 +8,7 @@ import { useUI } from '../context/UIContext'
 import { useToast } from '../context/ToastContext'
 import { formatLongDate, todayISO } from '../lib/date'
 import { nextAccountId } from '../lib/finance/accounts'
+import { assignableCategories, categoryTree } from '../lib/finance/categories'
 import { failureLog } from '../lib/finance/importFlow'
 import { buildManualTransactionPayload } from '../lib/finance/manualTransaction'
 
@@ -203,8 +204,8 @@ function Sheet({ onClose }) {
         )}
 
         <Field label="Kategorie" optional>
-          <ChipSelect
-            options={categories.map((c) => ({ id: c.id, label: c.label }))}
+          <CategoryChipSelect
+            categories={categories}
             value={form.categoryId}
             onChange={(categoryId) => set({ categoryId })}
             emptyLabel="Keine"
@@ -289,6 +290,54 @@ function DirectionSwitch({ value, onChange }) {
 
 // Eine Auswahl aus wenigen Werten, plus „keiner". Chips statt eines Menüs, weil
 // die Optionen sichtbar sein sollen und weil ein Tap reicht.
+// Die Kategorie-Auswahl, seit v1.26 gruppiert.
+//
+// WARUM NICHT WEITER EINE REIHE CHIPS: aus fünf Kategorien sind sechsundzwanzig
+// geworden. Sechsundzwanzig gleich aussehende Chips hintereinander sind keine
+// Auswahl mehr, sondern eine Wand — und die Gliederung, die ihnen fehlt, gibt es
+// bereits: die Oberkategorie. Sie steht als Überschrift darüber und ist
+// ausdrücklich NICHT antippbar, weil sie keine zulässige Zuordnung ist (0014).
+//
+// Der Chip selbst ist derselbe Chip wie überall sonst in diesem Sheet — gleiche
+// Größe, gleiche Rückmeldung, gleiche 44px. Nur die Anordnung ist neu.
+export function CategoryChipSelect({ categories = [], value = null, onChange, emptyLabel = 'Keine' }) {
+  const groups = categoryTree(categories).filter((node) => node.children.length > 0)
+  const grouped = new Set(groups.flatMap((node) => node.children.map((c) => c.id)))
+  // Eine Unterkategorie ohne geladene Oberkategorie verschwindet nicht — sie
+  // bekommt eine eigene Gruppe, statt aus der Auswahl zu fallen.
+  const orphans = assignableCategories(categories).filter((c) => !grouped.has(c.id))
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2">
+        <Chip active={value === null} onClick={() => onChange(null)}>
+          {emptyLabel}
+        </Chip>
+      </div>
+      {[...groups, ...(orphans.length > 0 ? [{ parent: null, children: orphans }] : [])].map(
+        (node) => (
+          <div key={node.parent?.id ?? 'ohne'}>
+            <p className="mb-1.5 text-caption text-text-muted">
+              {node.parent?.label ?? 'Ohne Oberkategorie'}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {node.children.map((category) => (
+                <Chip
+                  key={category.id}
+                  active={value === category.id}
+                  onClick={() => onChange(value === category.id ? null : category.id)}
+                >
+                  {category.label}
+                </Chip>
+              ))}
+            </div>
+          </div>
+        )
+      )}
+    </div>
+  )
+}
+
 export function ChipSelect({ options = [], value = null, onChange, emptyLabel = 'Keine' }) {
   return (
     <div className="flex flex-wrap gap-2">

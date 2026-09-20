@@ -188,10 +188,12 @@ ${sql}`
 
   const categories = jsonAsUser(
     userId,
-    `select id, slug, label, sort_order from public.finance_categories
+    `select id, slug, label, sort_order, parent_id from public.finance_categories
      where user_id = '${userId}' order by sort_order`
   )
-  ok('das Konto bringt seine Kategorien mit', categories.length === 5)
+  ok('das Konto bringt seine vollständige Taxonomie mit', categories.length === 35)
+  ok('…mit 26 zuordenbaren Unterkategorien',
+     categories.filter((c) => c.parent_id !== null).length === 26)
   const lebensmittel = categories.find((c) => c.slug === 'lebensmittel')
   const restaurant = categories.find((c) => c.slug === 'restaurant')
 

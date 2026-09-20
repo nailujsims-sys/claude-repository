@@ -41,6 +41,7 @@ import {
 } from './src/lib/finance/ai/plan.js'
 import { buildAIContextPrompt } from './src/lib/finance/ai/prompt.js'
 import { validateAIImport } from './src/lib/finance/ai/parse.js'
+import { financeCategorySubset } from './tools/fixtures/financeCategories.mjs'
 
 let pass = 0
 let fail = 0
@@ -51,11 +52,8 @@ const ok = (name, condition) => {
 
 const IMPORT_ID = '11111111-2222-4333-8444-000000000001'
 const ACCOUNT_ID = '11111111-2222-4333-8444-000000000002'
-const CATEGORIES = [
-  { id: 'cat-lebensmittel', slug: 'lebensmittel', label: 'Lebensmittel', sort_order: 10 },
-  { id: 'cat-restaurant', slug: 'restaurant', label: 'Restaurant', sort_order: 20 },
-  { id: 'cat-sonstige', slug: 'sonstige', label: 'Sonstige', sort_order: 90 },
-]
+// Echte Zeilen mit echter Hierarchie (0014) — siehe tools/fixtures.
+const CATEGORIES = financeCategorySubset(['lebensmittel', 'restaurant', 'sonstige'])
 
 // Eine Preview-Zeile, wie buildAIImportPlan sie erzeugt — über den echten Weg,
 // damit kein Test an einer Handattrappe vorbeiläuft.
