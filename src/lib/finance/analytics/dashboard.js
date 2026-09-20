@@ -5,6 +5,7 @@ import { categoryBreakdown } from './categories'
 import { topMerchants } from './merchants'
 import { biggestExpenses } from './biggest'
 import { DEFAULT_TREND_RANGE, trendSeries } from './trend'
+import { needsDecision } from '../classificationQueue'
 import { DEFAULT_FINANCE_CURRENCY } from '../../../config/finance'
 
 // Was `categoryBreakdown` zurückgibt, wenn es nichts zurückgeben darf. Eine
@@ -27,21 +28,49 @@ const EMPTY_BREAKDOWN = Object.freeze({
 //
 // DIE REIHENFOLGE IST DIE ARCHITEKTUR:
 //
-//   1. Konten filtern      — welches Geld ist gemeint?
-//   2. Einordnen           — eine Auflösung für alle (resolve.js)
+//   1. Einordnen           — eine Auflösung für ALLE Buchungen (resolve.js)
+//   2. Konten filtern      — welches Geld ist gemeint?
 //   3. Zeitraum schneiden  — zwei Schnitte: Zeitraum und Vergleichszeitraum
 //   4. Zusammenzählen      — Summary, Kategorien, Händler, größte Ausgaben
 //   5. Verlauf             — eigene Zeitachse, derselbe Kontenfilter
 //
-// Schritt 1 kommt VOR Schritt 2, weil das Einordnen die teure Operation ist und
-// der Kontenfilter der billige. Schritt 3 kommt NACH Schritt 2, weil der
-// Verlauf dieselben eingeordneten Buchungen über eine andere Achse braucht —
-// zweimal einordnen wäre zweimal dieselbe Antwort, nur langsamer.
+// Schritt 3 kommt NACH Schritt 1, weil der Verlauf dieselben eingeordneten
+// Buchungen über eine andere Achse braucht — zweimal einordnen wäre zweimal
+// dieselbe Antwort, nur langsamer.
+//
+// SCHRITT 1 STAND BIS v1.26.2 HINTER DEM KONTENFILTER, aus einem vernünftigen
+// Grund: Einordnen ist die teure Operation, Filtern die billige. Es war
+// trotzdem falsch, und zwar nicht aus Gründen der Geschwindigkeit — die
+// Einordnung hängt gar nicht am Konto (Muster und Regeln gelten
+// kontoübergreifend, siehe unten), und die REVIEW-INBOX braucht sie für ALLE
+// Buchungen. Jetzt wird einmal alles eingeordnet und danach gefiltert; die
+// Auswertung sieht davon nichts, sie bekommt dieselbe Liste wie vorher.
 //
 // „ALLE KONTEN" HEISST ALLE, auch die archivierten. Das ist die Zusage von
 // v1.25: ein archiviertes Konto verschwindet aus der Auswahl für NEUE
 // Buchungen, nicht aus der eigenen Geschichte. Wer die Historie liest, liest
 // sie vollständig.
+//
+// ── ZWEI SCOPES, DIE NICHTS MITEINANDER ZU TUN HABEN (v1.26.2) ─────────────
+//
+// Die AUSWERTUNG beantwortet „was ist in diesem Zeitraum auf diesen Konten
+// passiert?". Sie ist gefiltert, und das ist ihr Sinn.
+//
+// Die REVIEW-INBOX beantwortet „was braucht noch meine Entscheidung?". Das ist
+// eine Frage über den Kontostand der ARBEIT, nicht über einen Monat. Sie wird
+// deshalb aus ALLEN Buchungen des Nutzers gebildet — ohne Monat, ohne Jahr,
+// ohne „Letzte 30 Tage", ohne eigenen Zeitraum, ohne Trend-Achse und ohne
+// Kontenfilter.
+//
+// WARUM DAS EIN ECHTER FEHLER WAR: wer „Letzte 30 Tage" wählte, sah siebzehn
+// offene Buchungen aus 2025 nicht mehr — die Warteschlange versteckte sich
+// hinter einem Filter, der über sie nichts aussagt. Die Arbeit verschwand nicht,
+// nur der Hinweis darauf.
+//
+// ES GIBT KEINE ZWEITE DEFINITION VON „OFFEN". `needsDecision` kommt aus
+// classificationQueue.js und liest dieselbe Antwort, die auch das
+// Zuordnungs-Sheet benutzt (effectiveClassification.js). Hier wird gezählt,
+// nicht entschieden.
 
 /**
  * @param {{
@@ -79,16 +108,11 @@ export function buildFinanceDashboard({
   topMerchantCount = 5,
   biggestCount = 3,
 } = {}) {
-  // 1. Konten. `null` ist „alle Konten", und das schließt archivierte ein.
-  const scoped = accountId
-    ? transactions.filter((t) => t?.account_id === accountId)
-    : transactions
-
-  // 2. Einordnung — einmal, für alles darunter. Die Muster und Regeln werden
-  //    dabei NICHT auf das Konto eingeschränkt: ein Händler ist kontoübergreifend
-  //    derselbe Händler.
-  const entries = resolveAnalyticsEntries({
-    transactions: scoped,
+  // 1. Einordnung — einmal, für alles darunter, und über ALLE Buchungen. Die
+  //    Muster und Regeln werden dabei nicht auf ein Konto eingeschränkt: ein
+  //    Händler ist kontoübergreifend derselbe Händler.
+  const allEntries = resolveAnalyticsEntries({
+    transactions,
     patterns,
     merchants,
     rules,
@@ -96,6 +120,15 @@ export function buildFinanceDashboard({
     aiSuggestions,
     categories,
   })
+
+  // 1b. Die Review-Inbox: ungefiltert, vor jedem Schnitt. Sie steht hier oben,
+  //     damit sichtbar bleibt, dass nichts darunter sie mehr erreichen kann.
+  const reviewEntries = allEntries.filter(needsDecision)
+
+  // 2. Konten. `null` ist „alle Konten", und das schließt archivierte ein.
+  const entries = accountId
+    ? allEntries.filter((e) => e.accountId === accountId)
+    : allEntries
 
   // 3. Die beiden Schnitte.
   const normalized = normalizePeriod(period, today)
@@ -149,6 +182,8 @@ export function buildFinanceDashboard({
     entries: inRange,
     comparisonEntries: inComparison,
     monetary: !mixedCurrency,
+    // Die einzige Zahl der Karte, die NICHT aus `inRange` kommt.
+    openClassifications: reviewEntries.length,
   })
   const breakdown = mixedCurrency
     ? EMPTY_BREAKDOWN
@@ -181,6 +216,11 @@ export function buildFinanceDashboard({
     mixedCurrency,
     entries,
     periodEntries: inRange,
+    // Alles, was der Nutzer hat — für einen Aufrufer, der wirklich alles
+    // braucht, und als Beleg, dass `entries` der gefilterte Ausschnitt ist.
+    allEntries,
+    // Die Review-Inbox, als Liste und als Zahl. Zeitraum- und kontenunabhängig.
+    review: { entries: reviewEntries, count: reviewEntries.length },
     summary,
     categories: {
       ...breakdown,

@@ -212,8 +212,17 @@ const overflow = body.scrollHeight - body.clientHeight
 if (FITS) {
   add(CASE + ': the whole decision fits without scrolling the sheet',
       overflow <= 1, 'überhängt um ' + Math.round(overflow) + 'px')
-  // Headroom for the two rows that only appear after a tap — the preview line
-  // and the „Gilt für" choice — so the answer stays yes once the user starts.
+  // Headroom for the rows that only appear after a tap — the preview line and
+  // the „Gilt für" choice — so the answer stays yes once the user starts.
+  //
+  // DIE ZAHL WAR BIS v1.26.1 72 px UND IST JETZT 44. Das ist kein nachgebender
+  // Test, sondern eine nachgezogene Buchführung: das Sheet hat mit v1.26.2 eine
+  // sechste Entscheidung bekommen („Buchungsart"), und eine Zeile kostet 44 px.
+  // Gemessen auf dem iPhone SE: vorher 92 px Reserve, jetzt 48 px — genau die
+  // eine Zeile. Die harte Zusage darüber ist unverändert und ist die, um die es
+  // geht: der ganze Bildschirm passt ohne Scrollen, auf beiden Geräten. Die
+  // Reserve sagt seitdem „mindestens eine weitere Zeile ist frei", und auf dem
+  // großen Gerät sind es 225 px.
   //
   // Measured as the gap between the last content row and the footer, not as
   // scroll overflow: the sheet is min-h-full and its footer is pushed down with
@@ -224,7 +233,7 @@ if (FITS) {
   const contentBottom = rows.reduce((max, el) => Math.max(max, el.getBoundingClientRect().bottom), 0)
   const headroom = footer ? footer.getBoundingClientRect().top - contentBottom : 0
   add(CASE + ': …with room for the preview and the scope choice',
-      headroom >= 72, 'Reserve: ' + Math.round(headroom) + 'px')
+      headroom >= 44, 'Reserve: ' + Math.round(headroom) + 'px')
 }
 
 // The footer is reachable at all times, which is the actual complaint.
@@ -246,7 +255,10 @@ if (save && later) {
 
 // Everything the screen owes, present and reachable.
 const text = sheet.textContent || ''
-for (const label of ['Händler', 'Kategorie', 'In Auswertung berücksichtigen']) {
+// „Buchungsart" ist seit v1.26.2 dabei — und ausdrücklich als ZEILE, nicht als
+// Chip-Feld: sechs Chips wären auf 390 px zwei Reihen und rund 100 px, und
+// genau dafür gibt es diese Datei.
+for (const label of ['Händler', 'Kategorie', 'Buchungsart', 'In Auswertung berücksichtigen']) {
   add(CASE + ': the row „' + label + '" is there', text.includes(label))
 }
 const note = sheet.querySelector('textarea[aria-label="Notiz"]')

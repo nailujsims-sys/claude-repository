@@ -11,6 +11,14 @@ import { sumEffects } from './effect'
 // `transactionCount` ist ausdrücklich KEINE Kennzahl, sondern eine Angabe über
 // die Daten. Wie viele Zeilen eine Summe hat, sagt nichts über Geld; es steht
 // hier, damit ein Bildschirm es erwähnen KANN, nicht damit er es groß macht.
+//
+// `openClassifications` WIRD HIER NICHT BERECHNET, und das ist seit v1.26.2 der
+// Punkt. Diese Funktion sieht ausschließlich den gewählten Zeitraum; die Frage
+// „was braucht noch meine Entscheidung?" hat damit nichts zu tun. Solange die
+// Zahl hier aus `entries` gezählt wurde, verschwanden offene Buchungen aus dem
+// Dashboard, sobald jemand „Letzte 30 Tage" wählte — eine Warteschlange, die
+// sich am Zeitraumfilter versteckt. Die Zahl kommt deshalb von außen (siehe
+// dashboard.js), und sie kann hier gar nicht mehr versehentlich entstehen.
 
 /**
  * Die Veränderung zwischen zwei Beträgen.
@@ -37,9 +45,19 @@ export function compare(current, previous) {
 /**
  * Die Zusammenfassung eines Zeitraums.
  *
- * @param {{entries?: Array<object>, comparisonEntries?: Array<object>}} input
+ * @param {{
+ *   entries?: Array<object>,
+ *   comparisonEntries?: Array<object>,
+ *   monetary?: boolean,
+ *   openClassifications?: number,
+ * }} input
  */
-export function dashboardSummary({ entries = [], comparisonEntries = [], monetary = true } = {}) {
+export function dashboardSummary({
+  entries = [],
+  comparisonEntries = [],
+  monetary = true,
+  openClassifications = 0,
+} = {}) {
   const totals = sumEffects(entries.map((e) => e.effect))
   const previous = sumEffects(comparisonEntries.map((e) => e.effect))
   // `monetary = false` heißt: in diesem Ausschnitt liegen zwei Währungen, und
@@ -52,12 +70,10 @@ export function dashboardSummary({ entries = [], comparisonEntries = [], monetar
   // „bis wann sind die Daten?". Ausgeschlossene Buchungen zählen dabei nicht:
   // sie sind in keiner der Zahlen darüber enthalten.
   let latestBookingDate = null
-  let openClassifications = 0
   for (const entry of entries) {
     if (entry.included && entry.bookingDate && entry.bookingDate > (latestBookingDate ?? '')) {
       latestBookingDate = entry.bookingDate
     }
-    if (entry.needsDecision) openClassifications += 1
   }
 
   return {
@@ -72,6 +88,7 @@ export function dashboardSummary({ entries = [], comparisonEntries = [], monetar
     // Metadaten, keine Kennzahlen.
     transactionCount: entries.filter((e) => e.included).length,
     latestBookingDate,
+    // Durchgereicht, nicht gezählt — der Zeitraum hat darauf keinen Zugriff.
     openClassifications,
   }
 }
