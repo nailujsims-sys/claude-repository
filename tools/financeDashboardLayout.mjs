@@ -39,6 +39,9 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
 import { Overview, Bookings, MixedCurrency } from './src/screens/Finanzen.jsx'
 import { Stepper } from './src/components/FinancePeriodSheet.jsx'
+import { TransactionDetail } from './src/components/FinanceTransactionSheet.jsx'
+import { AccountList } from './src/components/FinanceAccountsSheet.jsx'
+import { categoryPath } from './src/lib/finance/categories.js'
 import { buildFinanceDashboard } from './src/lib/finance/analytics/index.js'
 import { financeCategoryRows } from './tools/fixtures/financeCategories.mjs'
 import { tokenize } from './src/lib/finance/normalize.js'
@@ -115,7 +118,33 @@ const overview = renderToStaticMarkup(
     onAdd: noop, onClassify: noop,
   })
 )
-const bookings = renderToStaticMarkup(createElement(Bookings, { dashboard }))
+const bookings = renderToStaticMarkup(createElement(Bookings, { dashboard, onOpen: () => {} }))
+
+// Das Detail-Sheet einer Buchung — der laengste Name, den dieser Datensatz hat.
+const detailEntry = dashboard.periodEntries.find((e) => e.description === UNBREAKABLE)
+  ?? dashboard.periodEntries[0]
+const detail = renderToStaticMarkup(
+  createElement(TransactionDetail, {
+    entry: detailEntry,
+    title: detailEntry.merchantName || detailEntry.description,
+    account: { id: ACCOUNT, name: 'DKB Girokonto', currency: 'EUR' },
+    categoryLabel: categoryPath(CATEGORIES, detailEntry.categoryId).label,
+    note: 'Eine Notiz, die jemand vor drei Wochen getippt hat.',
+    imported: true,
+    busy: false,
+    problem: null,
+    onDelete: noop,
+  })
+)
+
+// Die Kontoverwaltung mit dem Gefahrenbereich darunter.
+const accountList = renderToStaticMarkup(
+  createElement(AccountList, {
+    active: [{ id: ACCOUNT, name: 'DKB Girokonto', provider: 'DKB', currency: 'EUR' }],
+    archived: [],
+    onOpen: noop, onCreate: noop, onReset: noop, resetting: false, resetProblem: null,
+  })
+)
 
 // Zwei Waehrungen: die Karte, die statt der Zahlen steht.
 const mixedDashboard = buildFinanceDashboard({
@@ -151,7 +180,7 @@ const stepper = renderToStaticMarkup(
 )
 
 process.stdout.write(JSON.stringify({
-  overview, bookings, mixed, stepper,
+  overview, bookings, mixed, stepper, detail, accountList,
   expected: {
     expenses: dashboard.summary.expenses,
     parents: dashboard.categories.top.length,
@@ -204,6 +233,8 @@ const pageFor = (width, height) => `<!doctype html><html lang="de"><head><meta c
   <div class="px-5" id="bookings">${rendered.bookings}</div>
   <div class="px-5" id="mixed">${rendered.mixed}</div>
   <div id="stepper">${rendered.stepper}</div>
+  <div id="detail">${rendered.detail}</div>
+  <div id="accounts">${rendered.accountList}</div>
 </div>
 <script>
 const VIEWPORT = ${width}
@@ -304,10 +335,88 @@ for (const title of ['Ausgaben nach Kategorie', 'Ausgabenentwicklung', 'Top-Hän
       Math.round(Math.min(...chartButtons.map((b) => box(b).width))) + 'px')
   add('…und sie bleiben im Rahmen',
       chartButtons.every((b) => box(b).right <= frameRect.right + 0.5))
-  const partial = chartButtons[chartButtons.length - 1].querySelector('span')
+  const partial = chartButtons[chartButtons.length - 1].querySelector('.bg-accent')
   add('der laufende Balken ist derselbe Balken mit weniger Deckkraft',
       parseFloat(getComputedStyle(partial).opacity) < 1,
       getComputedStyle(partial).opacity)
+
+  // ── v1.26.1: der Betrag ueber jedem Balken ──────────────────────────────
+  const amounts = chartButtons.map((b) => b.firstElementChild)
+  add('ueber jedem Balken steht sein Betrag',
+      amounts.every((a) => a && /[0-9]/.test(a.textContent)),
+      amounts.map((a) => a && a.textContent).join('|').slice(0, 80))
+  add('…und keiner davon wird abgeschnitten',
+      amounts.every((a) => getComputedStyle(a).overflow !== 'hidden' &&
+                           getComputedStyle(a).textOverflow !== 'ellipsis'),
+      amounts.map((a) => getComputedStyle(a).overflow).join(' ').slice(0, 60))
+  // WAS HIER WIRKLICH GEMESSEN WIRD. Die Beschriftung ist volle Spaltenbreite
+  // — ihr Kasten ist die Spalte, der TEXT darin ist so breit, wie er ist
+  // (scrollWidth). Zwei Zahlen beruehren sich also genau dann nicht, wenn
+  // der Text schmaler bleibt als Spalte plus Zwischenraum. Ein Vergleich der
+  // Kaesten haette immer bestanden und nichts geprueft.
+  const gap = amounts.length > 1
+    ? box(chartButtons[1]).left - box(chartButtons[0]).right
+    : 0
+  let collision = null
+  for (const a of amounts) {
+    if (a.scrollWidth > a.clientWidth + gap - 2 && !collision) {
+      collision = a.textContent.trim() + ': ' + a.scrollWidth + ' > ' +
+        Math.round(a.clientWidth + gap - 2)
+    }
+  }
+  add('…und zwei Betraege beruehren sich nie', collision === null, collision ?? '')
+  add('die Spalten stehen weiter auseinander als vorher (>= 7px)',
+      chartButtons.length < 2 ||
+      box(chartButtons[1]).left - box(chartButtons[0]).right >= 7,
+      chartButtons.length > 1
+        ? Math.round(box(chartButtons[1]).left - box(chartButtons[0]).right) + 'px'
+        : '')
+  add('die ganze Spalte ist die Trefferflaeche — Betrag, Balken und Beschriftung',
+      chartButtons.every((b) => b.children.length === 3 && box(b).height >= 44),
+      Math.round(Math.min(...chartButtons.map((b) => box(b).height))) + 'px')
+  add('…und die Zeitraum-Beschriftung steht darin',
+      chartButtons.every((b) => b.lastElementChild.textContent.trim().length > 0))
+}
+
+// ── Das Detail-Sheet einer Buchung ────────────────────────────────────────
+{
+  const detail = document.getElementById('detail')
+  const t = detail.textContent
+  for (const label of ['Konto', 'Kategorie', 'Buchungsart', 'In Auswertung', 'Notiz']) {
+    add('das Buchungs-Sheet zeigt „' + label + '"', t.includes(label))
+  }
+  const del = [...detail.querySelectorAll('button')]
+    .find((b) => b.textContent.trim() === 'Buchung löschen')
+  add('…und darunter „Buchung löschen"', Boolean(del))
+  add('…daumengross', del && box(del).height >= 44, del ? Math.round(box(del).height) + 'px' : '')
+  add('…in der Danger-Farbe und nicht als zweiter Primaerknopf',
+      del && getComputedStyle(del).backgroundColor === 'rgba(0, 0, 0, 0)',
+      del ? getComputedStyle(del).backgroundColor : '')
+  add('…und nichts im Sheet laeuft ueber den Rahmen',
+      [...detail.querySelectorAll('*')].every((el) =>
+        box(el).width === 0 || box(el).right <= frameRect.right + 0.5))
+  add('die Zeilen des Sheets sind mindestens 44px hoch',
+      [...detail.querySelectorAll('dl > div')].every((r) => box(r).height >= 44))
+}
+
+// ── Der Gefahrenbereich der Kontoverwaltung ───────────────────────────────
+{
+  const accounts = document.getElementById('accounts')
+  const t = accounts.textContent
+  add('die Kontoverwaltung hat einen Abschnitt „Daten"', t.includes('Daten'))
+  const reset = [...accounts.querySelectorAll('button')]
+    .find((b) => b.textContent.trim() === 'Finanzdaten zurücksetzen')
+  add('…mit „Finanzdaten zurücksetzen"', Boolean(reset))
+  add('…leise: eine Textzeile, kein Primaerknopf',
+      reset && getComputedStyle(reset).backgroundColor === 'rgba(0, 0, 0, 0)',
+      reset ? getComputedStyle(reset).backgroundColor : '')
+  add('…und ganz unten, unterhalb von „Neues Konto"', (() => {
+    const create = [...accounts.querySelectorAll('button')]
+      .find((b) => b.textContent.includes('Neues Konto'))
+    return reset && create && box(reset).top > box(create).top
+  })())
+  add('…daumengross', reset && box(reset).height >= 44,
+      reset ? Math.round(box(reset).height) + 'px' : '')
 }
 
 // ── Händler und größte Ausgaben: lange Namen ──────────────────────────────
@@ -326,6 +435,13 @@ for (const title of ['Ausgaben nach Kategorie', 'Ausgabenentwicklung', 'Top-Hän
   add('…und bleibt im Rahmen',
       [...bookings.querySelectorAll('*')].every((el) =>
         box(el).width === 0 || box(el).right <= frameRect.right + 0.5))
+  const rows = [...bookings.querySelectorAll('button')]
+  add('jede Buchungszeile ist antippbar', rows.length > 0, rows.length + '')
+  add('…und mindestens 44px hoch',
+      rows.every((r) => box(r).height >= 44),
+      rows.length ? Math.round(Math.min(...rows.map((r) => box(r).height))) + 'px' : '')
+  add('…und sagt, was sie oeffnet',
+      rows.every((r) => (r.getAttribute('aria-label') || '').startsWith('Buchung öffnen')))
 }
 
 // ── Zwei Waehrungen ───────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import MerchantAvatar from '../components/MerchantAvatar'
 import FinancePeriodSheet from '../components/FinancePeriodSheet'
 import FinanceAccountFilterSheet from '../components/FinanceAccountFilterSheet'
 import FinanceTrendChart from '../components/FinanceTrendChart'
+import FinanceTransactionSheet from '../components/FinanceTransactionSheet'
 import { SkeletonExpenseList } from '../components/Skeleton'
 import { useFinance } from '../context/FinanceContext'
 import { useUI } from '../context/UIContext'
@@ -66,6 +67,11 @@ export default function Finanzen() {
   const [accountId, setAccountId] = useState(null)
   const [trendRange, setTrendRange] = useState(DEFAULT_TREND_RANGE)
   const [sheet, setSheet] = useState(null) // 'period' | 'account' | null
+  // Welche Buchung gerade offen ist — als ID und nicht als Objekt, damit das
+  // Sheet nach jedem Reload den frischen Eintrag sieht statt einer Kopie von
+  // vorhin. Ist die Buchung weg (gelöscht, hier oder auf einem anderen Gerät),
+  // findet sich nichts, und es wird nichts gezeigt.
+  const [openTransactionId, setOpenTransactionId] = useState(null)
 
   const dashboard = useMemo(
     () =>
@@ -84,6 +90,10 @@ export default function Finanzen() {
   // gesehen. Heute ist das immer EUR; wer ein Konto in einer anderen Währung
   // anlegt, bekommt deren Zeichen statt eines falschen.
   const currency = dashboard.currency
+
+  const openEntry = openTransactionId
+    ? dashboard.entries.find((e) => e.id === openTransactionId) ?? null
+    : null
 
   const isEmpty = !loading && transactions.length === 0
   const accountLabel = accountId
@@ -155,7 +165,7 @@ export default function Finanzen() {
                 />
               )
             ) : (
-              <Bookings dashboard={dashboard} />
+              <Bookings dashboard={dashboard} onOpen={setOpenTransactionId} />
             )}
 
             {excluded.length > 0 && (
@@ -188,6 +198,9 @@ export default function Finanzen() {
         value={accountId}
         onChange={setAccountId}
       />
+      {openEntry && (
+        <FinanceTransactionSheet entry={openEntry} onClose={() => setOpenTransactionId(null)} />
+      )}
     </div>
   )
 }
@@ -457,10 +470,16 @@ function CategoryRow({ row, currency, bordered }) {
 //
 // Die schlichte Liste dessen, was im gewählten Zeitraum auf den gewählten Konten
 // gebucht wurde — dieselben aufgelösten Einträge wie die Übersicht, nur ohne
-// Summe. Bewusst ohne Suche, ohne Filter und ohne Bearbeiten: der vollständige
-// Buchungen-Tab ist ein eigenes Stück Arbeit, und eine halbe Suchleiste, die
-// nichts findet, wäre schlimmer als keine.
-export function Bookings({ dashboard }) {
+// Summe. Bewusst ohne Suche und ohne Filter: der vollständige Buchungen-Tab ist
+// ein eigenes Stück Arbeit, und eine halbe Suchleiste, die nichts findet, wäre
+// schlimmer als keine.
+//
+// SEIT v1.26.1 IST JEDE ZEILE EIN KNOPF. Sie sah vorher schon aus wie eine
+// Listenzeile, auf die man tippt, und tat nichts — genau die Art von Zeile, die
+// eine App unzuverlässig wirken lässt. Sie öffnet jetzt das Detail-Sheet, in dem
+// steht, was in die Zeile nicht hineinpasst, und in dem die Buchung gelöscht
+// werden kann.
+export function Bookings({ dashboard, onOpen }) {
   const rows = useMemo(
     () =>
       dashboard.periodEntries
@@ -485,9 +504,12 @@ export function Bookings({ dashboard }) {
     <Section title="Buchungen">
       <div className="rounded-card bg-bg-card px-4 py-1">
         {rows.map((entry, index) => (
-          <div
+          <button
             key={entry.id}
-            className={`flex min-h-[56px] items-center gap-3 py-2.5 ${
+            type="button"
+            onClick={() => onOpen?.(entry.id)}
+            aria-label={`Buchung öffnen: ${entry.merchantName || entry.description}`}
+            className={`press-tint flex min-h-[56px] w-full items-center gap-3 py-2.5 text-left ${
               index > 0 ? 'border-t border-subtle' : ''
             }`}
           >
@@ -507,7 +529,8 @@ export function Bookings({ dashboard }) {
             >
               {formatAmountMinor(entry.amountMinor, entry.currency)}
             </span>
-          </div>
+            <ChevronRight size={18} className="shrink-0 text-text-muted" />
+          </button>
         ))}
       </div>
     </Section>

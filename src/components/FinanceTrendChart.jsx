@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { formatAmountMinor } from '../lib/finance/importFlow'
+import { formatAmountMinor, formatCompactAmountMinor } from '../lib/finance/importFlow'
 
 // Das Balkendiagramm der Ausgabenentwicklung.
 //
@@ -22,11 +22,37 @@ import { formatAmountMinor } from '../lib/finance/importFlow'
 // nichts, es nimmt keiner darunterliegenden Fläche die Escape-Taste ab. Es
 // wächst aus seinem Balken heraus (§11, wie das Menü in TaskDetail) und geht
 // wieder weg, wenn woanders hingetippt wird.
+//
+// ── v1.26.1: der Betrag steht über dem Balken ───────────────────────────────
+//
+// EINE SPALTE IST EINE EINHEIT, und deshalb ein einziger Knopf: Betrag, Balken
+// und Zeitraum-Beschriftung liegen übereinander in derselben Schaltfläche.
+// Vorher waren es zwei getrennte Reihen — die Monatsbeschriftung war nicht
+// antippbar, obwohl sie direkt unter ihrem Balken stand und genauso aussah wie
+// etwas, das man antippt. Die Trefferfläche ist damit die ganze Spalte, von der
+// Zahl oben bis zur Beschriftung unten, und ein drei Pixel hoher Balken bleibt
+// erreichbar (§22).
+//
+// ZWEI FORMATE FÜR DIESELBE ZAHL, mit Absicht. Über dem Balken steht die
+// kompakte Form (`formatCompactAmountMinor`: 428 €, 1,2k €) — sie ist
+// Orientierung beim Überfliegen. Das Tap-Detail unter dem Diagramm nennt
+// weiterhin den exakten Betrag mit Cent. Wer genau wissen will, wie viel der
+// März war, tippt ihn an; wer nur sehen will, welcher Monat teuer war, muss
+// nicht tippen.
+//
+// AB ACHT EIMERN OHNE WÄHRUNGSZEICHEN. Bei zwölf Monatsbalken ist eine Spalte
+// auf einem 390-Pixel-Schirm rund 20 Pixel breit; „1,2k €" passt dort nicht,
+// „1,2k" passt. Das Zeichen fehlt dann genau an der Stelle, an der es nichts
+// erklärt — die Karte darüber, das Tap-Detail darunter und die KPI-Karte
+// nennen die Währung ohnehin. Der Schwellwert steht hier und nicht im Stil:
+// ob eine Zahl passt, hängt an der Zahl der Spalten, nicht am Geschmack.
 
 /** Die Höhe der Zeichenfläche in Pixeln — eine Zahl, damit die Balken rechnen können. */
 const PLOT_HEIGHT = 132
 /** Ein Balken mit 0 € bleibt sichtbar: eine leere Spalte sieht aus wie ein Fehler. */
 const MIN_BAR = 3
+/** Ab hier wird die Spalte zu schmal für das Währungszeichen über dem Balken. */
+const DENSE_FROM = 8
 
 export default function FinanceTrendChart({ series, currency = 'EUR' }) {
   const [openKey, setOpenKey] = useState(null)
@@ -58,12 +84,15 @@ export default function FinanceTrendChart({ series, currency = 'EUR' }) {
   // beginnt bei null und der Balken bleibt der kleinste sichtbare —, aber das
   // Tooltip nennt den echten Betrag.
   const max = Math.max(series.max ?? 0, 1)
+  const dense = buckets.length > DENSE_FROM
 
   return (
     <div ref={rootRef} className="relative">
+      {/* gap-2 statt gap-1.5: die Säulen standen zu eng beieinander, um als
+          einzelne Werte gelesen zu werden. Mehr geht nicht — bei zwölf Eimern
+          geht jeder weitere Pixel Abstand vom Balken selbst ab. */}
       <div
-        className="flex items-end gap-1.5"
-        style={{ height: `${PLOT_HEIGHT}px` }}
+        className="flex items-end gap-2"
         // `group`, nicht `list`: `role="listitem"` auf einem Button würde dessen
         // Rolle überschreiben, und ein Screenreader kündigte einen Listenpunkt
         // an, den man drücken kann, statt eine Schaltfläche.
@@ -83,30 +112,33 @@ export default function FinanceTrendChart({ series, currency = 'EUR' }) {
               aria-label={`${bucket.fullLabel}: ${formatAmountMinor(bucket.amount, currency)}${
                 bucket.isPartial ? ', laufender Zeitraum' : ''
               }`}
-              // Der ganze Streifen ist die Trefferfläche, nicht nur der Balken:
-              // ein 3 Pixel hoher Balken wäre sonst unerreichbar (§22).
-              className="press-tint flex h-full min-w-0 flex-1 cursor-pointer flex-col justify-end"
+              // Die ganze Spalte ist die Trefferfläche, nicht nur der Balken.
+              className="press-tint flex min-w-0 flex-1 cursor-pointer flex-col items-stretch"
             >
               <span
-                className={`w-full rounded-t-[4px] bg-accent transition-[height] duration-200 ease-out motion-reduce:transition-none ${
-                  bucket.isPartial ? 'opacity-50' : ''
-                } ${open ? 'ring-1 ring-inset ring-white/30' : ''}`}
-                style={{ height: `${height}px` }}
-              />
+                className={`block w-full text-center text-meta leading-none tabular-nums ${
+                  bucket.isPartial ? 'text-text-muted' : 'text-text-secondary'
+                }`}
+              >
+                {formatCompactAmountMinor(bucket.amount, dense ? '' : currency)}
+              </span>
+              <span
+                className="mt-1 flex w-full items-end"
+                style={{ height: `${PLOT_HEIGHT}px` }}
+              >
+                <span
+                  className={`block w-full rounded-t-[4px] bg-accent transition-[height] duration-200 ease-out motion-reduce:transition-none ${
+                    bucket.isPartial ? 'opacity-50' : ''
+                  } ${open ? 'ring-1 ring-inset ring-white/30' : ''}`}
+                  style={{ height: `${height}px` }}
+                />
+              </span>
+              <span className="mt-2 block w-full truncate text-center text-meta text-text-muted">
+                {bucket.label}
+              </span>
             </button>
           )
         })}
-      </div>
-
-      <div className="mt-2 flex gap-1.5">
-        {buckets.map((bucket) => (
-          <span
-            key={bucket.key}
-            className="min-w-0 flex-1 truncate text-center text-meta text-text-muted"
-          >
-            {bucket.label}
-          </span>
-        ))}
       </div>
 
       {openKey && <Tooltip bucket={buckets.find((b) => b.key === openKey)} currency={currency} />}

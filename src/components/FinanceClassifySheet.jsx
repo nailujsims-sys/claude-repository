@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, ChevronRight, Search } from 'lucide-react'
 import BottomSheet from './BottomSheet'
 import Toggle from './Toggle'
 import { useFinance } from '../context/FinanceContext'
+import { useToast } from '../context/ToastContext'
 import { useUI } from '../context/UIContext'
 import { buildClassificationQueue } from '../lib/finance/classificationQueue'
 import { buildLearnRequest } from '../lib/finance/learning'
@@ -60,10 +61,15 @@ function Sheet({ onClose }) {
     saveClassification,
   } = useFinance()
 
+  const { showToast } = useToast()
+
   const [skipped, setSkipped] = useState(() => new Set())
   const [saving, setSaving] = useState(false)
   const [failure, setFailure] = useState(null)
-  const [done, setDone] = useState(null)
+  // Ob in dieser Sitzung schon einmal vollständig gespeichert wurde. Kein
+  // Bildschirm hängt daran — es entscheidet nur, ob sich das Sheet am Ende von
+  // selbst schließt oder ob es von Anfang an nichts zu tun gab.
+  const [completed, setCompleted] = useState(false)
   // A save that got halfway holds its booking in place. Without this the one
   // reload at the end of the sequence could resolve the booking and move the
   // screen on — while the message still says „ein erneuter Versuch wiederholt
@@ -82,6 +88,49 @@ function Sheet({ onClose }) {
   const entry = pinned
     ? entries.find((e) => e.transaction.id === pinned) ?? queue[0] ?? null
     : queue[0] ?? null
+
+  // „3 von 18" braucht ein Ganzes, und das Ganze schrumpft während der Arbeit.
+  // Also die größte Zahl offener Buchungen, die diese Sitzung gesehen hat —
+  // sie steigt, wenn ein Import dazukommt, und fällt nie. Dass die Position
+  // springen kann (eine gelernte Regel ordnet vier Buchungen auf einmal zu),
+  // ist kein Fehler, sondern genau das, was gerade passiert ist.
+  const [total, setTotal] = useState(0)
+  useEffect(() => {
+    setTotal((prev) => Math.max(prev, open.length))
+  }, [open.length])
+  const position = Math.max(1, total - open.length + 1)
+
+  // ── Speichern → sofort die nächste Buchung ────────────────────────────────
+  //
+  // WAS HIER WEGGEFALLEN IST, und warum. Bis v1.26 folgte auf jedes erfolgreiche
+  // Speichern ein Bestätigungsschritt („Gespeichert", darunter „Weiter"). Bei
+  // achtzehn offenen Buchungen sind das achtzehn zusätzliche Taps auf einen
+  // Bildschirm, der nichts sagt, was der nächste nicht auch zeigt: dass die
+  // Buchung weg ist, sieht man daran, dass die nächste da ist.
+  //
+  // DAS ENDE IST DER EINZIGE FALL, DER NOCH ETWAS SAGT. Ist nach einem
+  // erfolgreichen Speichern nichts mehr offen, schließt sich das Sheet selbst
+  // und hinterlässt einen Toast — ein eigener Schlussbildschirm wäre ein
+  // Bildschirm, der nur noch „zu" anbietet. Sind dagegen Buchungen bewusst auf
+  // später geschoben worden, bleibt der bestehende „Für jetzt fertig"-Zustand:
+  // er sagt etwas, das der Nutzer selbst entschieden hat, und bietet an, sie
+  // noch einmal durchzugehen.
+  //
+  // FEHLER UND TEILERFOLGE BLEIBEN, WIE SIE WAREN. `pinned`, `progress` und die
+  // Fehlermeldung sind unverändert — nur der vollständig erfolgreiche Weg ist
+  // kürzer geworden.
+  // Genau einmal. Der Effekt hängt an `onClose`, und ein Kontext, der seinen
+  // Wert neu baut, gäbe sonst zwei Toasts für dasselbe Ereignis.
+  const closedItself = useRef(false)
+  useEffect(() => {
+    if (closedItself.current) return
+    if (!completed || saving) return
+    if (queue.length > 0) return
+    if (open.length > 0) return
+    closedItself.current = true
+    showToast('Alle offenen Buchungen bearbeitet')
+    onClose()
+  }, [completed, saving, queue.length, open.length, showToast, onClose])
 
   const release = useCallback(() => {
     setPinned(null)
@@ -136,10 +185,16 @@ function Sheet({ onClose }) {
         describeSaveOutcome({ steps, include: merchantScope?.include, labels, kind, reason, error })
 
       try {
-        const steps = combine(await saveClassification(plan))
+        // Erfolg: kein Zwischenbildschirm. Der nächste Eintrag der
+        // Warteschlange steht nach dem Reload von selbst da — und wenn keiner
+        // mehr kommt, schließt der Effekt oben das Sheet. Was genau geschrieben
+        // wurde, interessiert nur noch den Fehlerfall; `combine` steht deshalb
+        // ausschließlich dort.
+        await saveClassification(plan)
         setPinned(null)
         setProgress(null)
-        setDone(report(steps))
+        setFailure(null)
+        setCompleted(true)
       } catch (err) {
         console.error(failureLog('zuordnen', err))
         const steps = combine(err.steps)
@@ -161,20 +216,16 @@ function Sheet({ onClose }) {
           its bottom edge. The actions are therefore reachable without scrolling
           whatever the booking text does, which was the whole complaint. */}
       <div className="flex min-h-full flex-col px-5 pt-3">
-        {/* THE ORDER MATTERS, and it was wrong.
-            `open.length === 0` used to be asked first, which made the queue's
-            end state beat everything else:
+        {/* DIE REIHENFOLGE IST EINE ENTSCHEIDUNG, und sie war einmal falsch:
+            `open.length === 0` stand vorn, und damit gewann das Ende der
+            Warteschlange gegen alles andere — eine halb gespeicherte LETZTE
+            Buchung verschwand hinter „Keine offenen Zuordnungen", die Regel
+            hatte sie ja aufgelöst, und das versprochene „erneut versuchen"
+            hatte keinen Ort mehr.
 
-              • a half-saved LAST booking vanished behind „Keine offenen
-                Zuordnungen" — the rule had resolved it, so the queue was empty
-                while `pinned` still held it, and the retry the message promised
-                had nowhere to happen;
-              • and the confirmation for the last booking was never shown at
-                all, for the same reason.
-
-            So a held retry comes first — it is the only state with unfinished
-            work in it — then what was just saved, and only then the end of the
-            queue. */}
+            Also zuerst der festgehaltene Wiederholungsfall (der einzige
+            Zustand mit unerledigter Arbeit), dann die nächste offene Buchung,
+            und erst danach das Ende. */}
         {pinned && entry ? (
           <BookingStep
             key={entry.transaction.id}
@@ -185,20 +236,13 @@ function Sheet({ onClose }) {
             categories={categories}
             overrides={overrides}
             remaining={Math.max(queue.length, 1)}
+            position={position}
+            total={total}
             saving={saving}
             failure={failure}
             onSave={onSave}
             onSkip={onSkip}
           />
-        ) : done ? (
-          <SavedStep
-            done={done}
-            remaining={queue.length}
-            onNext={() => setDone(null)}
-            onClose={onClose}
-          />
-        ) : open.length === 0 ? (
-          <FinishedStep onClose={onClose} />
         ) : entry ? (
           <BookingStep
             key={entry.transaction.id}
@@ -209,11 +253,20 @@ function Sheet({ onClose }) {
             categories={categories}
             overrides={overrides}
             remaining={queue.length}
+            position={position}
+            total={total}
             saving={saving}
             failure={failure}
             onSave={onSave}
             onSkip={onSkip}
           />
+        ) : open.length === 0 ? (
+          // Nach dem letzten erfolgreichen Speichern schließt der Effekt oben
+          // das Sheet; bis der Frame durch ist, steht hier nichts — ein
+          // „Keine offenen Zuordnungen", das sofort wieder verschwindet, wäre
+          // ein Aufblitzen ohne Aussage. Wer das Sheet öffnet, ohne dass etwas
+          // offen war, sieht den Bildschirm dagegen wie bisher.
+          completed ? null : <FinishedStep onClose={onClose} />
         ) : (
           <PostponedStep count={open.length} onAgain={() => setSkipped(new Set())} onClose={onClose} />
         )}
@@ -229,7 +282,7 @@ function Sheet({ onClose }) {
 // one takes: a pattern gesture only where a pattern is what is missing.
 export function BookingStep({
   entry, transactions, patterns, merchants, categories, overrides,
-  remaining, saving, failure, onSave, onSkip,
+  remaining, position = 1, total = 0, saving, failure, onSave, onSkip,
 }) {
   const transaction = entry.transaction
   const head = bookingHeadline(transaction)
@@ -393,7 +446,11 @@ export function BookingStep({
     <>
       {/* ── the booking, in three lines ── */}
       <p className="text-caption text-text-muted">
-        {remaining === 1 ? 'Letzte offene Buchung' : `Noch ${remaining} offene Buchungen`}
+        {remaining === 1
+          ? 'Letzte offene Buchung'
+          : total > 1
+            ? `Buchung ${position} von ${total}`
+            : `Noch ${remaining} offene Buchungen`}
       </p>
       <div className="mt-1 flex items-baseline justify-between gap-3">
         <p className="text-section font-bold tabular-nums text-text-primary">
@@ -830,40 +887,6 @@ function CategoryPicker({ categories, value, onPick, onClose }) {
 }
 
 // ── After ────────────────────────────────────────────────────────────────────
-
-function SavedStep({ done, remaining, onNext, onClose }) {
-  return (
-    <div className="pt-2" aria-live="polite">
-      <p className="text-section font-semibold text-text-primary">
-        {done.partial ? 'Teilweise gespeichert' : 'Gespeichert'}
-      </p>
-      <ul className="mt-2 space-y-1">
-        {done.lines.map((line) => (
-          <li key={line} className="text-ui text-text-secondary">
-            {line}
-          </li>
-        ))}
-      </ul>
-      <p className="mt-4 text-caption text-text-muted">
-        {remaining > 0
-          ? remaining === 1
-            ? 'Eine Buchung wartet noch.'
-            : `${remaining} Buchungen warten noch.`
-          : 'Es wartet keine Buchung mehr.'}
-      </p>
-      {/* The way on. Without it this screen was a dead end whenever bookings
-          remained: the confirmation stayed until the sheet was closed. Deliberately
-          a button rather than a timer — the user reads what happened and decides
-          when to move on. */}
-      <button
-        onClick={remaining > 0 ? onNext : onClose}
-        className="press-tint mt-5 min-h-[44px] w-full rounded-btn bg-accent py-3 text-body font-semibold text-white"
-      >
-        {remaining > 0 ? 'Weiter' : 'Fertig'}
-      </button>
-    </div>
-  )
-}
 
 function FinishedStep({ onClose }) {
   return (

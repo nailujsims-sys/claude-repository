@@ -481,4 +481,43 @@ export const financeRepository = {
     if (error) throw error
     return data
   },
+
+  /**
+   * Eine einzelne Buchung endgültig löschen.
+   *
+   * Ausdrücklich kein `.delete()` auf `finance_transactions`, aus demselben
+   * Grund wie bei `deleteEmptyAccount`: was an einer Buchung hängt, steht in
+   * sechs Tabellen, und zwei davon räumt kein Fremdschlüssel auf (eine Relation,
+   * die ihre zweite Seite verliert, und ein offener Prüfposten, der seine letzte
+   * Buchung verliert). `finance_delete_transaction` (0015) macht beides in einer
+   * Transaktion — oder nichts.
+   *
+   * Die Benutzer-ID reist nicht mit; die Funktion liest `auth.uid()` selbst.
+   */
+  async deleteTransaction(userId, transactionId) {
+    requireUser(userId)
+    const { data, error } = await requireSupabase().rpc('finance_delete_transaction', {
+      p_transaction_id: transactionId,
+    })
+    if (error) throw error
+    return data ?? transactionId
+  },
+
+  /**
+   * Den gesamten Finanzbereich des angemeldeten Nutzers zurücksetzen.
+   *
+   * KEIN PARAMETER, UND DAS IST DIE EIGENTLICHE ZUSAGE. Die Funktion in 0015
+   * nimmt keine Benutzer-ID entgegen — es gibt hier also nichts, was ein Client
+   * falsch oder böswillig setzen könnte. Was gelöscht wird, entscheidet
+   * `auth.uid()` in der Datenbank.
+   *
+   * Zurück kommt, wie viele Zeilen je Tabelle verschwunden sind, plus die Zahl
+   * der wiederhergestellten Standardkategorien.
+   */
+  async resetFinanceData(userId) {
+    requireUser(userId)
+    const { data, error } = await requireSupabase().rpc('finance_reset_user_data')
+    if (error) throw error
+    return data ?? null
+  },
 }

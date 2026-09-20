@@ -31,6 +31,7 @@ import {
   parentCategoryOf, categoriesById,
 } from './src/lib/finance/categories.js'
 import { merchantInitials } from './src/config/merchantLogos.js'
+import { formatAmountMinor, formatCompactAmountMinor } from './src/lib/finance/importFlow.js'
 import { tokenize } from './src/lib/finance/normalize.js'
 import { financeCategoryRows } from './tools/fixtures/financeCategories.mjs'
 
@@ -790,6 +791,75 @@ const dash = (over = {}) =>
      onAugust.summary.expenseChange.comparable === true)
   ok('… und die Beschriftung sagt, welcher Monat gemeint ist',
      onAugust.periodLabel === 'August 2026')
+}
+
+// == Kompakte Betraege ueber den Balken (v1.26.1) ===========================
+//
+// Die zweite Formatierung neben formatAmountMinor. Sie darf kuerzer sein, aber
+// nicht falsch: eine Zahl, die aufgerundet ueber ihrer eigenen Tausenderstufe
+// landet, waere ueber einem Balken eine Behauptung.
+{
+  ok('unter tausend Euro: volle Euro',
+     formatCompactAmountMinor(8400) === '84 \u20ac' &&
+     formatCompactAmountMinor(42837) === '428 \u20ac')
+  ok('… kaufmaennisch gerundet',
+     formatCompactAmountMinor(2483) === '25 \u20ac' &&
+     formatCompactAmountMinor(2449) === '24 \u20ac')
+  ok('… und 0 bleibt 0',
+     formatCompactAmountMinor(0) === '0 \u20ac')
+  ok('ab tausend Euro: eine Nachkommastelle mit k',
+     formatCompactAmountMinor(120000) === '1,2k \u20ac' &&
+     formatCompactAmountMinor(240000) === '2,4k \u20ac')
+  ok('… abgeschnitten statt aufgerundet',
+     formatCompactAmountMinor(109900) === '1,0k \u20ac' &&
+     formatCompactAmountMinor(124999) === '1,2k \u20ac')
+  ok('… und die Stufe entscheidet sich nach dem Runden auf volle Euro',
+     formatCompactAmountMinor(99949) === '999 \u20ac' &&
+     formatCompactAmountMinor(99950) === '1,0k \u20ac')
+  ok('negative Eimer behalten ihr Vorzeichen',
+     formatCompactAmountMinor(-42837) === '\u2212428 \u20ac' &&
+     formatCompactAmountMinor(-120000) === '\u22121,2k \u20ac')
+  ok('eine fremde Waehrung wird genannt',
+     formatCompactAmountMinor(42837, 'AUD') === '428 AUD')
+  ok('leere Waehrung heisst: das Zeichen steht woanders',
+     formatCompactAmountMinor(42837, '') === '428' &&
+     formatCompactAmountMinor(120000, '') === '1,2k')
+  ok('… und Millionen bekommen ihre eigene Stufe',
+     formatCompactAmountMinor(123400000, '') === '1,2M')
+  ok('kein Betrag heisst kein Text',
+     formatCompactAmountMinor(null) === '' && formatCompactAmountMinor(1.5) === '')
+  ok('das Tap-Detail bleibt exakt',
+     formatAmountMinor(42837) === '428,37 \u20ac')
+}
+
+// == Eine geloeschte Buchung verschwindet aus jeder Kachel (v1.26.1) ========
+//
+// Geloescht wird in der Datenbank (0015); hier steht die andere Haelfte der
+// Zusage: dass das Dashboard danach WIRKLICH andere Zahlen zeigt und nicht
+// eine Summe von gestern. Die Pipeline ist pur — also ist „eine Buchung
+// weniger" genau der Aufruf ohne diese Zeile.
+{
+  const rewe = tx({ booking_date: '2026-09-05', amount_minor: -2500,
+                    category_id: cat('lebensmittel') })
+  const bahn = tx({ booking_date: '2026-09-06', amount_minor: -1500,
+                    category_id: cat('bahn_oepnv') })
+  const before = dash({ transactions: [rewe, bahn] })
+  const after = dash({ transactions: [bahn] })
+
+  ok('vorher zaehlen beide Buchungen',
+     before.summary.expenses === 4000 && before.periodEntries.length === 2)
+  ok('nachher fehlt genau der Betrag der geloeschten Buchung',
+     after.summary.expenses === 1500)
+  ok('… und sie steht in keiner Liste mehr',
+     after.periodEntries.every((e) => e.id !== rewe.id) &&
+     after.biggest.every((b) => b.id !== rewe.id))
+  ok('… auch nicht in ihrer Kategorie',
+     after.categories.parents.every((p) => p.category.slug !== 'essen_trinken'))
+  ok('… und der Cashflow folgt mit',
+     before.summary.cashflow === -4000 && after.summary.cashflow === -1500)
+  ok('… der Verlauf ebenso',
+     before.trend.buckets.at(-1).amount === 4000 &&
+     after.trend.buckets.at(-1).amount === 1500)
 }
 
 console.log((fail === 0 ? '' : '\\n') + 'finance dashboard: ' + pass + ' passed, ' + fail + ' failed')

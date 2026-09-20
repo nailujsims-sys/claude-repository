@@ -40,11 +40,39 @@ export default function FinanceAccountsSheet() {
 }
 
 function Sheet({ onClose }) {
-  const { accounts } = useFinance()
+  const { accounts, resetFinanceData } = useFinance()
+  const { showToast } = useToast()
   // null | { mode: 'edit', id } | { mode: 'create' }
   const [detail, setDetail] = useState(null)
+  const [confirmReset, setConfirmReset] = useState(false)
+  const [resetting, setResetting] = useState(false)
+  const [resetProblem, setResetProblem] = useState(null)
 
   const { active, archived } = useMemo(() => splitAccounts(accounts), [accounts])
+
+  /**
+   * Alles zurücksetzen.
+   *
+   * EIN AUFRUF, und der Knopf ist währenddessen gesperrt — ein zweiter Tap auf
+   * eine laufende Löschung wäre ein zweiter Reset über einen Zustand, den der
+   * erste gerade verändert. Scheitert er, bleibt alles, wie es war: die Funktion
+   * in 0015 ist eine Transaktion, und dieser Bildschirm behauptet deshalb nichts
+   * über halbe Ergebnisse.
+   */
+  const reset = async () => {
+    if (resetting) return
+    setResetting(true)
+    setResetProblem(null)
+    try {
+      await resetFinanceData()
+      showToast('Finanzdaten zurückgesetzt')
+      onClose?.()
+    } catch (err) {
+      setResetProblem(accountErrorMessage(err))
+    } finally {
+      setResetting(false)
+    }
+  }
 
   // Das offene Detail folgt den Zeilen: wird das Konto gelöscht (hier) oder
   // fällt es weg (ein anderes Gerät), schließt sich das Sheet, statt auf eine
@@ -63,8 +91,29 @@ function Sheet({ onClose }) {
           archived={archived}
           onOpen={(account) => setDetail({ mode: 'edit', id: account.id })}
           onCreate={() => setDetail({ mode: 'create' })}
+          onReset={() => setConfirmReset(true)}
+          resetting={resetting}
+          resetProblem={resetProblem}
         />
       </BottomSheet>
+
+      <ConfirmDialog
+        open={confirmReset}
+        title="Finanzdaten zurücksetzen?"
+        message={
+          'Dadurch werden alle Konten, Buchungen, Importe, Händlerzuordnungen und das '
+          + 'gelernte Finanzwissen gelöscht. Die Standardkategorien bleiben erhalten. '
+          + 'Andere Bereiche der App sind nicht betroffen. '
+          + 'Diese Aktion kann nicht rückgängig gemacht werden.'
+        }
+        confirmLabel="Alles zurücksetzen"
+        z="z-[65]"
+        onCancel={() => setConfirmReset(false)}
+        onConfirm={() => {
+          setConfirmReset(false)
+          reset()
+        }}
+      />
 
       {detail?.mode === 'edit' && open && (
         <AccountDetailSheet account={open} onClose={() => setDetail(null)} />
@@ -77,7 +126,10 @@ function Sheet({ onClose }) {
 
 // Die Liste selbst, ohne das Sheet — exportiert, damit ein echter Browser sie
 // vermessen kann (tools/financeAccountsLayout.mjs).
-export function AccountList({ active = [], archived = [], onOpen, onCreate }) {
+export function AccountList({
+  active = [], archived = [], onOpen, onCreate,
+  onReset = null, resetting = false, resetProblem = null,
+}) {
   return (
     <div className="px-5 pb-6">
       <p className="pt-1 text-caption text-text-secondary">
@@ -95,7 +147,48 @@ export function AccountList({ active = [], archived = [], onOpen, onCreate }) {
       >
         <Plus size={16} /> Neues Konto
       </button>
+
+      {onReset && <DataSection onReset={onReset} busy={resetting} problem={resetProblem} />}
     </div>
+  )
+}
+
+// „Daten" — der eine Weg, alles wegzuwerfen.
+//
+// WARUM ER HIER STEHT UND NICHT AUF DEM DASHBOARD. Ein Knopf, der jede Buchung
+// löscht, gehört nicht neben den Knopf, der eine anlegt. Er gehört dorthin, wo
+// man ohnehin aufräumt — und dort hinter eine eigene Überschrift, deutlich
+// unterhalb von allem anderen, damit ihn niemand im Vorbeiscrollen trifft.
+//
+// EINE TEXTZEILE, KEIN ROTER PRIMÄRKNOPF, dieselbe Regel wie bei „Konto
+// löschen": Rot ist hier Bedeutung und nicht Betonung. Die Rückfrage kommt aus
+// dem bestehenden ConfirmDialog, und WÄHREND sie läuft ist die Zeile gesperrt —
+// ein zweiter Tap auf eine laufende Löschung ist keine zweite Entscheidung.
+function DataSection({ onReset, busy, problem }) {
+  return (
+    <section className="mt-8 border-t border-subtle pt-4">
+      <p className="px-1 pb-1 text-meta font-semibold uppercase tracking-[0.08em] text-section-label">
+        Daten
+      </p>
+      <button
+        type="button"
+        onClick={onReset}
+        disabled={busy}
+        aria-busy={busy}
+        className="press-tint flex min-h-[44px] w-full items-center rounded-btn px-1 text-ui text-danger disabled:opacity-60"
+      >
+        {busy ? 'Wird zurückgesetzt …' : 'Finanzdaten zurücksetzen'}
+      </button>
+      <p className="mt-1 px-1 text-caption text-text-muted">
+        Alle Konten, Buchungen, Importe und gelernten Zuordnungen löschen. Die
+        Standardkategorien bleiben.
+      </p>
+      {problem && (
+        <p className="mt-2 px-1 text-caption text-danger" role="alert">
+          {problem}
+        </p>
+      )}
+    </section>
   )
 }
 
