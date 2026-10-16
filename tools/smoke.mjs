@@ -58,9 +58,34 @@ async function bundle({ configured = true } = {}) {
 // One window = one browser = one device. `seed` fills the stubbed database;
 // `signedIn` decides whether this device has a session, which is how the login
 // and logout paths are exercised.
+// The day the finance fixtures were written for. Every booking date, every
+// "September 2026", every comparison line in the Finanzen sections assumes it —
+// and the app reads its own clock, so on any later day the current month is a
+// different month and those sections fail against data that never changed.
+// Finance windows therefore run on a pinned clock: an OFFSET, not a frozen
+// instant — time still passes inside the window, timers and animations still
+// see it move, only the calendar day is fixed.
+const FINANCE_TODAY = '2026-09-20'
+
+function pinClock(window, isoLocal) {
+  const Real = window.Date
+  const offset = new Real(isoLocal).getTime() - Real.now()
+  class PinnedDate extends Real {
+    constructor(...args) {
+      if (args.length === 0) super(Real.now() + offset)
+      else super(...args)
+    }
+    static now() {
+      return Real.now() + offset
+    }
+  }
+  window.Date = PinnedDate
+}
+
 function makeDom(hash, seed = {}, options = {}) {
   const { signedIn = true, backend: existing = null, search = '', hub = makeRealtimeHub() } = options
   const window = makeBareDom(hash, search)
+  if (String(hash).startsWith('#/finanzen')) pinClock(window, `${FINANCE_TODAY}T12:00:00`)
   const backend =
     existing ??
     makeBackend({
@@ -3182,7 +3207,7 @@ async function run() {
     if (!manual.includes('Neues Konto'))
       errors.push('[Finanzen/Konto] a second account cannot be created from the flow')
     // Today, already filled in.
-    const heute = new Date(`${localToday()}T12:00:00`)
+    const heute = new Date(`${FINANCE_TODAY}T12:00:00`)
     if (!manual.includes(String(heute.getDate())))
       errors.push('[Finanzen/Konto] the date is not pre-filled with today')
   }
@@ -4626,6 +4651,249 @@ async function run() {
       if (back.includes('Aus Auswertung ausgeschlossen') && !back.includes('kein Händler mehr'))
         errors.push('[Finanzen/Ausschluss] the row survives although nothing is excluded')
     }
+  }
+
+  // 16b8) v1.27: die Drilldowns — Übersicht → Kategorie → Unterkategorie →
+  //       Händler → Buchung, und alles wieder zurück, OHNE dass Zeitraum oder
+  //       Konto vergessen werden. Der echte Router, die echte App.
+  {
+    const ACC2 = '11111111-2222-4333-8444-000000000003'
+    const M = '11111111-2222-4333-8444-000000000206'
+    const catId = (slug) => FIN_CATEGORIES.find((c) => c.slug === slug).id
+    const t = (n, over) => ({
+      id: '11111111-2222-4333-8444-0000000003' + String(n).padStart(2, '0'), user_id: TEST_USER_ID,
+      account_id: FIN_ACCOUNT, currency: 'EUR', include_in_analytics: true, manual_lock: false,
+      transaction_type: 'purchase', normalized_tokens: [], ...over,
+    })
+    const drillSeed = {
+      finance_accounts: [
+        { id: FIN_ACCOUNT, user_id: TEST_USER_ID, name: 'DKB Girokonto', currency: 'EUR' },
+        { id: ACC2, user_id: TEST_USER_ID, name: 'Tagesgeld', currency: 'EUR' },
+      ],
+      finance_categories: FIN_CATEGORIES,
+      finance_transactions: [
+        t(1, { booking_date: '2026-09-12', amount_minor: -4210, raw_description: 'REWE TROISDORF',
+               normalized_tokens: ['REWE', 'TROISDORF'] }),
+        t(2, { booking_date: '2026-09-15', amount_minor: -1790, raw_description: 'REWE KOELN',
+               normalized_tokens: ['REWE', 'KOELN'] }),
+        // Dasselbe Geschäft, anderes Konto — fällt mit dem Kontofilter heraus.
+        t(3, { booking_date: '2026-09-16', amount_minor: -9999, raw_description: 'REWE BONN',
+               normalized_tokens: ['REWE', 'BONN'], account_id: ACC2 }),
+        t(4, { booking_date: '2026-09-13', amount_minor: -2850, raw_description: 'LOTTE CAFE',
+               normalized_tokens: ['LOTTE', 'CAFE'] }),
+        t(5, { booking_date: '2026-09-14', amount_minor: -6400, raw_description: 'ZARA ONLINE',
+               category_id: catId('klamotten'), manual_lock: true }),
+        t(6, { booking_date: '2026-09-17', amount_minor: -730, raw_description: 'KIOSK AM ECK' }),
+        // Älter als 30 Tage — gehört nicht in „Letzte 30 Tage".
+        t(7, { booking_date: '2026-08-01', amount_minor: -5555, raw_description: 'REWE ALT',
+               normalized_tokens: ['REWE', 'ALT'] }),
+      ],
+      finance_transaction_overrides: [
+        { id: '11111111-2222-4333-8444-000000000401', user_id: TEST_USER_ID,
+          transaction_id: '11111111-2222-4333-8444-000000000304', merchant_name: 'Lotte',
+          category_id: catId('restaurant') },
+      ],
+      finance_merchants: [
+        { id: M, user_id: TEST_USER_ID, canonical_name: 'REWE', review_mode: 'auto' },
+      ],
+      finance_merchant_patterns: [
+        { id: '11111111-2222-4333-8444-000000000216', user_id: TEST_USER_ID, merchant_id: M,
+          pattern_type: 'exact_token', tokens: ['REWE'], active: true },
+      ],
+      finance_category_rules: [
+        { id: '11111111-2222-4333-8444-000000000224', user_id: TEST_USER_ID, merchant_id: M,
+          category_id: catId('lebensmittel'), min_amount_minor: null, max_amount_minor: null,
+          min_inclusive: true, max_inclusive: true, currency: null, active: true },
+      ],
+    }
+
+    const label = 'Finanzen/Drilldown'
+    const window = makeDom('#/finanzen', { finance: drillSeed })
+    mount(window, code, label)
+    await wait(450)
+    window.__restoreConsole?.()
+    const hash = () => decodeURIComponent(window.location.hash)
+    const byAria = (prefix) => (el) => (el.getAttribute?.('aria-label') || '').startsWith(prefix)
+    const scopeShown = (text) => text.includes('Letzte 30 Tage') && text.includes('DKB Girokonto')
+
+    // ── Den Ausschnitt setzen: Letzte 30 Tage · DKB Girokonto ────────────
+    click(window, byAria('Zeitraum ändern'))
+    await wait(340)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Letzte 30 Tage'))
+    await wait(80)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Übernehmen')
+    await wait(450)
+    click(window, byAria('Konto ändern'))
+    await wait(340)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('DKB Girokonto') &&
+      !(el.getAttribute('aria-label') || ''))
+    await wait(450)
+    const start = nb(txt(window))
+    console.log(`=== Finanzen — Drilldown ===\n  ${start.slice(0, 220)}`)
+    if (!scopeShown(start))
+      errors.push(`[${label}] the scope was not set on the overview: ${start.slice(0, 200)}`)
+    // 42,10 + 17,90 (REWE, DKB) + 28,50 (Lotte) + 64,00 (Zara) + 7,30 (Kiosk) = 159,80 €
+    if (!start.includes('Ausgaben159,80 €'))
+      errors.push(`[${label}] the overview does not evaluate the chosen scope: ${start.slice(0, 260)}`)
+
+    // ── „Alle anzeigen" ist ein Knopf ─────────────────────────────────────
+    const allButtons = [...window.document.querySelectorAll('button')]
+      .filter((b) => b.textContent.trim() === 'Alle anzeigen')
+    if (allButtons.length !== 2)
+      errors.push(`[${label}] „Alle anzeigen" is not two real buttons (${allButtons.length})`)
+
+    // ── Übersicht → Kategorie (Oberkategorie) ─────────────────────────────
+    if (!click(window, byAria('Kategorie öffnen: Essen & Trinken')))
+      errors.push(`[${label}] the category row on the overview is not a button`)
+    await wait(200)
+    let text = nb(txt(window))
+    if (!hash().endsWith('/finanzen/kategorien/' + catId('essen_trinken')))
+      errors.push(`[${label}] the category row did not open its route: ${hash()}`)
+    if (!scopeShown(text))
+      errors.push(`[${label}] the category page forgot the scope: ${text.slice(0, 200)}`)
+    // 42,10 + 17,90 + 28,50 = 88,50 € — ohne die REWE-Buchung vom Tagesgeld.
+    if (!text.includes('88,50 €'))
+      errors.push(`[${label}] the parent does not aggregate its children in scope: ${text.slice(0, 300)}`)
+    if (text.includes('99,99'))
+      errors.push(`[${label}] the account filter does not reach the category page`)
+    for (const section of ['Aufteilung', 'Entwicklung', 'Top-Händler', 'Buchungen']) {
+      if (!text.includes(section)) errors.push(`[${label}] the parent page has no „${section}"`)
+    }
+    if (!/\d+ % deiner Ausgaben/.test(text))
+      errors.push(`[${label}] the share of all expenses is missing`)
+    if (window.document.querySelector('[data-topbar]'))
+      errors.push(`[${label}] the detail page shows the main TopBar instead of a back header`)
+
+    // ── Oberkategorie → Unterkategorie ────────────────────────────────────
+    if (!click(window, byAria('Kategorie öffnen: Lebensmittel')))
+      errors.push(`[${label}] the child row is not a button`)
+    await wait(200)
+    text = nb(txt(window))
+    if (!hash().endsWith('/finanzen/kategorien/' + catId('lebensmittel')))
+      errors.push(`[${label}] the child did not open on the same route: ${hash()}`)
+    if (!text.includes('Teil von Essen & Trinken'))
+      errors.push(`[${label}] the child does not name its parent`)
+    if (text.includes('Aufteilung'))
+      errors.push(`[${label}] the child offers a third level`)
+    if (!text.includes('60,00 €') || !scopeShown(text))
+      errors.push(`[${label}] the child page is wrong: ${text.slice(0, 260)}`)
+
+    // ── Kategorie → Händler ───────────────────────────────────────────────
+    if (!click(window, byAria('Händler öffnen: REWE')))
+      errors.push(`[${label}] the merchant row in the category is not a button`)
+    await wait(200)
+    text = nb(txt(window))
+    if (!hash().endsWith('/finanzen/haendler/' + M))
+      errors.push(`[${label}] the merchant did not open by its id: ${hash()}`)
+    if (!text.includes('REWE') || !text.includes('2 Buchungen') || !scopeShown(text))
+      errors.push(`[${label}] the merchant page is wrong: ${text.slice(0, 260)}`)
+    for (const section of ['Entwicklung', 'Kategorien', 'Buchungen']) {
+      if (!text.includes(section)) errors.push(`[${label}] the merchant page has no „${section}"`)
+    }
+    if (text.includes('REWE ALT') || text.includes('55,55'))
+      errors.push(`[${label}] a booking outside the period reached the merchant page`)
+
+    // ── Händler → Buchung (das bestehende Sheet) ──────────────────────────
+    if (!click(window, byAria('Buchung öffnen: REWE')))
+      errors.push(`[${label}] the booking row on the merchant page is not a button`)
+    await wait(360)
+    text = nb(txt(window))
+    if (!text.includes('Buchungsart') || !text.includes('Buchung löschen'))
+      errors.push(`[${label}] the transaction sheet did not open: ${text.slice(-240)}`)
+    press(window, 'Escape')
+    await wait(420)
+    if (nb(txt(window)).includes('Buchung löschen'))
+      errors.push(`[${label}] the transaction sheet did not close`)
+
+    // ── Und alles zurück ──────────────────────────────────────────────────
+    const back = async () => {
+      if (!click(window, byAria('Zurück'))) errors.push(`[${label}] there is no back button on ${hash()}`)
+      await wait(260)
+    }
+    await back()
+    if (!hash().endsWith('/finanzen/kategorien/' + catId('lebensmittel')))
+      errors.push(`[${label}] back from the merchant did not return to the child: ${hash()}`)
+    await back()
+    if (!hash().endsWith('/finanzen/kategorien/' + catId('essen_trinken')))
+      errors.push(`[${label}] back from the child did not return to the parent: ${hash()}`)
+    await back()
+    text = nb(txt(window))
+    if (!/#\/finanzen$/.test(window.location.hash))
+      errors.push(`[${label}] back did not return to the overview: ${hash()}`)
+    if (!scopeShown(text) || !text.includes('Ausgaben159,80 €'))
+      errors.push(`[${label}] the overview forgot the scope after going back: ${text.slice(0, 220)}`)
+
+    // ── Alle Kategorien, „Nicht zugeordnet" ───────────────────────────────
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Alle anzeigen')
+    await wait(200)
+    text = nb(txt(window))
+    if (!hash().endsWith('/finanzen/kategorien'))
+      errors.push(`[${label}] „Alle anzeigen" did not open the category overview: ${hash()}`)
+    const categoryRows = [...window.document.querySelectorAll('button')].filter(byAria('Kategorie öffnen'))
+    if (categoryRows.length !== 9)
+      errors.push(`[${label}] the category overview does not list all nine parents (${categoryRows.length})`)
+    if (!text.includes('Nicht zugeordnet') || !text.includes('1 Buchung · 7,30 €'))
+      errors.push(`[${label}] „Nicht zugeordnet" is not listed separately: ${text.slice(-260)}`)
+    if (categoryRows.some((b) => b.textContent.includes('Nicht zugeordnet')))
+      errors.push(`[${label}] „Nicht zugeordnet" is treated as a category`)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Nicht zugeordnet'))
+    await wait(200)
+    text = nb(txt(window))
+    if (!hash().endsWith('/finanzen/nicht-zugeordnet') || !text.includes('KIOSK AM ECK'))
+      errors.push(`[${label}] the unassigned bookings are not shown: ${hash()} ${text.slice(0, 200)}`)
+    await back()
+    await back()
+
+    // ── Alle Händler → name:-Händler ──────────────────────────────────────
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Alle anzeigen' &&
+      el.closest('section')?.textContent.includes('Top-Händler'))
+    await wait(200)
+    text = nb(txt(window))
+    if (!hash().endsWith('/finanzen/haendler'))
+      errors.push(`[${label}] „Alle anzeigen" did not open the merchant overview: ${hash()}`)
+    const merchantRows = [...window.document.querySelectorAll('button')].filter(byAria('Händler öffnen'))
+    if (merchantRows.map((b) => b.getAttribute('aria-label')).join('|') !==
+        'Händler öffnen: REWE|Händler öffnen: Lotte')
+      errors.push(`[${label}] the merchant overview is wrong: ${merchantRows.map((b) => b.textContent).join(' | ')}`)
+    click(window, byAria('Händler öffnen: Lotte'))
+    await wait(200)
+    text = nb(txt(window))
+    const lotteHash = window.location.hash
+    if (!/\/finanzen\/haendler\/n~[A-Za-z0-9_-]+$/.test(lotteHash))
+      errors.push(`[${label}] a name: merchant has no route-safe key: ${lotteHash}`)
+    if (!text.includes('Lotte') || !text.includes('28,50 €'))
+      errors.push(`[${label}] the name: merchant page is wrong: ${text.slice(0, 220)}`)
+
+    // ── Den Ausschnitt auf einer Detailseite ändern — die Übersicht folgt ─
+    click(window, byAria('Konto ändern'))
+    await wait(340)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim().startsWith('Alle Konten'))
+    await wait(400)
+    await back()
+    await back()
+    text = nb(txt(window))
+    if (!text.includes('Alle Konten') || !text.includes('Letzte 30 Tage'))
+      errors.push(`[${label}] a scope changed on a detail page did not reach the overview: ${text.slice(0, 200)}`)
+
+    // ── Direkt geöffnet: Zurück führt auf die Elternroute ─────────────────
+    const deep = makeDom(lotteHash, { finance: drillSeed })
+    mount(deep, code, label + '/Direkt')
+    await wait(450)
+    deep.__restoreConsole?.()
+    const deepText = nb(txt(deep))
+    if (!deepText.includes('Lotte') || !deepText.includes('September 2026'))
+      errors.push(`[${label}/Direkt] a deep link does not open the merchant: ${deepText.slice(0, 200)}`)
+    click(deep, byAria('Zurück'))
+    await wait(260)
+    if (!/#\/finanzen\/haendler$/.test(deep.location.hash))
+      errors.push(`[${label}/Direkt] back from a deep link does not land on the merchant list: ${deep.location.hash}`)
+
+    const bogus = makeDom('#/finanzen/kategorien/gibt-es-nicht', { finance: drillSeed })
+    mount(bogus, code, label + '/Unbekannt')
+    await wait(450)
+    bogus.__restoreConsole?.()
+    if (!nb(txt(bogus)).includes('Kategorie nicht gefunden'))
+      errors.push(`[${label}/Unbekannt] an unknown category is not reported honestly`)
   }
 
   // 16c) The database is unreachable. "Nothing here" and "we could not look"

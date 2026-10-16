@@ -1,4 +1,5 @@
-import { categoriesById } from '../categories'
+import { categoriesById, categoryTree } from '../categories'
+import { isExpenseContribution } from './effect'
 
 // „Ausgaben nach Kategorie" — von unten nach oben gerechnet.
 //
@@ -39,11 +40,10 @@ export function categoryBreakdown({ entries = [], categories = [] } = {}) {
   const unassigned = { amount: 0, count: 0, percentage: null }
 
   for (const entry of entries) {
-    if (!entry?.included) continue
-    const expense = entry.effect?.expense ?? 0
     // Eine Buchung ohne Ausgabenwirkung (Einnahme, Umbuchung) gehört in keine
     // Ausgabenkategorie — auch dann nicht, wenn sie eine Kategorie trägt.
-    if (expense === 0 && entry.transactionType !== 'refund') continue
+    if (!isExpenseContribution(entry)) continue
+    const expense = entry.effect.expense
     totalExpenses += expense
 
     if (!entry.categoryId) {
@@ -110,5 +110,61 @@ export function categoryBreakdown({ entries = [], categories = [] } = {}) {
     totalExpenses,
     assignedExpenses: totalExpenses - unassigned.amount,
     unassigned,
+  }
+}
+
+/**
+ * „Kategorien" — alle Oberkategorien, nicht nur die fünf größten (v1.27).
+ *
+ * DIESELBE RECHNUNG WIE OBEN, NICHT EINE ZWEITE. Die Zeilen mit Geld kommen
+ * unverändert aus `categoryBreakdown`; diese Funktion fügt nur hinzu, was dort
+ * fehlt: die Oberkategorien, unter denen in diesem Zeitraum nichts gebucht ist.
+ * Die Summe einer Zeile hier kann deshalb nicht von der Zeile auf der Übersicht
+ * abweichen — es ist dieselbe Zeile.
+ *
+ * EINE LEERE KATEGORIE IST REAL, NUR LEER. Sie steht unten, mit `empty: true`,
+ * damit die Oberfläche sie ruhig zeichnen kann — ohne einen Balken, der bei 0 %
+ * nichts anderes sagt als „hier ist ein Balken". Weglassen hieße, dem Nutzer
+ * eine Zeile seiner eigenen Taxonomie zu verschweigen.
+ *
+ * SORTIERUNG: Betrag absteigend, Name als stabiler Gleichstand — für alle Zeilen
+ * dieselbe Regel. Eine leere Kategorie landet damit von selbst hinter allem, was
+ * etwas gekostet hat.
+ *
+ * „NICHT ZUGEORDNET" IST KEINE ZEILE. Es kommt als eigener Posten zurück,
+ * genau wie aus `categoryBreakdown`, und die Oberfläche stellt es getrennt ans
+ * Ende.
+ *
+ * @param {{entries?: Array<object>, categories?: Array<object>}} input
+ * @returns {{rows: Array<object>, totalExpenses: number,
+ *            unassigned: {amount: number, count: number, percentage: number|null}}}
+ */
+export function categoryOverview({ entries = [], categories = [] } = {}) {
+  const breakdown = categoryBreakdown({ entries, categories })
+  const present = new Set(breakdown.parents.map((row) => row.category?.id).filter(Boolean))
+
+  const empty = categoryTree(categories)
+    .map((node) => node.parent)
+    .filter((parent) => !present.has(parent.id))
+    .map((parent) => ({
+      category: parent,
+      amount: 0,
+      count: 0,
+      children: [],
+      percentage: breakdown.totalExpenses > 0 ? 0 : null,
+    }))
+
+  const rows = [...breakdown.parents, ...empty]
+    .map((row) => ({ ...row, empty: row.count === 0 }))
+    .sort(
+      (a, b) =>
+        b.amount - a.amount ||
+        String(a.category?.label ?? '').localeCompare(String(b.category?.label ?? ''), 'de')
+    )
+
+  return {
+    rows,
+    totalExpenses: breakdown.totalExpenses,
+    unassigned: breakdown.unassigned,
   }
 }

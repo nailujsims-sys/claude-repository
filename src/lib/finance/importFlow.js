@@ -148,6 +148,13 @@ export function formatCompactAmountMinor(amountMinor, currency = 'EUR') {
     const mTenths = Math.floor(thousands / 100)
     return `${sign}${Math.floor(mTenths / 10)},${mTenths % 10}M${symbol}`
   }
+  // Ab zehntausend ohne Nachkommastelle: „14k" statt „14,3k". Bei zwölf
+  // Monatsbalken ist eine Spalte rund 19 px breit, und fünf Zeichen passen dort
+  // nicht mehr — die Zahl berührte ihre Nachbarin (v1.27, gemessen in
+  // tools/financeDrilldownLayout.mjs). Die Stelle hinter dem Komma ist bei
+  // dieser Größe ohnehin keine Information mehr, die man beim Überfliegen
+  // braucht; das Tap-Detail nennt den exakten Betrag.
+  if (thousands >= 10) return `${sign}${thousands}k${symbol}`
   return `${sign}${thousands},${rest}k${symbol}`
 }
 

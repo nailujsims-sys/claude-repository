@@ -88,6 +88,20 @@ render the same ten classes; that is a duplication, not a divergence.
 the inline block for `<Segmented>`, check Tag/Woche/Monat at 320–430px, and
 close this entry. Never as a task of its own.
 
+### G25 · Month labels under twelve trend bars are truncated — §15, §22
+`src/components/FinanceTrendChart.jsx` labels each bar with the three-letter
+month („Nov", „Dez"). At 1J (twelve bars) a column is about 19 px wide at 390 px,
+so roughly half the labels end in an ellipsis („N…", „D…"). Nothing collides and
+the tap detail names the full period, so the chart stays readable — but a
+label that is cut is a label that is half there. Seen in v1.27, where the same
+chart now appears on every category and merchant page as well as the dashboard.
+
+Not fixed in v1.27 on purpose: the drilldowns were scoped as navigation, not as
+chart polish, and the chart is shared by every Finanzen screen. *Fix it when the
+chart is next edited for its own reasons* — e.g. a one-letter label (J F M A …)
+at twelve buckets, measured in `tools/financeDashboardLayout.mjs` and
+`tools/financeDrilldownLayout.mjs` at 390 px.
+
 ## Explicitly conformant (do not "fix")
 
 - `src/screens/calendar/useTimedGesture.js` — long-press grab, pointer capture,

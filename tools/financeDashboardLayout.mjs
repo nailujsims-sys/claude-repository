@@ -116,6 +116,9 @@ const overview = renderToStaticMarkup(
   createElement(Overview, {
     dashboard, currency: 'EUR', trendRange: '1J', onTrendRange: noop,
     onAdd: noop, onClassify: noop,
+    // v1.27: mit Navigation — die Zeilen sind dann Knöpfe, „Alle anzeigen"
+    // ebenso, und beides wird unten mitgemessen.
+    onAllCategories: noop, onOpenCategory: noop, onAllMerchants: noop, onOpenMerchant: noop,
   })
 )
 const bookings = renderToStaticMarkup(createElement(Bookings, { dashboard, onOpen: () => {} }))

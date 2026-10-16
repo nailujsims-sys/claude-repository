@@ -1,4 +1,5 @@
 import { categoryPath } from '../categories'
+import { isExpenseContribution } from './effect'
 
 // „Top-Händler" — wer wie viel gekostet hat.
 //
@@ -33,9 +34,8 @@ export function topMerchants({ entries = [], categories = [], limit = null } = {
   const buckets = new Map()
 
   for (const entry of entries) {
-    if (!entry?.included || !entry.merchantKey) continue
-    const expense = entry.effect?.expense ?? 0
-    if (expense === 0 && entry.transactionType !== 'refund') continue
+    if (!entry?.merchantKey || !isExpenseContribution(entry)) continue
+    const expense = entry.effect.expense
 
     const bucket =
       buckets.get(entry.merchantKey) ??

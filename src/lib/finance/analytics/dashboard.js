@@ -1,12 +1,11 @@
 import { resolveAnalyticsEntries } from './resolve'
-import { comparisonRange, describePeriod, describeRange, normalizePeriod, periodRange, rangeContains } from './period'
+import { financeScope } from './scope'
 import { dashboardSummary } from './summary'
 import { categoryBreakdown } from './categories'
 import { topMerchants } from './merchants'
 import { biggestExpenses } from './biggest'
 import { DEFAULT_TREND_RANGE, trendSeries } from './trend'
 import { needsDecision } from '../classificationQueue'
-import { DEFAULT_FINANCE_CURRENCY } from '../../../config/finance'
 
 // Was `categoryBreakdown` zurückgibt, wenn es nichts zurückgeben darf. Eine
 // eigene Konstante, damit „keine Zahlen" überall dieselbe Form hat wie „Zahlen".
@@ -82,6 +81,7 @@ const EMPTY_BREAKDOWN = Object.freeze({
  *   rules?: Array<object>,
  *   overrides?: Array<object>,
  *   aiSuggestions?: Array<object>,
+ *   resolved?: Array<object>|null,
  *   period?: object,
  *   accountId?: string|null,
  *   trendRange?: string,
@@ -100,6 +100,7 @@ export function buildFinanceDashboard({
   rules = [],
   overrides = [],
   aiSuggestions = [],
+  resolved = null,
   period = null,
   accountId = null,
   trendRange = DEFAULT_TREND_RANGE,
@@ -111,7 +112,12 @@ export function buildFinanceDashboard({
   // 1. Einordnung — einmal, für alles darunter, und über ALLE Buchungen. Die
   //    Muster und Regeln werden dabei nicht auf ein Konto eingeschränkt: ein
   //    Händler ist kontoübergreifend derselbe Händler.
-  const allEntries = resolveAnalyticsEntries({
+  //
+  //    `resolved` (v1.27): wer die Einträge schon aufgelöst hat — der
+  //    gemeinsame Finanz-Kontext tut das einmal für alle Finanz-Bildschirme —,
+  //    reicht sie herein, und hier wird nicht ein zweites Mal eingeordnet. Es
+  //    ist dieselbe Funktion mit denselben Zeilen; nur seltener.
+  const allEntries = resolved ?? resolveAnalyticsEntries({
     transactions,
     patterns,
     merchants,
@@ -125,57 +131,10 @@ export function buildFinanceDashboard({
   //     damit sichtbar bleibt, dass nichts darunter sie mehr erreichen kann.
   const reviewEntries = allEntries.filter(needsDecision)
 
-  // 2. Konten. `null` ist „alle Konten", und das schließt archivierte ein.
-  const entries = accountId
-    ? allEntries.filter((e) => e.accountId === accountId)
-    : allEntries
-
-  // 3. Die beiden Schnitte.
-  const normalized = normalizePeriod(period, today)
-  const range = periodRange(normalized, today)
-  const comparison = comparisonRange(normalized, today)
-  const inRange = entries.filter((e) => rangeContains(range, e.bookingDate))
-  const inComparison = comparison
-    ? entries.filter((e) => rangeContains(comparison, e.bookingDate))
-    : []
-
-  // 3b. WELCHE WÄHRUNG? — und was passiert, wenn es zwei sind.
-  //
-  // Beträge liegen in Minor Units, ohne Kurs und ohne Kontext. 2483 EUR-Cent und
-  // 2483 AUD-Cent zu addieren ergibt 4966 von nichts. Eine Summe über zwei
-  // Währungen ist keine Summe — sie ist eine Zahl, die aussieht wie eine.
-  //
-  // UMGERECHNET WIRD NICHT (v1.26). Ein Kurs ist eine eigene Entscheidung mit
-  // eigenen Fragen (welcher Kurs, von wann, gespeichert oder live?), und das
-  // Ausgaben-Modul zeigt, dass sie nicht nebenbei zu beantworten sind. Also wird
-  // hier NICHT gerechnet, sondern gesagt.
-  //
-  // DER MASSSTAB IST DIE KONTENAUSWAHL, nicht der Zeitraum — und das ist die
-  // strengere der beiden möglichen Lesarten, mit Absicht. Ein Dashboard, das im
-  // September rechnet, weil dort zufällig nur Euro liegen, und im August nicht,
-  // wäre eins, dessen Zahlen beim Blättern die Bedeutung wechseln. Vor allem
-  // aber hat der Verlauf seine eigene, längere Zeitachse: er würde sonst
-  // unbemerkt EUR und AUD in einen Balken legen, sobald sie nur weit genug
-  // auseinander liegen. Eine Auswahl, eine Währung, eine Antwort.
-  //
-  // Die Abhilfe steht in der Meldung und ist einen Tipp entfernt: ein einzelnes
-  // Konto wählen. Mehrere Konten in DERSELBEN Währung rechnen normal weiter.
-  const currenciesOf = (list) => {
-    const found = new Set()
-    for (const entry of list) if (entry.included) found.add(entry.currency)
-    return [...found].sort()
-  }
-  // Ohne eine einzige einbezogene Buchung sagen die KONTEN, worin die Null
-  // steht — und wenn die sich uneinig sind, ist das derselbe Fall wie oben:
-  // dieselbe Frage, dieselbe Abhilfe, ein Tipp entfernt. So kann gar keine
-  // Währung an einer Zahl stehen, die sie nicht trägt.
-  const scopedAccounts = accountId ? accounts.filter((a) => a?.id === accountId) : accounts
-  const accountCurrencies = [...new Set(scopedAccounts.map((a) => a?.currency).filter(Boolean))].sort()
-
-  const currencies = currenciesOf(entries)
-  const inScope = currencies.length > 0 ? currencies : accountCurrencies
-  const mixedCurrency = inScope.length > 1
-  const currency = mixedCurrency ? null : inScope[0] ?? DEFAULT_FINANCE_CURRENCY
+  // 2.–3b. Konten, Zeitraum, Vergleichszeitraum, Währung — der Ausschnitt.
+  //    Seit v1.27 in scope.js, weil die Detailseiten exakt denselben brauchen.
+  const scope = financeScope({ entries: allEntries, accounts, accountId, period, today })
+  const { entries, inRange, inComparison, mixedCurrency, currency } = scope
 
   // 4. Die Zahlen — oder, bei zwei Währungen, ausdrücklich keine.
   const summary = dashboardSummary({
@@ -203,16 +162,16 @@ export function buildFinanceDashboard({
 
   return {
     today,
-    period: normalized,
-    range,
-    comparison,
-    periodLabel: describePeriod(normalized, today),
-    rangeLabel: describeRange(range),
-    comparisonLabel: comparison ? describeRange(comparison) : '',
-    accountId: accountId ?? null,
+    period: scope.period,
+    range: scope.range,
+    comparison: scope.comparison,
+    periodLabel: scope.periodLabel,
+    rangeLabel: scope.rangeLabel,
+    comparisonLabel: scope.comparisonLabel,
+    accountId: scope.accountId,
     accountCount: accounts.length,
     currency,
-    currencies: inScope,
+    currencies: scope.currencies,
     mixedCurrency,
     entries,
     periodEntries: inRange,
