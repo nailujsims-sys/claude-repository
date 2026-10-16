@@ -4896,6 +4896,90 @@ async function run() {
       errors.push(`[${label}/Unbekannt] an unknown category is not reported honestly`)
   }
 
+  // 16b9) v1.27 Review-Befund: der Weg zu „Alle Kategorien" hängt NICHT an
+  //       kategorisierten Ausgaben. (A) Im Zeitraum liegen nur nicht
+  //       zugeordnete Ausgaben — genau dann braucht man die Kategorie-Seite.
+  //       (B) Im Zeitraum liegt gar keine kategorisierte Ausgabe.
+  {
+    const label = 'Finanzen/OhneKategorie'
+    const t = (n, over) => ({
+      id: '11111111-2222-4333-8444-0000000005' + String(n).padStart(2, '0'), user_id: TEST_USER_ID,
+      account_id: FIN_ACCOUNT, currency: 'EUR', include_in_analytics: true, manual_lock: false,
+      transaction_type: 'purchase', normalized_tokens: [], ...over,
+    })
+    const seed = {
+      finance_accounts: [{ id: FIN_ACCOUNT, user_id: TEST_USER_ID, name: 'DKB Girokonto', currency: 'EUR' }],
+      finance_categories: FIN_CATEGORIES,
+      finance_transactions: [
+        t(1, { booking_date: '2026-09-11', amount_minor: -1250, raw_description: 'KIOSK AM ECK' }),
+        t(2, { booking_date: '2026-09-15', amount_minor: -3400, raw_description: 'MARKTSTAND' }),
+      ],
+    }
+    const window = makeDom('#/finanzen', { finance: seed })
+    mount(window, code, label)
+    await wait(450)
+    window.__restoreConsole?.()
+    const allButtons = () => [...window.document.querySelectorAll('button')]
+      .filter((b) => b.textContent.trim() === 'Alle anzeigen')
+    const categoryAction = () => allButtons()
+      .find((b) => b.closest('section')?.textContent.includes('Ausgaben nach Kategorie'))
+
+    let text = nb(txt(window))
+    if (!text.includes('2 Buchungen sind noch keiner Kategorie zugeordnet'))
+      errors.push(`[${label}] the unassigned hint is missing: ${text.slice(0, 260)}`)
+    if (!categoryAction())
+      errors.push(`[${label}] (A) only unassigned expenses — „Alle anzeigen" for categories is gone`)
+    else if (categoryAction().tagName !== 'BUTTON')
+      errors.push(`[${label}] (A) „Alle anzeigen" is not a real button`)
+    // Top-Händler bleibt, wie er ist: ohne Händler kein leerer Einstieg.
+    if (allButtons().some((b) => b.closest('section')?.textContent.includes('Top-Händler')))
+      errors.push(`[${label}] an empty merchant list offers „Alle anzeigen"`)
+
+    categoryAction()?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(220)
+    text = nb(txt(window))
+    if (!/#\/finanzen\/kategorien$/.test(window.location.hash))
+      errors.push(`[${label}] (A) the tap did not open /finanzen/kategorien: ${window.location.hash}`)
+    const rows = [...window.document.querySelectorAll('button')]
+      .filter((b) => (b.getAttribute('aria-label') || '').startsWith('Kategorie öffnen'))
+    if (rows.length !== 9)
+      errors.push(`[${label}] (A) not all nine parent categories are listed (${rows.length})`)
+    const unassigned = [...window.document.querySelectorAll('button')]
+      .find((b) => b.textContent.trim().startsWith('Nicht zugeordnet'))
+    if (!unassigned || !text.includes('2 Buchungen · 46,50 €'))
+      errors.push(`[${label}] (A) „Nicht zugeordnet" is not shown separately: ${text.slice(-220)}`)
+    if (rows.some((b) => b.textContent.includes('Nicht zugeordnet')))
+      errors.push(`[${label}] (A) „Nicht zugeordnet" is listed as a category`)
+    unassigned?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(220)
+    if (!/#\/finanzen\/nicht-zugeordnet$/.test(window.location.hash) ||
+        !nb(txt(window)).includes('MARKTSTAND'))
+      errors.push(`[${label}] (A) „Nicht zugeordnet" is not tappable: ${window.location.hash}`)
+    click(window, (el) => (el.getAttribute?.('aria-label') || '') === 'Zurück')
+    await wait(260)
+    click(window, (el) => (el.getAttribute?.('aria-label') || '') === 'Zurück')
+    await wait(260)
+
+    // (B) Ein Zeitraum ohne eine einzige kategorisierte Ausgabe: August.
+    click(window, (el) => (el.getAttribute?.('aria-label') || '') === 'Zeitraum ändern')
+    await wait(340)
+    click(window, (el) => (el.getAttribute?.('aria-label') || '') === 'Vorheriger Monat')
+    await wait(80)
+    click(window, (el) => el.tagName === 'BUTTON' && el.textContent.trim() === 'Übernehmen')
+    await wait(450)
+    text = nb(txt(window))
+    if (!text.includes('August 2026') || !text.includes('noch keine Ausgabe einer Kategorie zugeordnet'))
+      errors.push(`[${label}] (B) the empty period was not reached: ${text.slice(0, 220)}`)
+    if (!categoryAction())
+      errors.push(`[${label}] (B) a period without categorised expenses loses the way to the categories`)
+    categoryAction()?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+    await wait(220)
+    if (!/#\/finanzen\/kategorien$/.test(window.location.hash) ||
+        [...window.document.querySelectorAll('button')]
+          .filter((b) => (b.getAttribute('aria-label') || '').startsWith('Kategorie öffnen')).length !== 9)
+      errors.push(`[${label}] (B) the category overview did not open with all nine parents: ${window.location.hash}`)
+  }
+
   // 16c) The database is unreachable. "Nothing here" and "we could not look"
   //      are different sentences, as everywhere else in the app.
   {

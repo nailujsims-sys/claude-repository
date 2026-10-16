@@ -262,16 +262,15 @@ export function Overview({
         <OpenClassifications count={summary.openClassifications} onClick={onClassify} />
       )}
 
-      {/* „Alle anzeigen" steht da, sobald es überhaupt Kategorien gibt — auch
-          bei nur drei Zeilen: die Kategorie-Seite zeigt zusätzlich die leeren
-          Kategorien und „Nicht zugeordnet", also mehr als diese Karte. */}
+      {/* „Alle anzeigen" steht IMMER da. Die Kategorie-Seite zeigt die ganze
+          Taxonomie, leere Kategorien und „Nicht zugeordnet" — sie hat also auch
+          dann etwas zu zeigen, wenn im Zeitraum keine einzige Ausgabe eine
+          Kategorie trägt. Gerade dann: wer hier nur „noch keiner Kategorie
+          zugeordnet" liest, braucht den Weg dorthin am dringendsten.
+          (Top-Händler bleibt anders: ohne Händler gibt es dort nichts.) */}
       <FinanceSection
         title="Ausgaben nach Kategorie"
-        action={
-          categories.parents.length > 0 && onAllCategories
-            ? { label: 'Alle anzeigen', onClick: onAllCategories }
-            : null
-        }
+        action={onAllCategories ? { label: 'Alle anzeigen', onClick: onAllCategories } : null}
       >
         {categories.top.length === 0 ? (
           <FinanceHint>In diesem Zeitraum ist noch keine Ausgabe einer Kategorie zugeordnet.</FinanceHint>
