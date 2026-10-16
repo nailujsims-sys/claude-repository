@@ -1,5 +1,6 @@
 import { MONTHS_DE } from '../../date'
 import { daysInMonth } from './period'
+import { isExpenseContribution } from './effect'
 
 // „Ausgabenentwicklung" — dieselbe Ausgabenregel, nur über eine Zeitachse.
 //
@@ -143,9 +144,8 @@ export function trendSeries({ entries = [], range = DEFAULT_TREND_RANGE, today }
   // Ein Lauf über die Buchungen, ein Lauf über die Eimer: bei höchstens 36
   // Eimern ist die lineare Suche billiger als eine Map, und sie bleibt lesbar.
   for (const entry of entries) {
-    if (!entry?.included || !entry.bookingDate) continue
-    const expense = entry.effect?.expense ?? 0
-    if (expense === 0 && entry.transactionType !== 'refund') continue
+    if (!entry?.bookingDate || !isExpenseContribution(entry)) continue
+    const expense = entry.effect.expense
     const bucket = buckets.find(
       (b) => entry.bookingDate >= b.start && entry.bookingDate <= b.end
     )

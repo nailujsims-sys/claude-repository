@@ -8,6 +8,7 @@ import { EventsProvider } from './context/EventsContext'
 import { ListsProvider } from './context/ListsContext'
 import { ExpensesProvider } from './context/ExpensesContext'
 import { FinanceProvider } from './context/FinanceContext'
+import { FinanceViewProvider } from './context/FinanceViewContext'
 import { GoogleProvider } from './context/GoogleContext'
 
 import BottomNav from './components/BottomNav'
@@ -36,6 +37,11 @@ import ListeDetail from './screens/ListeDetail'
 import ListenArchiv from './screens/ListenArchiv'
 import Ausgaben from './screens/Ausgaben'
 import Finanzen from './screens/Finanzen'
+import CategoryOverview from './screens/finance/CategoryOverview'
+import CategoryDetail from './screens/finance/CategoryDetail'
+import MerchantOverview from './screens/finance/MerchantOverview'
+import MerchantDetail from './screens/finance/MerchantDetail'
+import UnassignedDetail from './screens/finance/UnassignedDetail'
 import Mehr from './screens/Mehr'
 import Profil from './screens/Profil'
 import ProfilGoogle from './screens/ProfilGoogle'
@@ -104,9 +110,15 @@ function Gate() {
                   the same reason: it reads personal rows and must never run
                   without a user id. */}
               <FinanceProvider>
-                <GoogleProvider>
-                  <AppShell />
-                </GoogleProvider>
+                {/* Zeitraum, Konto und die einmal aufgelösten Buchungen der
+                    Finanz-Bildschirme (v1.27). ÜBER <main>, weil <main> bei
+                    jedem Routenwechsel neu gebaut wird — sonst vergäße ein
+                    Drilldown beim Zurück, worüber er geredet hat. */}
+                <FinanceViewProvider>
+                  <GoogleProvider>
+                    <AppShell />
+                  </GoogleProvider>
+                </FinanceViewProvider>
               </FinanceProvider>
             </ExpensesProvider>
           </ListsProvider>
@@ -138,6 +150,14 @@ function AppShell() {
           <Route path="/listen/:id" element={<ListeDetail />} />
           <Route path="/ausgaben" element={<Ausgaben />} />
           <Route path="/finanzen" element={<Finanzen />} />
+          {/* Die Drilldowns (v1.27). Ober- und Unterkategorie teilen sich eine
+              Route; ein Händler steht als kodierter Schlüssel in der Adresse
+              (src/lib/finance/routes.js), weil nicht jeder eine ID hat. */}
+          <Route path="/finanzen/kategorien" element={<CategoryOverview />} />
+          <Route path="/finanzen/kategorien/:categoryId" element={<CategoryDetail />} />
+          <Route path="/finanzen/nicht-zugeordnet" element={<UnassignedDetail />} />
+          <Route path="/finanzen/haendler" element={<MerchantOverview />} />
+          <Route path="/finanzen/haendler/:merchantKey" element={<MerchantDetail />} />
           <Route path="/mehr" element={<Mehr />} />
           <Route path="/profil" element={<Profil />} />
           <Route path="/profil/google-kalender" element={<ProfilGoogle />} />

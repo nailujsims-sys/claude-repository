@@ -19,7 +19,9 @@ export {
   resolveAnalyticsInclusion,
 } from './inclusion'
 
-export { EFFECT_ZERO, transactionEffect, isRealExpense, sumEffects } from './effect'
+export {
+  EFFECT_ZERO, transactionEffect, isExpenseContribution, isRealExpense, sumEffects,
+} from './effect'
 
 export {
   PERIOD_KINDS,
@@ -35,9 +37,19 @@ export {
 } from './period'
 
 export { resolveAnalyticsEntries } from './resolve'
-export { dashboardSummary } from './summary'
-export { categoryBreakdown } from './categories'
+export { financeScope } from './scope'
+export { compare, dashboardSummary } from './summary'
+export { categoryBreakdown, categoryOverview } from './categories'
 export { topMerchants } from './merchants'
 export { biggestExpenses } from './biggest'
 export { TREND_RANGES, DEFAULT_TREND_RANGE, trendSeries } from './trend'
 export { buildFinanceDashboard } from './dashboard'
+export {
+  categoryDetail,
+  categoryTrend,
+  merchantDetail,
+  merchantOverview,
+  merchantTrend,
+  newestFirst,
+  unassignedDetail,
+} from './drilldown'

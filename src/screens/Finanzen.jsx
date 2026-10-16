@@ -1,25 +1,39 @@
 import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, Plus } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { ChevronRight, Plus } from 'lucide-react'
 import TopBar from '../components/TopBar'
 import Segmented from '../components/Segmented'
-import CategoryIcon from '../components/CategoryIcon'
 import MerchantAvatar from '../components/MerchantAvatar'
-import FinancePeriodSheet from '../components/FinancePeriodSheet'
-import FinanceAccountFilterSheet from '../components/FinanceAccountFilterSheet'
 import FinanceTrendChart from '../components/FinanceTrendChart'
 import FinanceTransactionSheet from '../components/FinanceTransactionSheet'
+import {
+  FinanceCategoryRow,
+  FinanceChangeLine,
+  FinanceHint,
+  FinanceListCard,
+  FinanceMerchantRow,
+  FinanceSection,
+  FinanceTransactionRow,
+} from '../components/FinanceRows'
+import {
+  FinanceMixedNotice,
+  FinanceScopeBar,
+  FinanceScopeSheets,
+  useFinanceAccountLabel,
+} from '../components/FinanceScope'
 import { SkeletonExpenseList } from '../components/Skeleton'
 import { useFinance } from '../context/FinanceContext'
+import { useFinanceView } from '../context/FinanceViewContext'
 import { useUI } from '../context/UIContext'
+import { useFinanceScrollMemory } from './finance/shared'
 import {
-  DEFAULT_TREND_RANGE,
   TREND_RANGES,
   buildFinanceDashboard,
-  currentMonthPeriod,
   excludedMerchants,
+  newestFirst,
 } from '../lib/finance/analytics'
+import { FINANCE_ROUTES, categoryRoute, merchantRoute } from '../lib/finance/routes'
 import { formatAmountMinor, formatBookingDate, plural } from '../lib/finance/importFlow'
-import { todayISO } from '../lib/date'
 
 // Finanzen — das Dashboard.
 //
@@ -45,6 +59,13 @@ import { todayISO } from '../lib/date'
 // WAS ER NICHT TUT: keine Budgets, keine Abo-Erkennung, keine Vermögenskurve,
 // keine KI-Einsichten. Jede dieser Kacheln wäre eine Behauptung über Daten, die
 // heute niemand geprüft hat.
+//
+// SEIT v1.27 IST DIE ÜBERSICHT NAVIGIERBAR. „Alle anzeigen", jede Kategorie-
+// und jede Händlerzeile führen auf eine eigene Seite (src/screens/finance/).
+// Zeitraum, Konto und Verlaufsspanne liegen dafür nicht mehr hier, sondern im
+// FinanceViewContext — derselbe Zustand für alle Finanz-Bildschirme, damit
+// „Letzte 30 Tage · DKB" nach dem Zurück noch dasteht. Die Einordnung aller
+// Buchungen kommt von dort ebenfalls, einmal aufgelöst.
 
 const TABS = [
   { id: 'overview', label: 'Übersicht' },
@@ -53,19 +74,16 @@ const TABS = [
 
 export default function Finanzen() {
   const {
-    transactions, accounts, archivedAccounts, patterns, merchants, categories,
-    categoryRules, overrides, aiSuggestions, loading, error,
+    transactions, accounts, merchants, categories, loading, error,
   } = useFinance()
   const { openFinanceAdd, openFinanceAccounts, openFinanceClassify, openFinanceExclusions } = useUI()
-
-  const today = todayISO()
-  const [tab, setTab] = useState('overview')
   // Der Standard ist der laufende Kalendermonat — die Frage, die ein Mensch an
-  // seine Ausgaben zuerst stellt.
-  const [period, setPeriod] = useState(() => currentMonthPeriod(today))
-  // `null` heißt „Alle Konten", archivierte eingeschlossen.
-  const [accountId, setAccountId] = useState(null)
-  const [trendRange, setTrendRange] = useState(DEFAULT_TREND_RANGE)
+  // seine Ausgaben zuerst stellt (`period = null`, siehe FinanceViewContext).
+  const { today, period, accountId, trendRange, setTrendRange, resolveEntries } = useFinanceView()
+  const navigate = useNavigate()
+  useFinanceScrollMemory()
+
+  const [tab, setTab] = useState('overview')
   const [sheet, setSheet] = useState(null) // 'period' | 'account' | null
   // Welche Buchung gerade offen ist — als ID und nicht als Objekt, damit das
   // Sheet nach jedem Reload den frischen Eintrag sieht statt einer Kopie von
@@ -76,16 +94,13 @@ export default function Finanzen() {
   const dashboard = useMemo(
     () =>
       buildFinanceDashboard({
-        transactions, accounts, categories, merchants, patterns,
-        rules: categoryRules, overrides, aiSuggestions,
+        resolved: resolveEntries(), accounts, categories,
         period, accountId, trendRange, today,
       }),
-    [transactions, accounts, categories, merchants, patterns, categoryRules, overrides,
-     aiSuggestions, period, accountId, trendRange, today]
+    [resolveEntries, accounts, categories, period, accountId, trendRange, today]
   )
 
   const excluded = useMemo(() => excludedMerchants(merchants), [merchants])
-  const archivedIds = useMemo(() => archivedAccounts.map((a) => a.id), [archivedAccounts])
   // Die Währung sagt die Pipeline, nicht dieser Screen — sie hat die Buchungen
   // gesehen. Heute ist das immer EUR; wer ein Konto in einer anderen Währung
   // anlegt, bekommt deren Zeichen statt eines falschen.
@@ -96,9 +111,7 @@ export default function Finanzen() {
     : null
 
   const isEmpty = !loading && transactions.length === 0
-  const accountLabel = accountId
-    ? accounts.find((a) => a.id === accountId)?.name ?? 'Konto'
-    : 'Alle Konten'
+  const accountLabel = useFinanceAccountLabel()
 
   return (
     <div className="min-h-screen pb-28">
@@ -127,18 +140,12 @@ export default function Finanzen() {
               className="mt-1"
             />
 
-            <div className="mt-3 flex gap-2">
-              <FilterButton
-                label={dashboard.periodLabel}
-                onClick={() => setSheet('period')}
-                ariaLabel="Zeitraum ändern"
-              />
-              <FilterButton
-                label={accountLabel}
-                onClick={() => setSheet('account')}
-                ariaLabel="Konto ändern"
-              />
-            </div>
+            <FinanceScopeBar
+              periodLabel={dashboard.periodLabel}
+              accountLabel={accountLabel}
+              onPeriod={() => setSheet('period')}
+              onAccount={() => setSheet('account')}
+            />
 
             {dashboard.summary.latestBookingDate && (
               <p className="mt-2 px-1 text-caption text-text-muted">
@@ -162,6 +169,10 @@ export default function Finanzen() {
                   onTrendRange={setTrendRange}
                   onAdd={openFinanceAdd}
                   onClassify={openFinanceClassify}
+                  onAllCategories={() => navigate(FINANCE_ROUTES.categories)}
+                  onOpenCategory={(id) => navigate(categoryRoute(id))}
+                  onAllMerchants={() => navigate(FINANCE_ROUTES.merchants)}
+                  onOpenMerchant={(key) => navigate(merchantRoute(key))}
                 />
               )
             ) : (
@@ -183,21 +194,7 @@ export default function Finanzen() {
         )}
       </div>
 
-      <FinancePeriodSheet
-        open={sheet === 'period'}
-        onClose={() => setSheet(null)}
-        value={period}
-        today={today}
-        onApply={setPeriod}
-      />
-      <FinanceAccountFilterSheet
-        open={sheet === 'account'}
-        onClose={() => setSheet(null)}
-        accounts={accounts}
-        archivedIds={archivedIds}
-        value={accountId}
-        onChange={setAccountId}
-      />
+      <FinanceScopeSheets sheet={sheet} onClose={() => setSheet(null)} />
       {openEntry && (
         <FinanceTransactionSheet entry={openEntry} onClose={() => setOpenTransactionId(null)} />
       )}
@@ -219,22 +216,7 @@ export default function Finanzen() {
 export function MixedCurrency({ dashboard, onPickAccount, onAdd, onClassify }) {
   return (
     <>
-      <section className="mt-3 rounded-card border border-subtle bg-bg-card px-4 py-4">
-        <h2 className="text-section font-semibold text-text-primary">Mehrere Währungen</h2>
-        <p className="mt-1.5 text-body text-text-secondary">
-          Wähle ein einzelnes Konto, um Beträge korrekt auszuwerten.
-        </p>
-        <p className="mt-2 text-caption text-text-muted">
-          In dieser Auswahl liegen {dashboard.currencies.join(' und ')}. Umgerechnet wird nicht —
-          eine Summe über zwei Währungen wäre keine.
-        </p>
-        <button
-          onClick={onPickAccount}
-          className="press-tint mt-4 w-full rounded-btn bg-accent py-3.5 text-body font-semibold text-white"
-        >
-          Konto wählen
-        </button>
-      </section>
+      <FinanceMixedNotice currencies={dashboard.currencies} onPickAccount={onPickAccount} />
 
       <AddButton onClick={onAdd} />
 
@@ -258,7 +240,14 @@ export function MixedCurrency({ dashboard, onPickAccount, onAdd, onClassify }) {
 // aus demselben Grund: tools/financeDashboardLayout.mjs rendert diesen Block in
 // einem echten Browser und misst ihn bei 390, 430 und Desktop. Eine Attrappe des
 // Markups im Test wäre ein Test über die Attrappe.
-export function Overview({ dashboard, currency, trendRange, onTrendRange, onAdd, onClassify }) {
+//
+// Die Navigation kommt als Rückruf herein und nicht über `useNavigate`: so
+// bleibt der Block ohne Router renderbar, und der Layout-Test misst weiterhin
+// genau das, was auf dem Schirm steht.
+export function Overview({
+  dashboard, currency, trendRange, onTrendRange, onAdd, onClassify,
+  onAllCategories = null, onOpenCategory = null, onAllMerchants = null, onOpenMerchant = null,
+}) {
   const { summary, categories, merchants, biggest, trend } = dashboard
 
   return (
@@ -273,23 +262,32 @@ export function Overview({ dashboard, currency, trendRange, onTrendRange, onAdd,
         <OpenClassifications count={summary.openClassifications} onClick={onClassify} />
       )}
 
-      <Section
+      {/* „Alle anzeigen" steht IMMER da. Die Kategorie-Seite zeigt die ganze
+          Taxonomie, leere Kategorien und „Nicht zugeordnet" — sie hat also auch
+          dann etwas zu zeigen, wenn im Zeitraum keine einzige Ausgabe eine
+          Kategorie trägt. Gerade dann: wer hier nur „noch keiner Kategorie
+          zugeordnet" liest, braucht den Weg dorthin am dringendsten.
+          (Top-Händler bleibt anders: ohne Händler gibt es dort nichts.) */}
+      <FinanceSection
         title="Ausgaben nach Kategorie"
-        action={categories.parents.length > 0 ? 'Alle anzeigen' : null}
+        action={onAllCategories ? { label: 'Alle anzeigen', onClick: onAllCategories } : null}
       >
         {categories.top.length === 0 ? (
-          <Hint>In diesem Zeitraum ist noch keine Ausgabe einer Kategorie zugeordnet.</Hint>
+          <FinanceHint>In diesem Zeitraum ist noch keine Ausgabe einer Kategorie zugeordnet.</FinanceHint>
         ) : (
-          <div className="rounded-card bg-bg-card px-4 py-1">
+          <FinanceListCard>
             {categories.top.map((row, index) => (
-              <CategoryRow
+              <FinanceCategoryRow
                 key={row.category?.id ?? index}
                 row={row}
                 currency={currency}
                 bordered={index > 0}
+                onOpen={
+                  onOpenCategory && row.category?.id ? () => onOpenCategory(row.category.id) : null
+                }
               />
             ))}
-          </div>
+          </FinanceListCard>
         )}
         {categories.unassigned.count > 0 && (
           <p className="mt-2 px-1 text-caption text-text-secondary">
@@ -298,9 +296,9 @@ export function Overview({ dashboard, currency, trendRange, onTrendRange, onAdd,
             sie zählen in den Gesamtausgaben.
           </p>
         )}
-      </Section>
+      </FinanceSection>
 
-      <Section title="Ausgabenentwicklung">
+      <FinanceSection title="Ausgabenentwicklung">
         <Segmented
           options={TREND_RANGES.map((r) => ({ id: r.id, label: r.label }))}
           value={trendRange}
@@ -310,38 +308,35 @@ export function Overview({ dashboard, currency, trendRange, onTrendRange, onAdd,
         <div className="mt-4 rounded-card bg-bg-card px-4 py-4">
           <FinanceTrendChart series={trend} currency={currency} />
         </div>
-      </Section>
+      </FinanceSection>
 
-      <Section title="Top-Händler" action={merchants.merchants.length > 0 ? 'Alle anzeigen' : null}>
+      <FinanceSection
+        title="Top-Händler"
+        action={
+          merchants.merchants.length > 0 && onAllMerchants
+            ? { label: 'Alle anzeigen', onClick: onAllMerchants }
+            : null
+        }
+      >
         {merchants.merchants.length === 0 ? (
-          <Hint>In diesem Zeitraum ist noch keine Ausgabe einem Händler zugeordnet.</Hint>
+          <FinanceHint>In diesem Zeitraum ist noch keine Ausgabe einem Händler zugeordnet.</FinanceHint>
         ) : (
-          <div className="rounded-card bg-bg-card px-4 py-1">
+          <FinanceListCard>
             {merchants.merchants.map((merchant, index) => (
-              <div
+              <FinanceMerchantRow
                 key={merchant.key}
-                className={`flex min-h-[56px] items-center gap-3 py-2.5 ${
-                  index > 0 ? 'border-t border-subtle' : ''
-                }`}
-              >
-                <MerchantAvatar merchant={merchant.merchant} name={merchant.name} size="sm" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-body text-text-primary">{merchant.name}</p>
-                  <p className="truncate text-caption text-text-secondary">
-                    {plural(merchant.count, 'Buchung', 'Buchungen')}
-                  </p>
-                </div>
-                <span className="shrink-0 tabular-nums text-body font-semibold text-text-primary">
-                  {formatAmountMinor(merchant.amount, currency)}
-                </span>
-              </div>
+                merchant={merchant}
+                currency={currency}
+                bordered={index > 0}
+                onOpen={onOpenMerchant ? () => onOpenMerchant(merchant.key) : null}
+              />
             ))}
-          </div>
+          </FinanceListCard>
         )}
-      </Section>
+      </FinanceSection>
 
       {biggest.length > 0 && (
-        <Section title="Größte Ausgaben">
+        <FinanceSection title="Größte Ausgaben">
           {/* Keine Karte je Zeile: drei Karten untereinander wären dreimal
               dieselbe Betonung für eine Liste, die eine Liste ist. */}
           <div className="rounded-card bg-bg-card px-4 py-1">
@@ -366,7 +361,7 @@ export function Overview({ dashboard, currency, trendRange, onTrendRange, onAdd,
               </div>
             ))}
           </div>
-        </Section>
+        </FinanceSection>
       )}
     </>
   )
@@ -389,21 +384,7 @@ function KpiCard({ summary, currency, comparisonLabel }) {
       <p className="mt-1.5 text-page font-bold tabular-nums leading-tight text-text-primary">
         {formatAmountMinor(summary.expenses, currency)}
       </p>
-      <p className="mt-1 text-caption text-text-secondary">
-        {change.comparable ? (
-          <>
-            <span className="font-semibold text-accent">
-              {change.absolute >= 0 ? '+' : '−'}
-              {Math.abs(Math.round(change.percent))} %
-            </span>{' '}
-            ggü. {comparisonLabel}
-          </>
-        ) : (
-          // Kein Vergleichswert heißt keine Prozentzahl. „+100 %" gegenüber 0 €
-          // wäre eine erfundene Zahl an der auffälligsten Stelle des Schirms.
-          <>Kein Vergleichswert für {comparisonLabel}</>
-        )}
-      </p>
+      <FinanceChangeLine change={change} comparisonLabel={comparisonLabel} />
 
       <div className="mt-4 grid grid-cols-2 gap-3 border-t border-subtle pt-3">
         <div className="min-w-0">
@@ -432,40 +413,6 @@ function KpiCard({ summary, currency, comparisonLabel }) {
   )
 }
 
-function CategoryRow({ row, currency, bordered }) {
-  const percent = row.percentage === null ? null : Math.round(row.percentage)
-  return (
-    <div className={`flex min-h-[56px] items-center gap-3 py-2.5 ${bordered ? 'border-t border-subtle' : ''}`}>
-      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-chip bg-bg-input text-text-secondary">
-        <CategoryIcon slug={row.category?.slug} size={18} />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2">
-          <p className="min-w-0 flex-1 truncate text-body text-text-primary">
-            {row.category?.label ?? 'Kategorie'}
-          </p>
-          <span className="shrink-0 tabular-nums text-body font-semibold text-text-primary">
-            {formatAmountMinor(row.amount, currency)}
-          </span>
-          {percent !== null && (
-            <span className="w-9 shrink-0 text-right tabular-nums text-caption text-text-secondary">
-              {percent} %
-            </span>
-          )}
-        </div>
-        {/* Alle Balken blau. Eine Farbe je Kategorie wäre eine Palette, die
-            niemand entschieden hat — die Länge trägt die Aussage. */}
-        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-bg-input">
-          <span
-            className="block h-full rounded-full bg-accent"
-            style={{ width: `${Math.max(0, Math.min(100, percent ?? 0))}%` }}
-          />
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // ── Buchungen ───────────────────────────────────────────────────────────────
 //
 // Die schlichte Liste dessen, was im gewählten Zeitraum auf den gewählten Konten
@@ -480,60 +427,29 @@ function CategoryRow({ row, currency, bordered }) {
 // steht, was in die Zeile nicht hineinpasst, und in dem die Buchung gelöscht
 // werden kann.
 export function Bookings({ dashboard, onOpen }) {
-  const rows = useMemo(
-    () =>
-      dashboard.periodEntries
-        .slice()
-        .sort(
-          (a, b) =>
-            String(b.bookingDate ?? '').localeCompare(String(a.bookingDate ?? '')) ||
-            String(a.id ?? '').localeCompare(String(b.id ?? ''))
-        ),
-    [dashboard.periodEntries]
-  )
+  const rows = useMemo(() => newestFirst(dashboard.periodEntries), [dashboard.periodEntries])
 
   if (rows.length === 0) {
     return (
-      <Section title="Buchungen">
-        <Hint>In diesem Zeitraum gibt es auf diesen Konten keine Buchung.</Hint>
-      </Section>
+      <FinanceSection title="Buchungen">
+        <FinanceHint>In diesem Zeitraum gibt es auf diesen Konten keine Buchung.</FinanceHint>
+      </FinanceSection>
     )
   }
 
   return (
-    <Section title="Buchungen">
-      <div className="rounded-card bg-bg-card px-4 py-1">
+    <FinanceSection title="Buchungen">
+      <FinanceListCard>
         {rows.map((entry, index) => (
-          <button
+          <FinanceTransactionRow
             key={entry.id}
-            type="button"
-            onClick={() => onOpen?.(entry.id)}
-            aria-label={`Buchung öffnen: ${entry.merchantName || entry.description}`}
-            className={`press-tint flex min-h-[56px] w-full items-center gap-3 py-2.5 text-left ${
-              index > 0 ? 'border-t border-subtle' : ''
-            }`}
-          >
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-body text-text-primary">
-                {entry.merchantName || entry.description}
-              </p>
-              <p className="truncate text-caption text-text-secondary">
-                {formatBookingDate(entry.bookingDate)}
-                {entry.included ? '' : ' · zählt nicht'}
-              </p>
-            </div>
-            <span
-              className={`shrink-0 tabular-nums text-body font-semibold ${
-                entry.amountMinor > 0 ? 'text-success' : 'text-text-primary'
-              }`}
-            >
-              {formatAmountMinor(entry.amountMinor, entry.currency)}
-            </span>
-            <ChevronRight size={18} className="shrink-0 text-text-muted" />
-          </button>
+            entry={entry}
+            bordered={index > 0}
+            onOpen={() => onOpen?.(entry.id)}
+          />
         ))}
-      </div>
-    </Section>
+      </FinanceListCard>
+    </FinanceSection>
   )
 }
 
@@ -563,38 +479,6 @@ function AddButton({ onClick }) {
       <Plus size={18} /> Hinzufügen
     </button>
   )
-}
-
-function FilterButton({ label, onClick, ariaLabel }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={ariaLabel}
-      className="press-tint flex min-h-[44px] min-w-0 flex-1 items-center gap-1.5 rounded-btn bg-bg-input px-3.5 py-2 text-left"
-    >
-      <span className="min-w-0 flex-1 truncate text-ui text-text-primary">{label}</span>
-      <ChevronDown size={16} className="shrink-0 text-text-secondary" />
-    </button>
-  )
-}
-
-function Section({ title, action = null, children }) {
-  return (
-    <section className="mt-6">
-      <div className="flex items-baseline gap-3 px-1">
-        <h2 className="min-w-0 flex-1 truncate text-section font-semibold text-text-primary">
-          {title}
-        </h2>
-        {action && <span className="shrink-0 text-ui text-text-muted">{action}</span>}
-      </div>
-      <div className="mt-3">{children}</div>
-    </section>
-  )
-}
-
-function Hint({ children }) {
-  return <p className="px-1 text-caption text-text-secondary">{children}</p>
 }
 
 function QuietRow({ onClick, label, children = null }) {

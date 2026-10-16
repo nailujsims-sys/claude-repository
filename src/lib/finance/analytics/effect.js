@@ -79,6 +79,28 @@ export function isRealExpense(entry) {
 }
 
 /**
+ * Trägt diese Buchung zu einer Ausgabensumme bei?
+ *
+ * Die eine Frage, die jede Ausgaben-Aufteilung stellt — Kategorie, Händler,
+ * Verlauf, und seit v1.27 jede Detailseite. Bis v1.26.2 stand sie als Zeile in
+ * drei Dateien; drei gleichlautende Zeilen sind drei Stellen, an denen sie
+ * auseinanderlaufen kann.
+ *
+ * Ja heißt: einbezogen UND mit Ausgabenwirkung — oder eine Retoure, auch eine
+ * über 0 €, weil sie in derselben Liste stehen muss wie der Kauf, den sie
+ * aufhebt. Einnahmen und Umbuchungen haben keine Ausgabenwirkung und fallen
+ * damit heraus, auch wenn sie eine Kategorie tragen.
+ *
+ * @param {{included?: boolean, effect?: {expense?: number}, transactionType?: string}} entry
+ * @returns {boolean}
+ */
+export function isExpenseContribution(entry) {
+  if (!entry?.included) return false
+  const expense = entry.effect?.expense ?? 0
+  return expense !== 0 || entry.transactionType === 'refund'
+}
+
+/**
  * Die Summe vieler Beiträge.
  *
  * `cashflow` wird mitsummiert statt am Ende neu gebildet — beides ergibt

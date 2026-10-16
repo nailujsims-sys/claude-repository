@@ -112,8 +112,11 @@ Darunter liegt unverändert das Modell aus 0008: eine Buchung behält ihren
 Originaltext und ihren Betrag für immer, Geld ist eine Ganzzahl in Minor Units,
 Händler werden an Mustern erkannt, die ein Mensch bestätigt hat, und die
 Kategorie kommt aus Regeln — kein Raten, und ein ehrliches „offen", wo die
-Software es nicht sagen kann. Siehe *Finanzen — das Datenmodell und die
-Regel-Engine* und *Finanzen v1.26 — Hierarchie und Dashboard* unten.
+Software es nicht sagen kann. Seit v1.27 ist das Dashboard navigierbar:
+Kategorien, Unterkategorien und Händler haben eigene Detailseiten, und Zeitraum
+und Konto bleiben dabei stehen. Siehe *Finanzen — das Datenmodell und die
+Regel-Engine*, *Finanzen v1.26 — Hierarchie und Dashboard* und *Finanzen v1.27
+— Kategorie- und Händler-Drilldowns* unten.
 
 ---
 
@@ -349,6 +352,12 @@ src/
         merchants.js        top merchants, refunds netted, across accounts
         biggest.js          the largest single REAL expenses
         trend.js            the bars: 3M/6M/1J monthly, 3J quarterly, Max yearly
+        scope.js            financeScope — accounts, period, comparison range,
+                            currency lock; shared by the dashboard and every
+                            drilldown (v1.27)
+        drilldown.js        categoryDetail / merchantDetail / their trends /
+                            unassignedDetail — filters in front of the
+                            existing calculations, nothing redefined (v1.27)
         dashboard.js        buildFinanceDashboard — rows in, dashboard out
       types.js              the row and result shapes, as JSDoc typedefs
       effectiveClassification.js
@@ -1594,6 +1603,80 @@ Entscheidungen ist von 92 auf 48 Pixel gefallen — genau die eine neue Zeile.
 
 Der v1.26.1-Flow „Speichern → direkt die nächste" bleibt exakt erhalten,
 inklusive Teilerfolg, Festhalten der Buchung und Wiederholung nur des Fehlenden.
+
+## 🔎 Finanzen v1.27 — Kategorie- und Händler-Drilldowns
+
+Die Übersicht wird navigierbar. **Read-only** gegenüber den Finanzdaten: keine
+neue Bearbeitungslogik, keine neuen Schreib-RPCs, keine Migration.
+
+### Routen
+
+| Route | Bildschirm |
+|---|---|
+| `/finanzen/kategorien` | alle Oberkategorien, leere ruhig unten, „Nicht zugeordnet" getrennt am Ende |
+| `/finanzen/kategorien/:categoryId` | eine Ober- **oder** Unterkategorie (dieselbe Route, keine dritte Ebene) |
+| `/finanzen/nicht-zugeordnet` | die Buchungen ohne Kategorie — ein Zustand, keine Kategorie |
+| `/finanzen/haendler` | alle Händler mit Ausgaben im Ausschnitt |
+| `/finanzen/haendler/:merchantKey` | ein Händler: `finance_merchants`-ID oder `name:…` |
+
+Ein Händlerschlüssel wird über `src/lib/finance/routes.js` adresssicher
+kodiert: eine ID aus `[A-Za-z0-9_-]` steht unverändert da, `name:<…>` wird zu
+`n~<base64url>` — ein Name aus einem Kontoauszug darf `/`, `#`, `?` und `%`
+enthalten, und keiner davon darf eine Adresse zerbrechen.
+
+### Zustand: `FinanceViewContext`
+
+Zeitraum, Konto und Verlaufsspanne lagen bis v1.26.2 als `useState` in
+`Finanzen.jsx`. Weil `<main key={location.pathname}>` jeden Bildschirm beim
+Routenwechsel neu baut, liegt der Zustand jetzt in einem Provider **über**
+`<main>` (`src/context/FinanceViewContext.jsx`) — dasselbe Muster wie jeder
+andere modulweite Zustand der App. Übersicht → Lebensmittel → zurück zeigt also
+weiterhin „Letzte 30 Tage · DKB"; wer den Zeitraum auf einer Detailseite
+ändert, findet ihn auf der Übersicht wieder. `period = null` heißt „der
+laufende Monat", damit eine über Nacht offene App am Ersten mitspringt.
+
+Derselbe Provider löst die Buchungen **einmal** auf (`resolveAnalyticsEntries`,
+faul beim ersten Finanz-Bildschirm) und reicht sie an `buildFinanceDashboard`
+(`resolved`) und an jede Detailfunktion weiter. Zurück geht einen Schritt im
+Verlauf (direkt geöffnet: auf die Elternroute); die Scrollposition je
+Verlaufseintrag wird wiederhergestellt.
+
+### Eine Definition je Aussage
+
+`drilldown.js` filtert vor bestehenden Rechnungen und definiert nichts neu:
+Betrag über `isExpenseContribution` (seit v1.27 die eine Zeile, die vorher in
+`categories.js`, `merchants.js` und `trend.js` stand), Anteil und Aufteilung aus
+`categoryBreakdown`, Vergleich aus `financeScope` + `compare` (dieselben Regeln
+wie die KPI-Karte), Verlauf aus `trendSeries`, Top-Händler aus `topMerchants`.
+Zwei Währungen heißen auch auf einer Detailseite: keine Summe, die Buchungen
+trotzdem.
+
+### Bausteine
+
+Kategorie-, Händler- und Buchungszeile, Abschnitt und Vergleichszeile sind aus
+`Finanzen.jsx` nach `src/components/FinanceRows.jsx` gezogen, die Filterzeile
+und die Währungskarte nach `src/components/FinanceScope.jsx`. Eine Zeile mit
+`onOpen` ist ein Knopf mit Chevron (das bestehende Navigationsmuster), ohne
+bleibt sie, was sie war. `Section` nimmt eine echte Aktion (`{label, onClick}`,
+44 px Trefferfläche) statt eines Textes.
+
+Zwei kleine Korrekturen, die die neuen Layout-Messungen gefunden haben: über
+den Balken steht ab 10.000 € „14k" statt „14,3k" (fünf Zeichen kollidierten bei
+zwölf Monatsbalken), und die Prozentspalte einer Kategoriezeile bricht bei
+„100 %" nicht mehr um.
+
+### Tests
+
+`tools/financeDrilldownLogic.mjs` (Übersicht, Detail, Verlauf, Händler,
+Adressen — gegen `buildFinanceDashboard` und `categoryBreakdown` geprüft),
+`tools/financeDrilldownLayout.mjs` (390×667, 390×844, 430×844, 1280×900 mit
+langen Namen, fünfstelligen Beträgen und der echten BottomNav) und Abschnitt
+16b8 in `tools/smoke.mjs` (Übersicht → Kategorie → Unterkategorie → Händler →
+Buchungs-Sheet → zurück, mit erhaltenem Ausschnitt; direkt geöffnete Adressen).
+Die Finanz-Fenster des Smoke-Tests laufen seit v1.27 auf einer festen Uhr
+(20.09.2026, als Versatz): die Fixtures sind für diesen Tag geschrieben, und
+mit der echten Uhr war der Test ab Oktober rot, ohne dass sich etwas geändert
+hatte.
 
 ## 🎨 Design system
 
