@@ -56,3 +56,49 @@ $$;
 
 grant usage on schema auth to anon, authenticated, service_role;
 grant execute on function auth.uid() to anon, authenticated, service_role;
+
+-- Supabase Storage, as far as 0016 leans on it: the bucket table it inserts
+-- into, the object table its policies guard, and `storage.foldername()`, the
+-- helper those policies call. On Supabase all three ship with the project and
+-- `storage.objects` already has Row Level Security switched on — so it is
+-- switched on here too, or the policies would be decoration.
+create schema if not exists storage;
+
+create table if not exists storage.buckets (
+  id                  text primary key,
+  name                text not null,
+  public              boolean not null default false,
+  file_size_limit     bigint,
+  allowed_mime_types  text[],
+  created_at          timestamptz not null default now()
+);
+
+create table if not exists storage.objects (
+  id          uuid primary key default gen_random_uuid(),
+  bucket_id   text references storage.buckets (id),
+  name        text not null,
+  owner       uuid,
+  created_at  timestamptz not null default now(),
+  unique (bucket_id, name)
+);
+
+alter table storage.objects enable row level security;
+
+-- Supabase's definition: every path segment except the file name.
+create or replace function storage.foldername(name text)
+returns text[]
+language plpgsql
+immutable
+as $$
+declare
+  _parts text[];
+begin
+  select string_to_array(name, '/') into _parts;
+  return _parts[1:array_length(_parts, 1) - 1];
+end
+$$;
+
+grant usage on schema storage to anon, authenticated, service_role;
+grant select on storage.buckets to anon, authenticated, service_role;
+grant select, insert, update, delete on storage.objects to authenticated, service_role;
+grant execute on function storage.foldername(text) to anon, authenticated, service_role;
