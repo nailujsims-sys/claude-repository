@@ -1678,6 +1678,64 @@ Die Finanz-Fenster des Smoke-Tests laufen seit v1.27 auf einer festen Uhr
 mit der echten Uhr war der Test ab Oktober rot, ohne dass sich etwas geändert
 hatte.
 
+## 📈 Trading-Setups v1.28 — die Setup-Bibliothek
+
+Eine Bibliothek für Trading-Setups aus YouTube-Videos: sammeln, dokumentieren,
+filtern, durchsehen. **Kein** Journal und kein Backtesting — keine Trades,
+keine Ergebnisse, keine Statistik. Erreichbar über **Mehr → Trading-Setups**
+(`/trading-setups`); keine neue Hauptnavigation.
+
+### Daten (`0016_trading_setups.sql`)
+
+| Was | Wo |
+|---|---|
+| Setups | `trading_setups` — Name (Pflicht), Beschreibung, Session, Asset, Timeframe, Creator, YouTube-Link, Favorit, Screenshot-Pfad + Maße |
+| Assets | `trading_assets` — eigene Liste, eine Schreibweise je Asset; im Formular direkt anlegbar und danach dauerhaft da |
+| Screenshots | privater Bucket `trading-screenshots`, Pfad `<user_id>/<uuid>.<ext>`, 10 MB, PNG/JPG/WebP; die App zeigt sie über signierte URLs |
+
+RLS auf beiden Tabellen, vier Storage-Policies auf den eigenen Ordner, und eine
+Check-Constraint, die einen Screenshot-Pfad nur im Ordner des Besitzers erlaubt.
+Geprüft gegen ein echtes Postgres in `supabase/tests/trading_setups.sql`
+(inkl. Gegenproben ohne RLS auf `trading_setups` und auf `storage.objects`).
+
+### Datensicherheit beim Speichern und Löschen
+
+- **Ersetzen:** neue Datei unter neuem Namen hochladen → Zeile schreiben → erst
+  dann die alte Datei löschen. Scheitert das Schreiben, wird nur die neue Datei
+  wieder entfernt; die Zeile bleibt wie sie war.
+- **Löschen:** die Zeile sofort, die Datei erst nach dem „Rückgängig"-Fenster —
+  Rückgängig bringt das Setup **mit** Bild zurück.
+- **Aufräumen:** einmal pro Sitzung werden Dateien im eigenen Ordner entfernt,
+  auf die kein Setup mehr zeigt und die älter als 24 h sind (ein jüngeres
+  könnte ein laufendes Speichern auf einem anderen Gerät sein).
+
+### Erfassung
+
+Drag & drop und Strg+V / Cmd+V wirken auf dem **ganzen** Formular, ohne die
+Zone anzuklicken; auf der Bibliothek selbst öffnet ein eingefügter oder
+abgelegter Screenshot direkt „Neues Setup" damit. Text einfügen bleibt Text:
+steht der Cursor in einem Feld und enthält die Zwischenablage Text, gewinnt
+der Text (`screenshotFromPaste` in `src/lib/trading.js`). Ein abgelegtes File
+verlässt die App nie. Auf dem Handy öffnet die Zone die System-Auswahl
+(Fotos/Dateien). Screenshots werden nie beschnitten (`object-contain`).
+
+### Laden auf Abruf
+
+`TradingContext` lädt erst, wenn das Modul geöffnet wird — ein App-Start
+kostet für ein selten genutztes Modul keine Anfrage und keinen Kanal.
+
+### Tests
+
+`tools/tradingLogic.mjs` (Datei-Prüfung, Paste-Regel, YouTube-Links mit
+Zeitstempel, Filter/Suche/Favoriten kombiniert, Assets, Waisen-Erkennung,
+Repository-Scoping) · `tools/smoke.mjs` Abschnitt 17 (Drop, Paste, Ersetzen,
+Entfernen, neues Asset, Erstellen/Bearbeiten/Löschen mit Rückgängig, Filter,
+Reload, fehlgeschlagenes Speichern ohne Rückstände, Aufräumen, Einstieg über
+/mehr) · `supabase/tests/trading_setups.sql` über `npm run test:rls`.
+
+**Einmalig in Supabase:** `0016_trading_setups.sql` im SQL Editor ausführen
+(legt auch den Bucket an).
+
 ## 🎨 Design system
 
 The binding product-design standard (visual, UX, interaction, motion,

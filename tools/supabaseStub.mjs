@@ -174,6 +174,36 @@ export function expenseRow(data = {}) {
   }
 }
 
+export function tradingSetupRow(data = {}) {
+  return {
+    id: data.id ?? randomUUID(),
+    user_id: data.user_id ?? TEST_USER_ID,
+    name: data.name ?? '',
+    description: data.description ?? null,
+    session: data.session ?? null,
+    asset_id: data.asset_id ?? null,
+    timeframe: data.timeframe ?? null,
+    creator: data.creator ?? null,
+    youtube_url: data.youtube_url ?? null,
+    is_favorite: data.is_favorite ?? false,
+    screenshot_path: data.screenshot_path ?? null,
+    screenshot_width: data.screenshot_width ?? null,
+    screenshot_height: data.screenshot_height ?? null,
+    created_at: data.created_at ?? nowIso(),
+    updated_at: data.updated_at ?? nowIso(),
+  }
+}
+
+export function tradingAssetRow(data = {}) {
+  return {
+    id: data.id ?? randomUUID(),
+    user_id: data.user_id ?? TEST_USER_ID,
+    name: data.name ?? '',
+    created_at: data.created_at ?? nowIso(),
+    updated_at: data.updated_at ?? nowIso(),
+  }
+}
+
 // The finance tables. One factory for all eight: unlike tasks or events these
 // rows have no defaults worth emulating — what a test puts in is what the
 // engine has to work with, and inventing a column here would be inventing a
@@ -319,6 +349,11 @@ export function makeBackend({
   // answer it too — otherwise every Ausgaben test would silently be testing the
   // failure path. `exchangeRate: null` IS that failure path, on request.
   exchangeRate = 0.6,
+  // Trading-Setups (0016): the two tables, and the private screenshot bucket as
+  // `{ '<user_id>/<file>': { created_at, size, contentType } }`.
+  tradingSetups = [],
+  tradingAssets = [],
+  storageObjects = {},
 } = {}) {
   const tables = {
     tasks: tasks.map(taskRow),
@@ -328,6 +363,8 @@ export function makeBackend({
     lists: lists.map(listRow),
     list_items: listItems.map(listItemRow),
     expenses: expenses.map(expenseRow),
+    trading_setups: tradingSetups.map(tradingSetupRow),
+    trading_assets: tradingAssets.map(tradingAssetRow),
     ...Object.fromEntries(
       FINANCE_TABLES.map((name) => [name, (finance[name] ?? []).map(financeRow)])
     ),
@@ -342,6 +379,15 @@ export function makeBackend({
   const functionCalls = []
   const rpcCalls = []
   const rateCalls = []
+  // Supabase Storage, one bucket deep: path → object. `storageCalls` is what
+  // the assertions read.
+  const storage = new Map(
+    Object.entries(storageObjects).map(([path, o]) => [
+      path,
+      { created_at: o.created_at ?? nowIso(), size: o.size ?? 1000, contentType: o.contentType ?? 'image/png' },
+    ])
+  )
+  const storageCalls = []
   const auth = { session: makeSession(), signedOut: false, recoverEmails: [], newPasswords: [] }
 
   async function fetchStub(input, init = {}) {
@@ -412,6 +458,64 @@ export function makeBackend({
       }
 
       return json({ error: 'auth endpoint not stubbed', path: url.pathname }, 501)
+    }
+
+    // ── Storage ───────────────────────────────────────────────────────────
+    // The four calls the Trading-Setups module makes through storage-js:
+    // upload, sign, list, remove. Strict about the same two things the real
+    // storage policies are (0016): no credentials, no access — and a user only
+    // ever reaches their own folder.
+    if (url.pathname.startsWith('/storage/v1/')) {
+      if (!headers.get('authorization')) return json({ message: 'Nicht angemeldet.' }, 401)
+      const rest = decodeURIComponent(url.pathname.replace('/storage/v1/', ''))
+      const own = (path) => String(path).split('/')[0] === TEST_USER_ID
+      const BUCKET = 'trading-screenshots'
+
+      if (state.failStorage) {
+        storageCalls.push({ op: 'failed', path: rest })
+        return json({ statusCode: '500', error: 'Storage nicht erreichbar (Test)', message: 'Storage nicht erreichbar (Test)' }, 500)
+      }
+
+      if (method === 'POST' && rest === `object/sign/${BUCKET}`) {
+        const paths = recorded?.paths ?? []
+        storageCalls.push({ op: 'sign', paths })
+        return json(paths.map((path) =>
+          storage.has(path) && own(path)
+            ? { path, signedURL: `/object/sign/${BUCKET}/${path}?token=signed-${path.length}`, error: null }
+            : { path, signedURL: null, error: 'Object not found' }
+        ))
+      }
+
+      if (method === 'POST' && rest === `object/list/${BUCKET}`) {
+        const prefix = String(recorded?.prefix ?? '')
+        storageCalls.push({ op: 'list', prefix })
+        if (!own(prefix)) return json([])
+        const out = []
+        for (const [path, o] of storage) {
+          if (!path.startsWith(`${prefix}/`)) continue
+          out.push({ name: path.slice(prefix.length + 1), id: `obj-${path}`, created_at: o.created_at, metadata: { size: o.size, mimetype: o.contentType } })
+        }
+        return json(out)
+      }
+
+      if (method === 'DELETE' && rest === `object/${BUCKET}`) {
+        const prefixes = recorded?.prefixes ?? []
+        storageCalls.push({ op: 'remove', paths: prefixes })
+        const removed = prefixes.filter((p) => own(p) && storage.delete(p))
+        return json(removed.map((name) => ({ name, bucket_id: BUCKET })))
+      }
+
+      if (method === 'POST' && rest.startsWith(`object/${BUCKET}/`)) {
+        const path = rest.slice(`object/${BUCKET}/`.length)
+        if (!own(path)) return json({ statusCode: '403', error: 'Unauthorized', message: 'new row violates row-level security policy' }, 400)
+        if (storage.has(path)) return json({ statusCode: '409', error: 'Duplicate', message: 'The resource already exists' }, 400)
+        const file = typeof init.body?.get === 'function' ? init.body.get('') : null
+        storage.set(path, { created_at: nowIso(), size: file?.size ?? 0, contentType: file?.type ?? '' })
+        storageCalls.push({ op: 'upload', path, size: file?.size ?? 0, contentType: file?.type ?? '' })
+        return json({ Key: `${BUCKET}/${path}`, Id: randomUUID() })
+      }
+
+      return json({ message: `storage endpoint not stubbed: ${method} ${rest}` }, 501)
     }
 
     // ── Edge Functions ────────────────────────────────────────────────────
@@ -520,6 +624,8 @@ export function makeBackend({
           lists: listRow,
           list_items: listItemRow,
           expenses: expenseRow,
+          trading_setups: tradingSetupRow,
+          trading_assets: tradingAssetRow,
           ...Object.fromEntries(FINANCE_TABLES.map((name) => [name, financeRow])),
         }[table] ?? taskRow
       // An UPSERT is a POST with `Prefer: resolution=merge-duplicates` and the
@@ -1068,11 +1174,18 @@ export function makeBackend({
 
   const backend = {
     fetch: fetchStub, tables, calls, functionCalls, rpcCalls, rateCalls, auth,
-    session: auth.session,
+    session: auth.session, storage, storageCalls,
   }
   Object.defineProperty(backend, 'failTable', {
     get: () => state.failTable,
     set: (value) => { state.failTable = value },
+    enumerable: true,
+  })
+  // Same idea for the bucket: `backend.failStorage = true` makes every storage
+  // call answer 500 until it is switched off again.
+  Object.defineProperty(backend, 'failStorage', {
+    get: () => Boolean(state.failStorage),
+    set: (value) => { state.failStorage = value },
     enumerable: true,
   })
   return backend

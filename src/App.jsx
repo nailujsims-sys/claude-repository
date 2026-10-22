@@ -10,6 +10,7 @@ import { ExpensesProvider } from './context/ExpensesContext'
 import { FinanceProvider } from './context/FinanceContext'
 import { FinanceViewProvider } from './context/FinanceViewContext'
 import { GoogleProvider } from './context/GoogleContext'
+import { TradingProvider } from './context/TradingContext'
 
 import BottomNav from './components/BottomNav'
 import Sidebar from './components/Sidebar'
@@ -25,6 +26,8 @@ import FinanceClassifySheet from './components/FinanceClassifySheet'
 import FinanceExclusionsSheet from './components/FinanceExclusionsSheet'
 import FinanceImportSheet from './components/FinanceImportSheet'
 import FinanceManualSheet from './components/FinanceManualSheet'
+import TradingSetupDetail from './components/trading/TradingSetupDetail'
+import TradingSetupForm from './components/trading/TradingSetupForm'
 import ToastHost from './components/ToastHost'
 import ErrorBanner from './components/ErrorBanner'
 
@@ -42,6 +45,7 @@ import CategoryDetail from './screens/finance/CategoryDetail'
 import MerchantOverview from './screens/finance/MerchantOverview'
 import MerchantDetail from './screens/finance/MerchantDetail'
 import UnassignedDetail from './screens/finance/UnassignedDetail'
+import TradingSetups from './screens/TradingSetups'
 import Mehr from './screens/Mehr'
 import Profil from './screens/Profil'
 import ProfilGoogle from './screens/ProfilGoogle'
@@ -116,7 +120,12 @@ function Gate() {
                     Drilldown beim Zurück, worüber er geredet hat. */}
                 <FinanceViewProvider>
                   <GoogleProvider>
-                    <AppShell />
+                    {/* Lädt erst, wenn das Modul geöffnet wird — siehe
+                        TradingContext. Eingehängt wie alle anderen, damit
+                        Formular und Detail-Sheet global bleiben. */}
+                    <TradingProvider>
+                      <AppShell />
+                    </TradingProvider>
                   </GoogleProvider>
                 </FinanceViewProvider>
               </FinanceProvider>
@@ -158,6 +167,7 @@ function AppShell() {
           <Route path="/finanzen/nicht-zugeordnet" element={<UnassignedDetail />} />
           <Route path="/finanzen/haendler" element={<MerchantOverview />} />
           <Route path="/finanzen/haendler/:merchantKey" element={<MerchantDetail />} />
+          <Route path="/trading-setups" element={<TradingSetups />} />
           <Route path="/mehr" element={<Mehr />} />
           <Route path="/profil" element={<Profil />} />
           <Route path="/profil/google-kalender" element={<ProfilGoogle />} />
@@ -183,6 +193,10 @@ function AppShell() {
       <FinanceClassifySheet />
       <FinanceExclusionsSheet />
       <FinanceAccountsSheet />
+      {/* Detail before form: the edit form opens over the detail sheet, and
+          two overlays on the same z-layer stack in DOM order. */}
+      <TradingSetupDetail />
+      <TradingSetupForm />
       <ToastHost />
     </div>
   )

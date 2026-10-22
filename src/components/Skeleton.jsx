@@ -66,3 +66,22 @@ export function SkeletonListOverview() {
     </div>
   )
 }
+
+// The Trading-Setups library: cards in the shape TradingSetupCard renders — a
+// 16:10 picture and a two-line caption — so the placeholder has the shape of
+// what replaces it.
+export function SkeletonSetupGallery() {
+  return (
+    <div className="space-y-3" aria-hidden>
+      {[0, 1].map((card) => (
+        <div key={card} className="overflow-hidden rounded-card bg-bg-card">
+          <div className="skeleton-shimmer aspect-[16/10] w-full bg-bg-elevated" />
+          <div className="space-y-2 px-4 py-3.5">
+            <SkeletonLine className="h-3.5 w-1/2" />
+            <SkeletonLine className="h-2.5 w-1/3" />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}

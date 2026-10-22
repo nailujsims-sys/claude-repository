@@ -169,6 +169,8 @@ try {
     // Relationen. Ohne beide Namen bliebe ein stillgelegter Block unbemerkt.
     { file: 'supabase/tests/finance_data_control.sql',
       marker: ['DATA: all assertions passed', 'DATA-REL: all assertions passed'] },
+    // 0016: Tabellen UND Storage-Policies der Trading-Setups.
+    { file: 'supabase/tests/trading_setups.sql', marker: 'TRADING: all assertions passed' },
   ]
 
   for (const suite of suites) {
@@ -193,6 +195,10 @@ try {
     { table: 'public.finance_transaction_relations', file: 'supabase/tests/finance_import.sql' },
     { table: 'public.finance_transaction_observation_sightings', file: 'supabase/tests/finance_import.sql' },
     { table: 'public.finance_import_review_item_transactions', file: 'supabase/tests/finance_import.sql' },
+    { table: 'public.trading_setups', file: 'supabase/tests/trading_setups.sql' },
+    // The screenshots are guarded by policies on a table this project does not
+    // own — so the control proves the suite would notice them missing too.
+    { table: 'storage.objects', file: 'supabase/tests/trading_setups.sql' },
   ]
   for (const { table, file } of controls) {
     psql(['-c', `alter table ${table} disable row level security`])

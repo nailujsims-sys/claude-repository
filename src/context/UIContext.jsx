@@ -45,6 +45,14 @@ export function UIProvider({ children }) {
   // wird: sie ist ein Overlay über dem ganzen Rahmen, und ein Overlay, das ein
   // Screen selbst mountet, verschwindet mit dem Screen.
   const [financeAccounts, setFinanceAccounts] = useState(null)
+  // tradingForm: null | { mode: 'create' | 'edit', setupId?: string, file?: File }
+  // `file` pre-fills a create with a screenshot pasted or dropped onto the
+  // library itself, so capturing one is a single gesture.
+  const [tradingForm, setTradingForm] = useState(null)
+  // tradingDetail: null | { setupId: string } — the full view of one setup.
+  // Both are global for the reason the finance sheets are: an overlay a screen
+  // mounts itself disappears with the screen.
+  const [tradingDetail, setTradingDetail] = useState(null)
 
   const value = useMemo(
     () => ({
@@ -93,10 +101,17 @@ export function UIProvider({ children }) {
       financeAccounts,
       openFinanceAccounts: () => setFinanceAccounts(true),
       closeFinanceAccounts: () => setFinanceAccounts(null),
+
+      tradingForm,
+      openTradingForm: (opts = { mode: 'create' }) => setTradingForm(opts),
+      closeTradingForm: () => setTradingForm(null),
+      tradingDetail,
+      openTradingDetail: (setupId) => setTradingDetail({ setupId }),
+      closeTradingDetail: () => setTradingDetail(null),
     }),
     [sidebarOpen, actionSheetOpen, taskForm, eventForm, listForm, expenseForm, financeImport,
      financeAdd, financeManual, financeAiImport, financeClassify, financeExclusions,
-     financeAccounts]
+     financeAccounts, tradingForm, tradingDetail]
   )
 
   return <UIContext.Provider value={value}>{children}</UIContext.Provider>

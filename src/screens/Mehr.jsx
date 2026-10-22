@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { Lock, Info, ChevronRight, Landmark, ListChecks, Wallet } from 'lucide-react'
+import { Lock, Info, ChevronRight, Landmark, ListChecks, Wallet, CandlestickChart } from 'lucide-react'
 import TopBar from '../components/TopBar'
 import { futureModules } from '../config/navigation'
 
@@ -42,6 +42,17 @@ export default function Mehr() {
             <Landmark size={18} />
           </span>
           <span className="flex-1 text-body font-medium text-text-primary">Finanzen</span>
+          <ChevronRight size={18} className="text-text-muted" />
+        </Link>
+
+        <Link
+          to="/trading-setups"
+          className="press-tint mt-3 flex items-center gap-3 rounded-card border border-subtle bg-bg-card px-4 py-4"
+        >
+          <span className="grid h-9 w-9 place-items-center rounded-btn bg-bg-elevated text-text-secondary">
+            <CandlestickChart size={18} />
+          </span>
+          <span className="flex-1 text-body font-medium text-text-primary">Trading-Setups</span>
           <ChevronRight size={18} className="text-text-muted" />
         </Link>
 

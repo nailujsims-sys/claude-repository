@@ -107,6 +107,10 @@ function makeDom(hash, seed = {}, options = {}) {
       // `exchangeRate: null` is the "Kursabfrage fehlgeschlagen" case.
       exchangeRate: seed.exchangeRate === undefined ? 0.6 : seed.exchangeRate,
       functions: seed.functions ?? {},
+      // Trading-Setups: empty unless a test seeds them — a new account.
+      tradingSetups: seed.tradingSetups ?? [],
+      tradingAssets: seed.tradingAssets ?? [],
+      storageObjects: seed.storageObjects ?? {},
       password: TEST_PASSWORD,
       failTable: seed.failTable ?? null,
       // Every committed row change is announced to the Realtime hub, the way
@@ -265,6 +269,7 @@ async function run() {
     ['Ausgaben (/ausgaben)', '#/ausgaben'],
     ['Finanzen (/finanzen)', '#/finanzen'],
     ['Mehr (/mehr)', '#/mehr'],
+    ['Trading-Setups (/trading-setups)', '#/trading-setups'],
     ['Version (/version)', '#/version'],
     ['Kalender (/kalender)', '#/kalender'],
   ]) {
@@ -328,6 +333,7 @@ async function run() {
         'Ausgaben (/ausgaben)': 'Ausgaben',
         'Finanzen (/finanzen)': 'Finanzen',
         'Mehr (/mehr)': 'Mehr',
+        'Trading-Setups (/trading-setups)': 'Trading-Setups',
         'Version (/version)': 'Version',
         'Kalender (/kalender)': 'Kalender',
       }[name]
@@ -5583,6 +5589,438 @@ async function run() {
       if (!manual.includes('DKB Girokonto'))
         errors.push(`[${label}] das aktive Konto fehlt in der manuellen Buchung`)
       window.__restoreConsole?.()
+    }
+  }
+
+  // ── 17) Trading-Setups ─────────────────────────────────────────────────
+  // The module's productive paths, end to end against the stubbed Supabase
+  // (tables AND the private bucket): capture by drop and by paste, refusing a
+  // wrong file, a new asset that stays, edit with replace and remove, delete
+  // with an honest undo, filters + search + favourites combined, a reload, a
+  // failed save that leaves nothing behind, and the way in via /mehr.
+  //
+  // jsdom has no clipboard, no drag & drop and no object URLs, so the events
+  // are built by hand with the same shape the browser hands over — the app
+  // reads them duck-typed (src/lib/trading.js), so this is the real code path.
+  {
+    const T = 'Trading'
+    const own = (name) => `${TEST_USER_ID}/${name}`
+    const pngBytes = (n = 4096) => new Uint8Array(n)
+    const makeFile = (window, name, type, size = 4096) => new window.File([pngBytes(size)], name, { type })
+    const transfer = (files, text = '') => ({
+      items: files.map((f) => ({ kind: 'file', type: f.type, getAsFile: () => f })),
+      files,
+      types: [...(files.length ? ['Files'] : []), ...(text ? ['text/plain'] : [])],
+      getData: (t) => (t === 'text/plain' ? text : ''),
+      dropEffect: 'none',
+    })
+    const fire = (window, target, type, prop, data) => {
+      const e = new window.Event(type, { bubbles: true, cancelable: true })
+      Object.defineProperty(e, prop, { value: data })
+      target.dispatchEvent(e)
+      return e
+    }
+    const dropFile = (window, file) => {
+      const doc = window.document
+      fire(window, doc.body, 'dragenter', 'dataTransfer', transfer([file]))
+      fire(window, doc.body, 'dragover', 'dataTransfer', transfer([file]))
+      return fire(window, doc.body, 'drop', 'dataTransfer', transfer([file]))
+    }
+    const pasteInto = (window, target, files, text = '') =>
+      fire(window, target, 'paste', 'clipboardData', transfer(files, text))
+    const tradingDom = (seed = {}, options = {}) => {
+      const window = makeDom('#/trading-setups', seed, options)
+      let n = 0
+      window.URL.createObjectURL = () => `blob:http://localhost/preview-${++n}`
+      window.URL.revokeObjectURL = () => {}
+      return window
+    }
+    const preview = (window) => window.document.querySelector('img[alt="Vorschau des Screenshots"]')
+    const formOpen = (window) => Boolean(window.document.querySelector('[data-trading-form]'))
+    const byLabel = (label) => (el) => el.getAttribute?.('aria-label') === label
+    const byText = (t) => (el) => el.textContent.trim() === t
+
+    // a) Mehr has the entry; it leads to the library.
+    {
+      const window = makeDom('#/mehr')
+      mount(window, code, `${T}/Mehr`)
+      await wait(300)
+      window.__restoreConsole?.()
+      const link = [...window.document.querySelectorAll('a')].find((a) => a.textContent.includes('Trading-Setups'))
+      if (!link) errors.push(`[${T}] /mehr has no "Trading-Setups" entry`)
+      else if (link.getAttribute('href') !== '#/trading-setups')
+        errors.push(`[${T}] the /mehr entry points at ${link.getAttribute('href')}`)
+      for (const other of ['Listen', 'Ausgaben', 'Finanzen', 'Version', 'Demnächst'])
+        if (!txt(window).includes(other)) errors.push(`[${T}] /mehr lost "${other}"`)
+      // No new main navigation: the bottom bar and the sidebar are unchanged.
+      const nav = [...window.document.querySelectorAll('nav a, nav button')].map((el) => el.textContent.trim())
+      if (nav.some((t) => t.includes('Trading')))
+        errors.push(`[${T}] the module showed up in the bottom bar`)
+      click(window, byLabel('Menü öffnen'))
+      await wait(320)
+      if (txt(window).includes('Trading-Setups') && [...window.document.querySelectorAll('[role="dialog"] a, [role="dialog"] button')]
+        .some((el) => el.textContent.includes('Trading')))
+        errors.push(`[${T}] the module showed up in the sidebar`)
+    }
+
+    // b) Empty library loads lazily: nothing is requested before the module opens.
+    {
+      const home = makeDom('#/')
+      mount(home, code, `${T}/Lazy`)
+      await wait(400)
+      home.__restoreConsole?.()
+      if (home.__backend.calls.some((c) => c.path.includes('trading_')))
+        errors.push(`[${T}] the module loaded its data on app start`)
+      if (home.__backend.storageCalls.length)
+        errors.push(`[${T}] the module touched storage on app start`)
+    }
+
+    // c) Create: drop a screenshot, fill every field, new asset, save.
+    {
+      const window = tradingDom()
+      mount(window, code, `${T}/Neu`)
+      await wait(350)
+      if (!txt(window).includes('Noch keine Setups')) errors.push(`[${T}/Neu] no empty state`)
+      if (!click(window, byText('Neues Setup'))) errors.push(`[${T}/Neu] "Neues Setup" not clickable`)
+      await wait(330)
+      if (!formOpen(window)) errors.push(`[${T}/Neu] the form did not open`)
+      if (!window.document.querySelector('[data-drop-zone]')) errors.push(`[${T}/Neu] no drop zone`)
+      const fileInput = window.document.querySelector('input[data-screenshot-input]')
+      if (!fileInput || fileInput.getAttribute('accept') !== 'image/png,image/jpeg,image/webp')
+        errors.push(`[${T}/Neu] the file picker does not offer PNG/JPG/WebP: ${fileInput?.getAttribute('accept')}`)
+      if (fileInput?.hasAttribute('capture'))
+        errors.push(`[${T}/Neu] the file picker forces the camera on phones`)
+
+      const drop = dropFile(window, makeFile(window, 'chart.png', 'image/png'))
+      await wait(60)
+      if (!drop.defaultPrevented) errors.push(`[${T}/Neu] a dropped file was left to the browser (would leave the app)`)
+      if (!preview(window)) errors.push(`[${T}/Neu] no preview after dropping a screenshot`)
+      if (preview(window) && !/object-contain/.test(preview(window).className))
+        errors.push(`[${T}/Neu] the preview crops the screenshot`)
+      if (!txt(window).includes('Ersetzen') || !txt(window).includes('Entfernen'))
+        errors.push(`[${T}/Neu] no "Ersetzen"/"Entfernen" under the preview`)
+
+      typeInto(window, 'input[aria-label="Setup-Name"]', 'London Breakout')
+      typeInto(window, 'textarea[aria-label="Kurzbeschreibung"]', 'FVG nach dem Asia-Range')
+      await wait(40)
+      click(window, (el) => el.closest('[aria-label="Session"]') && el.textContent.trim() === 'London')
+      // No assets yet → the new-asset field is offered directly.
+      if (!typeInto(window, 'input[aria-label="Neues Asset"]', 'NQ')) errors.push(`[${T}/Neu] no field for a new asset`)
+      await wait(40)
+      click(window, byText('Anlegen'))
+      await wait(150)
+      const nq = window.__backend.tables.trading_assets.find((a) => a.name === 'NQ')
+      if (!nq) errors.push(`[${T}/Neu] the new asset was not stored`)
+      const nqChip = [...window.document.querySelectorAll('button[aria-pressed]')].find((b) => b.textContent.trim() === 'NQ')
+      if (nqChip?.getAttribute('aria-pressed') !== 'true') errors.push(`[${T}/Neu] the new asset is not selected`)
+      click(window, (el) => el.closest('[aria-label="Timeframe"]') && el.textContent.trim() === '15m')
+      typeInto(window, 'input[aria-label="Creator / Trader"]', 'ICT')
+      typeInto(window, 'input[aria-label="YouTube-Link"]', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+      await wait(40)
+      typeInto(window, 'input[aria-label="YouTube-Link"]', 'youtu.be/dQw4w9WgX')
+      await wait(40)
+      typeInto(window, 'input[aria-label="YouTube-Link"]', 'https://vimeo.com/1')
+      await wait(40)
+      if (!txt(window).includes('Das ist kein YouTube-Link.')) errors.push(`[${T}/Neu] a non-YouTube link is not flagged`)
+      const blocked = [...window.document.querySelectorAll('button')].find(byText('Erstellen'))
+      if (!blocked?.disabled) errors.push(`[${T}/Neu] saving is possible with an invalid link`)
+      typeInto(window, 'input[aria-label="YouTube-Link"]', 'https://youtu.be/dQw4w9WgXcQ?t=754')
+      await wait(40)
+      if (!txt(window).includes('Startet bei 12:34')) errors.push(`[${T}/Neu] the timestamp is not read: ${txt(window).slice(0, 300)}`)
+      click(window, byText('Als Favorit markieren'))
+      await wait(40)
+      click(window, byText('Erstellen'))
+      await wait(450)
+      window.__restoreConsole?.()
+
+      const row = window.__backend.tables.trading_setups[0]
+      if (!row) errors.push(`[${T}/Neu] the setup never reached the database`)
+      else {
+        const expect = { name: 'London Breakout', description: 'FVG nach dem Asia-Range', session: 'london',
+          asset_id: nq?.id, timeframe: '15m', creator: 'ICT', youtube_url: 'https://youtu.be/dQw4w9WgXcQ?t=754', is_favorite: true }
+        for (const [k, v] of Object.entries(expect))
+          if (row[k] !== v) errors.push(`[${T}/Neu] ${k} stored as ${JSON.stringify(row[k])}, expected ${JSON.stringify(v)}`)
+        if (!row.screenshot_path?.startsWith(`${TEST_USER_ID}/`) || !row.screenshot_path.endsWith('.png'))
+          errors.push(`[${T}/Neu] the screenshot path is not in the user's folder: ${row.screenshot_path}`)
+        const up = window.__backend.storageCalls.find((c) => c.op === 'upload')
+        if (!up || up.path !== row.screenshot_path || up.contentType !== 'image/png' || up.size !== 4096)
+          errors.push(`[${T}/Neu] the screenshot upload does not match the row: ${JSON.stringify(up)}`)
+      }
+      if (formOpen(window) && window.document.querySelector('[data-trading-form]')?.closest('[data-phase="open"]'))
+        errors.push(`[${T}/Neu] the form stayed open after saving`)
+      const text = txt(window)
+      if (!text.includes('Setup gespeichert')) errors.push(`[${T}/Neu] no confirmation toast`)
+      if (!text.includes('London Breakout') || !text.includes('NQ · London · 15m'))
+        errors.push(`[${T}/Neu] the card does not show name, asset, session, timeframe: ${text.slice(0, 300)}`)
+      const img = window.document.querySelector('[data-setup-card] img')
+      if (!img || !img.getAttribute('src').includes('/storage/v1/object/sign/trading-screenshots/'))
+        errors.push(`[${T}/Neu] the card does not show the signed screenshot: ${img?.getAttribute('src')}`)
+      if (img && !/object-contain/.test(img.className)) errors.push(`[${T}/Neu] the card crops the screenshot`)
+      const star = window.document.querySelector('[data-setup-card] button[aria-pressed="true"][aria-label="Favorit entfernen"]')
+      if (!star) errors.push(`[${T}/Neu] the card has no active favourite star`)
+
+      // Reload: same backend, new window.
+      const reloaded = tradingDom({}, { backend: window.__backend })
+      mount(reloaded, code, `${T}/Reload`)
+      await wait(450)
+      reloaded.__restoreConsole?.()
+      const again = txt(reloaded)
+      if (!again.includes('London Breakout') || !again.includes('NQ · London · 15m'))
+        errors.push(`[${T}/Reload] the setup did not survive a reload`)
+      // The asset stays available for the next setup.
+      click(reloaded, byText('Neues Setup'))
+      await wait(330)
+      if (![...reloaded.document.querySelectorAll('[data-trading-form] button')].some(byText('NQ')))
+        errors.push(`[${T}/Reload] the created asset is not offered in a new setup`)
+    }
+
+    // d) Paste: text stays text, an image becomes the screenshot.
+    {
+      const window = tradingDom()
+      mount(window, code, `${T}/Paste`)
+      await wait(350)
+      click(window, byText('Neues Setup'))
+      await wait(330)
+      const name = window.document.querySelector('input[aria-label="Setup-Name"]')
+      name.focus()
+      const textPaste = pasteInto(window, name, [], 'London Breakout')
+      await wait(40)
+      if (textPaste.defaultPrevented) errors.push(`[${T}/Paste] pasting text into a field was intercepted`)
+      if (preview(window)) errors.push(`[${T}/Paste] a text paste produced a screenshot`)
+      const mixed = pasteInto(window, name, [makeFile(window, 'image.png', 'image/png')], 'Bildtitel')
+      await wait(40)
+      if (mixed.defaultPrevented || preview(window))
+        errors.push(`[${T}/Paste] text+image pasted into a field did not leave the text to the field`)
+      // Cmd/Ctrl+V of a screenshot while the name field has focus: the clipboard
+      // holds only the image, so it is the screenshot — no click on the zone.
+      const imagePaste = pasteInto(window, name, [makeFile(window, 'image.png', 'image/png')])
+      await wait(60)
+      if (!imagePaste.defaultPrevented || !preview(window))
+        errors.push(`[${T}/Paste] a pasted screenshot was not taken`)
+      const first = preview(window)?.getAttribute('src')
+      // Pasting again replaces it.
+      pasteInto(window, window.document.body, [makeFile(window, 'image2.webp', 'image/webp')])
+      await wait(60)
+      if (!preview(window) || preview(window).getAttribute('src') === first)
+        errors.push(`[${T}/Paste] a second paste did not replace the screenshot`)
+      click(window, byText('Entfernen'))
+      await wait(60)
+      if (preview(window)) errors.push(`[${T}/Paste] "Entfernen" left the preview`)
+      if (!window.document.querySelector('[data-drop-zone]')) errors.push(`[${T}/Paste] the drop zone did not come back`)
+
+      // Wrong format and too big: refused with a sentence, the slot stays as it was.
+      dropFile(window, makeFile(window, 'chart.gif', 'image/gif'))
+      await wait(60)
+      if (!txt(window).includes('Erlaubt sind PNG, JPG und WebP')) errors.push(`[${T}/Paste] a GIF was not refused clearly`)
+      if (preview(window)) errors.push(`[${T}/Paste] a GIF became the screenshot`)
+      dropFile(window, makeFile(window, 'huge.png', 'image/png', 11 * 1024 * 1024))
+      await wait(60)
+      if (!txt(window).includes('Der Screenshot ist zu groß (11 MB)')) errors.push(`[${T}/Paste] an 11 MB file was not refused clearly: ${txt(window).slice(0, 260)}`)
+      if (preview(window)) errors.push(`[${T}/Paste] an oversized file became the screenshot`)
+      window.__restoreConsole?.()
+
+      // Pasting a screenshot onto the library itself opens a new setup with it.
+      click(window, byLabel('Schließen'))
+      await wait(360)
+      pasteInto(window, window.document.body, [makeFile(window, 'image.png', 'image/png')])
+      await wait(360)
+      if (!formOpen(window) || !preview(window))
+        errors.push(`[${T}/Paste] a screenshot pasted on the library did not open a new setup with it`)
+      // A text paste into the library's search stays a search.
+      click(window, byLabel('Schließen'))
+      await wait(360)
+    }
+
+    // A seeded library for the remaining sections.
+    const seedLibrary = () => ({
+      tradingAssets: [
+        { id: 'asset-nq', name: 'NQ' },
+        { id: 'asset-eu', name: 'EURUSD' },
+      ],
+      tradingSetups: [
+        { id: 's-1', name: 'London Breakout', description: 'FVG nach dem Asia-Range', session: 'london',
+          asset_id: 'asset-nq', timeframe: '15m', is_favorite: true, creator: 'ICT',
+          youtube_url: 'https://youtu.be/dQw4w9WgXcQ?t=754', screenshot_path: own('old.png'),
+          screenshot_width: 1600, screenshot_height: 900, created_at: '2026-10-04T10:00:00.000Z' },
+        { id: 's-2', name: 'NY Open Reversal', description: 'Liquidity Sweep am Open', session: 'new_york',
+          asset_id: 'asset-nq', timeframe: '5m', created_at: '2026-10-03T10:00:00.000Z' },
+        { id: 's-3', name: 'Asia Range Fade', session: 'asia', asset_id: 'asset-eu', timeframe: '1h',
+          is_favorite: true, created_at: '2026-10-02T10:00:00.000Z' },
+        { id: 's-4', name: 'Ohne Angaben', created_at: '2026-10-01T10:00:00.000Z' },
+      ],
+      storageObjects: { [own('old.png')]: { created_at: '2026-10-04T10:00:00.000Z' } },
+    })
+    const cards = (window) => [...window.document.querySelectorAll('[data-setup-card]')].map((c) => c.getAttribute('data-setup-card')).join(',')
+
+    // e) Filters, search and favourites, combined.
+    {
+      const window = tradingDom(seedLibrary())
+      mount(window, code, `${T}/Filter`)
+      await wait(450)
+      window.__restoreConsole?.()
+      if (cards(window) !== 's-1,s-2,s-3,s-4') errors.push(`[${T}/Filter] not all setups, newest first: ${cards(window)}`)
+      // nb(): the library writes "New York" with a non-breaking space so the
+      // segment never wraps.
+      const seg = (label) => click(window, (el) => el.closest('[aria-label="Session"]') && nb(el.textContent.trim()) === label)
+      seg('London'); await wait(60)
+      if (cards(window) !== 's-1') errors.push(`[${T}/Filter] London shows ${cards(window)}`)
+      seg('Alle'); await wait(60)
+      click(window, (el) => el.closest('[aria-label="Filter"]') && el.textContent.trim() === 'NQ'); await wait(60)
+      if (cards(window) !== 's-1,s-2') errors.push(`[${T}/Filter] asset NQ shows ${cards(window)}`)
+      click(window, (el) => el.closest('[aria-label="Filter"]') && el.textContent.trim() === 'Favoriten'); await wait(60)
+      if (cards(window) !== 's-1') errors.push(`[${T}/Filter] NQ + favourites shows ${cards(window)}`)
+      if (!txt(window).includes('1 von 4 Setups')) errors.push(`[${T}/Filter] no "1 von 4" count`)
+      seg('New York'); await wait(60)
+      if (cards(window) !== '' || !txt(window).includes('Keine passenden Setups'))
+        errors.push(`[${T}/Filter] NY + NQ + favourites is not empty with a hint`)
+      click(window, byText('Filter zurücksetzen')); await wait(60)
+      if (cards(window) !== 's-1,s-2,s-3,s-4') errors.push(`[${T}/Filter] reset did not show everything`)
+      typeInto(window, 'input[aria-label="Setups durchsuchen"]', 'sweep'); await wait(60)
+      if (cards(window) !== 's-2') errors.push(`[${T}/Filter] searching the description shows ${cards(window)}`)
+      typeInto(window, 'input[aria-label="Setups durchsuchen"]', 'asia'); await wait(60)
+      if (cards(window) !== 's-1,s-3') errors.push(`[${T}/Filter] "asia" (name or description) shows ${cards(window)}`)
+      click(window, (el) => el.closest('[aria-label="Filter"]') && el.textContent.trim() === 'Favoriten'); await wait(60)
+      seg('Asia'); await wait(60)
+      if (cards(window) !== 's-3') errors.push(`[${T}/Filter] search + favourites + session shows ${cards(window)}`)
+      // The star on a card toggles the favourite without opening the detail.
+      click(window, byText('Filter zurücksetzen')); await wait(60)
+      const star = window.document.querySelector('[data-setup-card="s-2"] button[aria-label="Als Favorit markieren"]')
+      star?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+      await wait(200)
+      if (!window.__backend.tables.trading_setups.find((s) => s.id === 's-2')?.is_favorite)
+        errors.push(`[${T}/Filter] the card's star did not store the favourite`)
+      if (window.document.querySelector('[data-trading-detail]')) errors.push(`[${T}/Filter] the star opened the detail`)
+    }
+
+    // f) Detail, then edit: replace the screenshot, then remove it.
+    {
+      const window = tradingDom(seedLibrary())
+      mount(window, code, `${T}/Detail`)
+      await wait(450)
+      click(window, byLabel('London Breakout öffnen'))
+      await wait(360)
+      const detail = window.document.querySelector('[data-trading-detail]')
+      if (!detail) errors.push(`[${T}/Detail] the detail did not open`)
+      const dText = detail ? detail.textContent : ''
+      for (const needle of ['London Breakout', 'FVG nach dem Asia-Range', 'NQ', 'London', '15m', 'ICT', 'Video ansehen', 'ab 12:34'])
+        if (!dText.includes(needle)) errors.push(`[${T}/Detail] missing "${needle}"`)
+      const yt = detail?.querySelector('a[href^="https://youtu.be/"]')
+      if (!yt || yt.getAttribute('href') !== 'https://youtu.be/dQw4w9WgXcQ?t=754' || yt.getAttribute('target') !== '_blank')
+        errors.push(`[${T}/Detail] the YouTube link is not clickable with its timestamp`)
+      const full = detail?.querySelector('img')
+      if (!full || !/object-contain/.test(full.className)) errors.push(`[${T}/Detail] the full screenshot is missing or cropped`)
+
+      click(window, byText('Bearbeiten'))
+      await wait(360)
+      if (window.document.querySelector('input[aria-label="Setup-Name"]')?.value !== 'London Breakout')
+        errors.push(`[${T}/Edit] the form is not pre-filled`)
+      if (!preview(window)) errors.push(`[${T}/Edit] the stored screenshot is not shown in the form`)
+      // Replace by paste.
+      pasteInto(window, window.document.body, [makeFile(window, 'neu.jpg', 'image/jpeg', 2048)])
+      await wait(60)
+      typeInto(window, 'input[aria-label="Setup-Name"]', 'London Breakout v2')
+      await wait(40)
+      click(window, byText('Speichern'))
+      await wait(450)
+      const row = window.__backend.tables.trading_setups.find((s) => s.id === 's-1')
+      if (row?.name !== 'London Breakout v2') errors.push(`[${T}/Edit] the name was not saved`)
+      if (!row?.screenshot_path?.endsWith('.jpg') || row.screenshot_path === own('old.png'))
+        errors.push(`[${T}/Edit] the screenshot was not replaced: ${row?.screenshot_path}`)
+      if (window.__backend.storage.has(own('old.png'))) errors.push(`[${T}/Edit] the replaced screenshot file was not cleaned up`)
+      if (!window.__backend.storage.has(row?.screenshot_path)) errors.push(`[${T}/Edit] the new screenshot file is missing`)
+      // Everything the edit did not touch is preserved.
+      for (const [k, v] of Object.entries({ description: 'FVG nach dem Asia-Range', session: 'london', asset_id: 'asset-nq',
+        timeframe: '15m', is_favorite: true, creator: 'ICT', youtube_url: 'https://youtu.be/dQw4w9WgXcQ?t=754' }))
+        if (row?.[k] !== v) errors.push(`[${T}/Edit] ${k} changed to ${JSON.stringify(row?.[k])}`)
+      if (!window.document.querySelector('[data-trading-detail]')?.textContent.includes('London Breakout v2'))
+        errors.push(`[${T}/Edit] the detail does not show the edited setup`)
+
+      // Remove the screenshot.
+      const replaced = row?.screenshot_path
+      click(window, byText('Bearbeiten'))
+      await wait(360)
+      click(window, byText('Entfernen'))
+      await wait(40)
+      click(window, byText('Speichern'))
+      await wait(450)
+      window.__restoreConsole?.()
+      const after = window.__backend.tables.trading_setups.find((s) => s.id === 's-1')
+      if (after?.screenshot_path !== null) errors.push(`[${T}/Edit] "Entfernen" did not clear the screenshot`)
+      if (window.__backend.storage.has(replaced)) errors.push(`[${T}/Edit] the removed screenshot file was not cleaned up`)
+      if (after?.name !== 'London Breakout v2') errors.push(`[${T}/Edit] removing the screenshot touched the name`)
+    }
+
+    // g) Delete with undo; the file survives the undo window and goes after it.
+    {
+      const window = tradingDom(seedLibrary())
+      mount(window, code, `${T}/Löschen`)
+      await wait(450)
+      click(window, byLabel('London Breakout öffnen'))
+      await wait(360)
+      click(window, byText('Setup löschen'))
+      await wait(250)
+      if (window.__backend.tables.trading_setups.some((s) => s.id === 's-1'))
+        errors.push(`[${T}/Löschen] the setup was not deleted`)
+      if (!undoButton(window)) errors.push(`[${T}/Löschen] no undo after deleting`)
+      if (!window.__backend.storage.has(own('old.png')))
+        errors.push(`[${T}/Löschen] the screenshot was removed before the undo window ran out`)
+      undoButton(window)?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+      await wait(300)
+      const back = window.__backend.tables.trading_setups.find((s) => s.name === 'London Breakout')
+      if (!back) errors.push(`[${T}/Löschen] the undo did not bring the setup back`)
+      else if (back.screenshot_path !== own('old.png') || back.asset_id !== 'asset-nq' || !back.is_favorite || back.creator !== 'ICT')
+        errors.push(`[${T}/Löschen] the restored setup lost data: ${JSON.stringify(back)}`)
+      if (!txt(window).includes('London Breakout')) errors.push(`[${T}/Löschen] the restored setup is not in the library`)
+
+      // Delete for real and let the window pass.
+      const restoredId = back?.id
+      click(window, byLabel('London Breakout öffnen'))
+      await wait(360)
+      click(window, byText('Setup löschen'))
+      await wait(6700)
+      window.__restoreConsole?.()
+      if (window.__backend.tables.trading_setups.some((s) => s.id === restoredId))
+        errors.push(`[${T}/Löschen] the second delete did not happen`)
+      if (window.__backend.storage.has(own('old.png')))
+        errors.push(`[${T}/Löschen] the screenshot file was not cleaned up after the undo window`)
+    }
+
+    // h) A failed save leaves nothing behind and keeps the form open.
+    {
+      const window = tradingDom()
+      mount(window, code, `${T}/Fehler`, { expectErrors: true })
+      await wait(350)
+      click(window, byText('Neues Setup'))
+      await wait(330)
+      dropFile(window, makeFile(window, 'chart.png', 'image/png'))
+      await wait(40)
+      typeInto(window, 'input[aria-label="Setup-Name"]', 'Wird nicht gespeichert')
+      await wait(40)
+      window.__backend.failTable = 'trading_setups'
+      click(window, byText('Erstellen'))
+      await wait(450)
+      window.__backend.failTable = null
+      window.__restoreConsole?.()
+      if (window.__backend.tables.trading_setups.length) errors.push(`[${T}/Fehler] a row was stored despite the failure`)
+      if (window.__backend.storage.size) errors.push(`[${T}/Fehler] the uploaded screenshot was left behind`)
+      if (!txt(window).includes('Das Setup konnte nicht gespeichert werden')) errors.push(`[${T}/Fehler] no error message in the form`)
+      if (!preview(window) || window.document.querySelector('input[aria-label="Setup-Name"]')?.value !== 'Wird nicht gespeichert')
+        errors.push(`[${T}/Fehler] the form lost what the user entered`)
+    }
+
+    // i) Orphan sweep: an old unreferenced file goes, a young one and a used one stay.
+    {
+      const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
+      const seed = seedLibrary()
+      seed.storageObjects[own('verwaist.png')] = { created_at: old }
+      seed.storageObjects[own('frisch.png')] = { created_at: new Date().toISOString() }
+      const window = tradingDom(seed)
+      mount(window, code, `${T}/Aufräumen`)
+      await wait(500)
+      window.__restoreConsole?.()
+      if (window.__backend.storage.has(own('verwaist.png'))) errors.push(`[${T}/Aufräumen] an old orphaned file was not removed`)
+      if (!window.__backend.storage.has(own('frisch.png'))) errors.push(`[${T}/Aufräumen] a young file was removed`)
+      if (!window.__backend.storage.has(own('old.png'))) errors.push(`[${T}/Aufräumen] a file in use was removed`)
     }
   }
 
