@@ -5631,6 +5631,7 @@ async function run() {
     const tradingDom = (seed = {}, options = {}) => {
       const window = makeDom('#/trading-setups', seed, options)
       let n = 0
+      window.__previews = () => n
       window.URL.createObjectURL = () => `blob:http://localhost/preview-${++n}`
       window.URL.revokeObjectURL = () => {}
       return window
@@ -6006,6 +6007,131 @@ async function run() {
       if (!txt(window).includes('Das Setup konnte nicht gespeichert werden')) errors.push(`[${T}/Fehler] no error message in the form`)
       if (!preview(window) || window.document.querySelector('input[aria-label="Setup-Name"]')?.value !== 'Wird nicht gespeichert')
         errors.push(`[${T}/Fehler] the form lost what the user entered`)
+    }
+
+    // j) iPhone input: „Einfügen" via the Clipboard API, iOS drag & drop,
+    //    formats, refusals and duplicate events. jsdom has no real clipboard;
+    //    `navigator.clipboard.read` is stubbed with the shape Safari returns
+    //    (ClipboardItems with `types` and `getType`). Whether Safari's own
+    //    „Einfügen" bubble appears can only be seen on a device.
+    {
+      const L = `${T}/iPhone`
+      const setClipboard = (window, read) =>
+        Object.defineProperty(window.navigator, 'clipboard', { value: read ? { read } : {}, configurable: true })
+      const pngItem = (window, size = 3000) => ({
+        types: ['text/plain', 'image/png'],
+        getType: async () => new window.Blob([new Uint8Array(size)], { type: 'image/png' }),
+      })
+      const openForm = async (window) => {
+        click(window, byText('Neues Setup'))
+        await wait(330)
+      }
+      const pasteBtn = (window) => window.document.querySelector('[data-paste-button]')
+      const tap = async (window, ms = 120) => {
+        pasteBtn(window)?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+        await wait(ms)
+      }
+
+      // Unsupported browser: the jsdom default has no `clipboard.read`.
+      const window = tradingDom()
+      mount(window, code, L)
+      await wait(350)
+      await openForm(window)
+      if (!pasteBtn(window) || pasteBtn(window).textContent.trim() !== 'Einfügen')
+        errors.push(`[${L}] no „Einfügen" button in the screenshot zone`)
+      if (!window.document.querySelector('[data-drop-zone]')?.contains(pasteBtn(window)))
+        errors.push(`[${L}] „Einfügen" is not part of the existing zone`)
+      if (![...window.document.querySelectorAll('[data-drop-zone] button')].some(byText('Fotos auswählen')))
+        errors.push(`[${L}] no „Fotos auswählen" in the zone on a touch device`)
+      await tap(window)
+      if (!txt(window).includes('Direktes Einfügen unterstützt dieser Browser nicht') || preview(window))
+        errors.push(`[${L}] an unsupported browser did not get the fallback sentence`)
+
+      // Denied permission (Safari: bubble dismissed or refused).
+      setClipboard(window, async () => { const e = new window.Error('nope'); e.name = 'NotAllowedError'; throw e })
+      await tap(window)
+      if (!txt(window).includes('Kein Zugriff auf die Zwischenablage') || preview(window))
+        errors.push(`[${L}] a refused permission was not explained`)
+
+      // Clipboard without an image.
+      setClipboard(window, async () => [{ types: ['text/plain'], getType: async () => new window.Blob(['hallo']) }])
+      await tap(window)
+      if (!txt(window).includes('In der Zwischenablage ist kein Bild') || preview(window))
+        errors.push(`[${L}] a clipboard without an image was not explained`)
+
+      // HEIC on the clipboard in a browser that cannot decode it (Chrome, for
+      // one): the honest sentence, no silent failure.
+      window.createImageBitmap = async () => { throw new window.Error('HEIC nicht dekodierbar') }
+      setClipboard(window, async () => [{ types: ['image/heic'], getType: async () => new window.Blob([new Uint8Array(50)], { type: 'image/heic' }) }])
+      await tap(window, 200)
+      if (!txt(window).includes('Dieses Bildformat kann der Browser nicht umwandeln') || preview(window))
+        errors.push(`[${L}] an unconvertible HEIC failed silently: ${txt(window).slice(0, 260)}`)
+
+      // A copied screenshot, and a double tap while the read is in flight.
+      let reads = 0
+      setClipboard(window, () => { reads++; return new Promise((r) => setTimeout(() => r([pngItem(window)]), 120)) })
+      const before = window.__previews()
+      pasteBtn(window).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+      await wait(10)
+      pasteBtn(window).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }))
+      await wait(300)
+      if (reads !== 1) errors.push(`[${L}] a double tap read the clipboard ${reads} times`)
+      if (!preview(window)) errors.push(`[${L}] the pasted screenshot is not in the preview`)
+      if (window.__previews() - before !== 1) errors.push(`[${L}] one tap produced ${window.__previews() - before} previews`)
+      if (txt(window).includes('In der Zwischenablage ist kein Bild')) errors.push(`[${L}] the old error stayed after a successful paste`)
+      // Filled: „Einfügen" sits with „Ersetzen" and „Entfernen".
+      for (const label of ['Einfügen', 'Ersetzen', 'Entfernen'])
+        if (![...window.document.querySelectorAll('[data-trading-form] button')].some(byText(label)))
+          errors.push(`[${L}] the filled slot lacks „${label}"`)
+
+      // Save, then reload: the clipboard screenshot is stored like any other.
+      typeInto(window, 'input[aria-label="Setup-Name"]', 'Vom iPhone eingefügt')
+      await wait(40)
+      click(window, byText('Erstellen'))
+      await wait(450)
+      const row = window.__backend.tables.trading_setups.find((x) => x.name === 'Vom iPhone eingefügt')
+      const up = window.__backend.storageCalls.filter((c) => c.op === 'upload')
+      if (!row?.screenshot_path?.endsWith('.png') || up.length !== 1 || up[0].size !== 3000 || up[0].contentType !== 'image/png')
+        errors.push(`[${L}] the pasted screenshot was not stored exactly once as PNG: ${JSON.stringify(up)}`)
+      const reloaded = tradingDom({}, { backend: window.__backend })
+      mount(reloaded, code, `${L}/Reload`)
+      await wait(450)
+      reloaded.__restoreConsole?.()
+      const card = reloaded.document.querySelector('[data-setup-card] img')
+      if (!txt(reloaded).includes('Vom iPhone eingefügt') || !card?.getAttribute('src').includes('/object/sign/'))
+        errors.push(`[${L}] the pasted setup did not survive a reload with its screenshot`)
+
+      // iOS drag & drop: Safari may announce an Apple type identifier, or nothing.
+      const ios = tradingDom()
+      mount(ios, code, `${L}/Drop`)
+      await wait(350)
+      await openForm(ios)
+      const doc = ios.document
+      const enter = fire(ios, doc.body, 'dragenter', 'dataTransfer', { types: ['public.png'], files: [] })
+      const over = fire(ios, doc.body, 'dragover', 'dataTransfer', { types: [], files: [] })
+      await wait(40)
+      if (!enter.defaultPrevented || !over.defaultPrevented)
+        errors.push(`[${L}] an iOS drag was not accepted as a drop target`)
+      if (!doc.querySelector('[data-drop-zone]')?.textContent.includes('Loslassen'))
+        errors.push(`[${L}] the zone does not show it will take the drop`)
+      const shot = makeFile(ios, 'IMG_0042.PNG', 'image/png')
+      const dropEvt = fire(ios, doc.body, 'drop', 'dataTransfer', { types: ['public.png'], files: [shot], items: [] })
+      await wait(80)
+      if (!dropEvt.defaultPrevented || !preview(ios)) errors.push(`[${L}] an iOS drop did not land in the preview`)
+      // The same drop delivered again (a second target, a repeated event): ignored.
+      const count = ios.__previews()
+      fire(ios, doc.body, 'drop', 'dataTransfer', { types: ['Files'], files: [shot] })
+      await wait(80)
+      if (ios.__previews() !== count) errors.push(`[${L}] a repeated drop event produced a second screenshot`)
+      // Text dragged over the form is left to the browser.
+      const textOver = fire(ios, doc.body, 'dragover', 'dataTransfer', { types: ['text/plain'], files: [] })
+      if (textOver.defaultPrevented) errors.push(`[${L}] a text drag was intercepted`)
+      // Desktop paste still works unchanged next to the button.
+      pasteInto(ios, doc.body, [makeFile(ios, 'desk.webp', 'image/webp')])
+      await wait(80)
+      if (ios.__previews() !== count + 1) errors.push(`[${L}] Cmd/Strg+V stopped working`)
+      window.__restoreConsole?.()
+      ios.__restoreConsole?.()
     }
 
     // i) Orphan sweep: an old unreferenced file goes, a young one and a used one stay.

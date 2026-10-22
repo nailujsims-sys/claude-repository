@@ -114,6 +114,21 @@ export function fileFromTransfer(transfer) {
 export const transferHasFiles = (transfer) =>
   Array.from(transfer?.types ?? []).includes('Files')
 
+// Whether a drag MAY bring a file — the question dragenter/dragover have to
+// answer before the drop, so the drop is allowed to happen at all.
+//
+// Desktop browsers say 'Files'. Safari on iOS, dragging from Fotos or Dateien,
+// does not always: depending on the version it lists the item's type ('image/
+// png'), its Apple type identifier ('public.png', 'public.heic'), or — while
+// the finger is still moving — nothing at all. All of those are accepted. The
+// one case that is refused is a drag that plainly carries only text (a
+// selection dragged into a field), so dragging text keeps working as before.
+export function transferMayCarryFiles(transfer) {
+  const types = Array.from(transfer?.types ?? [])
+  if (types.length === 0) return Boolean(transfer)
+  return types.some((t) => t === 'Files' || /^image\//i.test(t) || /^public\./i.test(t))
+}
+
 const isTextEntry = (target) => {
   if (!target) return false
   if (target.isContentEditable) return true
@@ -140,6 +155,86 @@ export function screenshotFromPaste(clipboardData, target) {
     if (text.trim() !== '') return null
   }
   return file
+}
+
+// ── Formats iOS hands over ────────────────────────────────────────────────
+// An iPhone screenshot is a PNG, but iOS does not promise it: a photo from the
+// library can arrive as HEIC, and some apps put TIFF on the clipboard. Those
+// three are converted in the browser (src/lib/screenshotInput.js) when it can
+// decode them — Safari can — and only then validated like any other file.
+// Everything else (GIF, PDF, …) is refused with a sentence, never converted
+// behind the user's back.
+const CONVERTIBLE_TYPES = ['image/heic', 'image/heif', 'image/tiff']
+const CONVERTIBLE_EXT = { heic: 'image/heic', heif: 'image/heif', tif: 'image/tiff', tiff: 'image/tiff' }
+
+export function convertibleType(file) {
+  const type = String(file?.type ?? '').toLowerCase()
+  if (CONVERTIBLE_TYPES.includes(type)) return type
+  if (type && type !== 'application/octet-stream') return null
+  const ext = String(file?.name ?? '').toLowerCase().split('.').pop()
+  return CONVERTIBLE_EXT[ext] ?? null
+}
+
+// Conversion decodes the whole image into memory; past this size it is not
+// attempted, the original is simply too big to become a 10 MB screenshot.
+export const MAX_CONVERT_BYTES = 30 * 1024 * 1024
+
+export const CONVERSION_FAILED_MESSAGE =
+  'Dieses Bildformat kann der Browser nicht umwandeln. Wähle den Screenshot über „Fotos auswählen“ – dort kommt er als JPG oder PNG an.'
+
+// ── Reading the clipboard (the „Einfügen" button) ──────────────────────────
+// Which of the types a ClipboardItem offers to read. A supported format first,
+// in order of fidelity (a chart is sharpest as PNG), then a convertible one,
+// then any other image — reading that one lets validation explain why it is
+// refused instead of claiming there was no image at all. Null: no image.
+export function pickClipboardType(types) {
+  const list = Array.from(types ?? []).map((t) => String(t).toLowerCase())
+  for (const t of ['image/png', 'image/jpeg', 'image/webp']) if (list.includes(t)) return t
+  if (list.includes('image/jpg')) return 'image/jpg'
+  const convertible = list.find((t) => CONVERTIBLE_TYPES.includes(t))
+  if (convertible) return convertible
+  return list.find((t) => t.startsWith('image/')) ?? null
+}
+
+export const CLIPBOARD_MESSAGES = {
+  unsupported:
+    'Direktes Einfügen unterstützt dieser Browser nicht. Wähle den Screenshot über „Fotos auswählen“.',
+  insecure:
+    'Einfügen aus der Zwischenablage geht nur über eine sichere Verbindung (HTTPS). Wähle den Screenshot über „Fotos auswählen“.',
+  denied:
+    'Kein Zugriff auf die Zwischenablage. Tippe noch einmal auf „Einfügen“ und bestätige dann „Einfügen“ – oder wähle den Screenshot über „Fotos auswählen“.',
+  empty:
+    'In der Zwischenablage ist kein Bild. Kopiere den Screenshot zuerst (Teilen → Kopieren) oder wähle ihn über „Fotos auswählen“.',
+  failed:
+    'Die Zwischenablage konnte nicht gelesen werden. Versuch es noch einmal oder wähle den Screenshot über „Fotos auswählen“.',
+}
+
+// A rejected `navigator.clipboard.read()` → the reason to show. Safari rejects
+// with NotAllowedError both when permission is refused and when the user taps
+// beside the system's „Einfügen" bubble; both mean "not this time", and both
+// get the same honest sentence. Chrome reports an empty clipboard as a
+// DataError on some platforms.
+export function clipboardFailure(err) {
+  const name = err?.name ?? ''
+  if (name === 'NotAllowedError' || name === 'SecurityError') return 'denied'
+  if (name === 'DataError' || name === 'NotFoundError') return 'empty'
+  return 'failed'
+}
+
+// ── Duplicate events ────────────────────────────────────────────────────────
+// One gesture can reach the form twice — a drop delivered on two targets, a
+// paste the browser fires again, React's development double effect. The same
+// file (by name, size, type and modification time) arriving again within
+// `windowMs` is the same gesture and is ignored; anything else is new.
+export function createDuplicateGuard(windowMs = 1500, now = () => Date.now()) {
+  let last = null
+  return (file) => {
+    const key = file ? `${file.name ?? ''}|${file.size ?? ''}|${file.type ?? ''}|${file.lastModified ?? ''}` : ''
+    const t = now()
+    const duplicate = last !== null && last.key === key && t - last.at < windowMs
+    last = { key, at: t }
+    return duplicate
+  }
 }
 
 // ── YouTube links ───────────────────────────────────────────────────────────

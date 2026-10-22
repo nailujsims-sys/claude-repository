@@ -48,7 +48,15 @@ import {
   transferHasFiles,
   validateScreenshot,
   youtubeLinkState,
+  transferMayCarryFiles,
+  convertibleType,
+  pickClipboardType,
+  clipboardFailure,
+  createDuplicateGuard,
+  CLIPBOARD_MESSAGES,
+  CONVERSION_FAILED_MESSAGE,
 } from './src/lib/trading.js'
+import { prepareScreenshot, readClipboardImage } from './src/lib/screenshotInput.js'
 import { WRITABLE_SETUP_FIELDS, pickWritableSetup } from './src/data/tradingDefaults.js'
 import { tradingRepository } from './src/data/tradingRepository.js'
 import { makeBackend } from './tools/supabaseStub.mjs'
@@ -324,6 +332,95 @@ const file = (name, type, size = 1000) => ({ name, type, size })
   const picked = pickWritableSetup({ name: 'x', screenshot_path: 'p', id: 'i', user_id: 'u', created_at: 'c' })
   ok('a whole row comes back without its server-managed columns',
      Object.keys(picked).sort().join(',') === 'name,screenshot_path')
+}
+
+
+// ── 9. iPhone input: drag detection, formats, clipboard, duplicates ─────────
+{
+  ok('a desktop file drag may carry files', transferMayCarryFiles({ types: ['Files'] }))
+  ok('an iOS drag announcing its MIME type may carry files', transferMayCarryFiles({ types: ['image/png'] }))
+  ok('an iOS drag announcing an Apple type identifier may carry files', transferMayCarryFiles({ types: ['public.heic'] }))
+  ok('an iOS drag that reveals nothing yet may carry files', transferMayCarryFiles({ types: [] }))
+  ok('a text drag does not — dragging text into a field keeps working',
+     !transferMayCarryFiles({ types: ['text/plain', 'text/html'] }))
+  ok('no transfer at all does not', !transferMayCarryFiles(null))
+
+  ok('HEIC, HEIF and TIFF are convertible', convertibleType({ type: 'image/heic' }) === 'image/heic' &&
+     convertibleType({ type: 'image/heif' }) === 'image/heif' && convertibleType({ type: 'image/tiff' }) === 'image/tiff')
+  ok('a HEIC without a type is recognised by its extension', convertibleType({ name: 'IMG_0001.HEIC', type: '' }) === 'image/heic')
+  ok('a GIF or PDF is not converted', convertibleType({ type: 'image/gif' }) === null && convertibleType({ type: 'application/pdf' }) === null)
+  ok('a declared type outvotes the extension', convertibleType({ name: 'a.heic', type: 'image/gif' }) === null)
+
+  ok('PNG is read first', pickClipboardType(['image/jpeg', 'text/plain', 'image/png']) === 'image/png')
+  ok('JPEG before WebP', pickClipboardType(['image/webp', 'image/jpeg']) === 'image/jpeg')
+  ok('a HEIC-only clipboard is read for conversion', pickClipboardType(['image/heic']) === 'image/heic')
+  ok('another image type is still read, so validation can explain', pickClipboardType(['image/gif']) === 'image/gif')
+  ok('text only is "no image"', pickClipboardType(['text/plain']) === null && pickClipboardType([]) === null)
+
+  ok('a refused permission reads as denied', clipboardFailure({ name: 'NotAllowedError' }) === 'denied')
+  ok('an empty clipboard reported as DataError reads as empty', clipboardFailure({ name: 'DataError' }) === 'empty')
+  ok('anything else reads as failed', clipboardFailure(new Error('x')) === 'failed')
+  ok('every clipboard message offers the photo picker',
+     Object.values(CLIPBOARD_MESSAGES).every((m) => m.includes('Fotos auswählen')))
+
+  let t = 0
+  const guard = createDuplicateGuard(1500, () => t)
+  const f = { name: 'a.png', size: 10, type: 'image/png', lastModified: 1 }
+  ok('the first arrival is taken', guard(f) === false)
+  t = 100
+  ok('the same file a moment later is a duplicate', guard({ ...f }) === true)
+  t = 2000
+  ok('the same file much later is a new gesture', guard(f) === false)
+  t = 2100
+  ok('a different file is never a duplicate', guard({ ...f, size: 11 }) === false)
+}
+
+// ── 10. readClipboardImage / prepareScreenshot against stubbed browser APIs ─
+{
+  const setNav = (value) => Object.defineProperty(globalThis, 'navigator', { value, configurable: true, writable: true })
+  const realNav = globalThis.navigator
+  const pngBlob = new Blob([new Uint8Array(500)], { type: 'image/png' })
+  const item = (types, blob = pngBlob) => ({ types, getType: async () => blob })
+
+  setNav({})
+  let r = await readClipboardImage()
+  ok('no Clipboard API → the unsupported sentence', !r.ok && r.message === CLIPBOARD_MESSAGES.unsupported)
+
+  globalThis.window = { isSecureContext: false }
+  r = await readClipboardImage()
+  ok('no Clipboard API over plain HTTP → the HTTPS sentence', !r.ok && r.message === CLIPBOARD_MESSAGES.insecure)
+  delete globalThis.window
+
+  setNav({ clipboard: { read: async () => { const e = new Error('no'); e.name = 'NotAllowedError'; throw e } } })
+  r = await readClipboardImage()
+  ok('a refused permission → the denied sentence', !r.ok && r.message === CLIPBOARD_MESSAGES.denied)
+
+  setNav({ clipboard: { read: async () => [item(['text/plain'], new Blob(['hallo']))] } })
+  r = await readClipboardImage()
+  ok('a clipboard with only text → the "no image" sentence', !r.ok && r.message === CLIPBOARD_MESSAGES.empty)
+
+  setNav({ clipboard: { read: async () => [] } })
+  r = await readClipboardImage()
+  ok('an empty clipboard → the "no image" sentence', !r.ok && r.message === CLIPBOARD_MESSAGES.empty)
+
+  let calls = 0
+  setNav({ clipboard: { read: () => { calls++; return Promise.resolve([item(['text/plain', 'image/png'])]) } } })
+  const pending = readClipboardImage()
+  ok('clipboard.read() is called synchronously, inside the tap (iOS requirement)', calls === 1)
+  r = await pending
+  ok('a copied screenshot comes back as a PNG file', r.ok && r.file.type === 'image/png' && r.file.size === 500 && /\\.png$/.test(r.file.name))
+
+  setNav(realNav)
+
+  const png = new File([new Uint8Array(100)], 'chart.png', { type: 'image/png' })
+  let p = await prepareScreenshot(png)
+  ok('a supported file passes untouched — the original bytes are stored', p.ok && p.file === png && p.type === 'image/png')
+  p = await prepareScreenshot(new File([new Uint8Array(10)], 'a.gif', { type: 'image/gif' }))
+  ok('a GIF is refused with the format sentence, not converted', !p.ok && p.message.includes('PNG, JPG und WebP'))
+  p = await prepareScreenshot(new File([new Uint8Array(10)], 'IMG.HEIC', { type: 'image/heic' }))
+  ok('a HEIC the environment cannot decode → a clear sentence with the fallback', !p.ok && p.message === CONVERSION_FAILED_MESSAGE)
+  p = await prepareScreenshot({ name: 'huge.heic', type: 'image/heic', size: 40 * 1024 * 1024 })
+  ok('a HEIC too large to convert is refused before decoding', !p.ok && p.message.includes('Erlaubt sind PNG'))
 }
 
 console.log(\`trading logic: \${pass} passed, \${fail} failed\`)
