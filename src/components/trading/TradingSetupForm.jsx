@@ -9,12 +9,13 @@ import useScreenshotCapture from '../../lib/useScreenshotCapture'
 import { useUI } from '../../context/UIContext'
 import { useTrading } from '../../context/TradingContext'
 import { useToast } from '../../context/ToastContext'
+import { prepareScreenshot, readClipboardImage } from '../../lib/screenshotInput'
 import {
   SESSIONS,
   TIMEFRAMES,
+  createDuplicateGuard,
   formatTimestamp,
   parseYouTubeUrl,
-  validateScreenshot,
   youtubeLinkState,
 } from '../../lib/trading'
 
@@ -82,15 +83,27 @@ export default function TradingSetupForm() {
   }, [])
   useEffect(() => () => replaceShot(null), [replaceShot])
 
+  // Every way in — drop, Strg/Cmd+V, „Einfügen", the picker — ends here.
+  //
+  // Two guards keep one gesture from becoming two screenshots: the same file
+  // arriving again within a moment is ignored (createDuplicateGuard), and a
+  // slower preparation (an iOS HEIC being converted) that is overtaken by a
+  // newer file never lands on top of it (`latestTake`).
+  const isDuplicate = useRef(createDuplicateGuard()).current
+  const latestTake = useRef(0)
   const take = useCallback(
-    (file) => {
-      const verdict = validateScreenshot(file)
+    async (incoming) => {
+      if (isDuplicate(incoming)) return
+      const ticket = ++latestTake.current
+      const verdict = await prepareScreenshot(incoming)
+      if (ticket !== latestTake.current) return
       if (!verdict.ok) {
         // The current picture stays; only the new file is refused.
         setShotError(verdict.message)
         return
       }
       setShotError(null)
+      const file = verdict.file
       const next = { file, type: verdict.type, url: objectUrl(file), width: null, height: null }
       replaceShot(next)
       // The size only reserves the right box for the card later; saving never
@@ -102,8 +115,28 @@ export default function TradingSetupForm() {
         setShot(sized)
       })
     },
-    [replaceShot]
+    [replaceShot, isDuplicate]
   )
+
+  // „Einfügen": reads the clipboard on the tap itself (see readClipboardImage
+  // for why that has to be synchronous on iOS). While a read is in flight the
+  // button is inactive and a second tap is ignored — one tap, one screenshot.
+  const [pasting, setPasting] = useState(false)
+  const pastingRef = useRef(false)
+  const pasteFromClipboard = useCallback(() => {
+    if (pastingRef.current) return
+    pastingRef.current = true
+    setPasting(true)
+    readClipboardImage()
+      .then((result) => {
+        if (result.ok) return take(result.file)
+        setShotError(result.message)
+      })
+      .finally(() => {
+        pastingRef.current = false
+        setPasting(false)
+      })
+  }, [take])
 
   useEffect(() => {
     if (!open) return
@@ -111,6 +144,8 @@ export default function TradingSetupForm() {
     setSaving(false)
     setSaveError(null)
     setShotError(null)
+    // A conversion still running from the previous opening must not land here.
+    latestTake.current += 1
     replaceShot(null)
     if (tradingForm.mode === 'edit') {
       const current = getSetup(tradingForm.setupId)
@@ -211,6 +246,8 @@ export default function TradingSetupForm() {
           error={shotError}
           dragActive={dragActive}
           onPick={take}
+          onPaste={pasteFromClipboard}
+          pasting={pasting}
           onRemove={removeShot}
           disabled={saving}
         />

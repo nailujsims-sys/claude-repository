@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { fileFromTransfer, screenshotFromPaste, transferHasFiles } from './trading'
+import { fileFromTransfer, screenshotFromPaste, transferMayCarryFiles } from './trading'
 
 // Drag & drop and Strg+V / Cmd+V for a screenshot, on the whole page, for as
 // long as `enabled` is true. Used by the setup form (the screenshot goes into
@@ -14,6 +14,12 @@ import { fileFromTransfer, screenshotFromPaste, transferHasFiles } from './tradi
 // It also stops the browser's own reaction to a dropped file — navigating away
 // from the app to show it — anywhere on the page while enabled. Outside the
 // module nothing changes: the listeners exist only while `enabled`.
+//
+// The same handlers serve Safari on iOS, where a picture held in Fotos and
+// carried over with a second finger arrives as these very events — there is
+// no touch emulation here, only the browser's own drag & drop. What differs
+// is how much a drag reveals before the drop; `transferMayCarryFiles` takes
+// that into account.
 //
 // `onFile` is read through a ref, so a new callback every render does not
 // re-register the listeners.
@@ -34,27 +40,29 @@ export default function useScreenshotCapture({ enabled, onFile }) {
     let depth = 0
 
     const onDragEnter = (e) => {
-      if (!transferHasFiles(e.dataTransfer)) return
+      if (!transferMayCarryFiles(e.dataTransfer)) return
       e.preventDefault()
       depth += 1
       setDragActive(true)
     }
     const onDragOver = (e) => {
-      if (!transferHasFiles(e.dataTransfer)) return
+      if (!transferMayCarryFiles(e.dataTransfer)) return
       e.preventDefault()
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
     }
     const onDragLeave = (e) => {
-      if (!transferHasFiles(e.dataTransfer)) return
+      if (!transferMayCarryFiles(e.dataTransfer)) return
       depth = Math.max(0, depth - 1)
       if (depth === 0) setDragActive(false)
     }
     const onDrop = (e) => {
-      if (!transferHasFiles(e.dataTransfer) && !e.dataTransfer?.files?.length) return
+      // Decided by what actually arrived, not by what the drag announced: on
+      // iOS the file is only readable now.
+      const file = fileFromTransfer(e.dataTransfer)
+      if (!file && !transferMayCarryFiles(e.dataTransfer)) return
       e.preventDefault()
       depth = 0
       setDragActive(false)
-      const file = fileFromTransfer(e.dataTransfer)
       if (file) latest.current?.(file)
     }
     const onPaste = (e) => {

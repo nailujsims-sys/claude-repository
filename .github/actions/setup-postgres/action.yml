@@ -1,0 +1,70 @@
+name: Setup PostgreSQL for the database gate
+description: >
+  Makes sure the PostgreSQL server binaries the database suite needs (16, else
+  15 or 14) are on the runner, installs PostgreSQL 16 from the official PGDG
+  repository when the image ships none, and prints the versions the run uses.
+
+# WHY THIS EXISTS. The suite (tools/rlsTest.mjs and the E2E runners) builds its
+# own throwaway clusters and needs nothing but `initdb`, `pg_ctl` and `psql` of
+# a supported major version. Until October 2026 the `ubuntu-latest` image
+# simply had PostgreSQL 16; then `ubuntu-latest` moved to Ubuntu 26.04, which
+# ships none of 14–16, and the gate failed before its first assertion.
+#
+# The workflows now pin `ubuntu-24.04`, the image every earlier green run used.
+# This action is the second half: when a pinned image is eventually retired,
+# or someone moves a job to a newer one, PostgreSQL 16 is installed explicitly
+# instead of the gate breaking again. On ubuntu-24.04 it finds the preinstalled
+# binaries and installs nothing.
+#
+# Nothing here touches a database that matters: no system cluster is created
+# (`create_main_cluster = false`), and the production database is never
+# contacted by these workflows at all.
+
+runs:
+  using: composite
+  steps:
+    - name: Ensure PostgreSQL 14–16 binaries
+      shell: bash
+      run: |
+        set -euo pipefail
+        find_bin() {
+          for dir in /usr/lib/postgresql/16/bin \
+                     /usr/lib/postgresql/15/bin \
+                     /usr/lib/postgresql/14/bin; do
+            if [ -x "$dir/initdb" ]; then echo "$dir"; return 0; fi
+          done
+          return 1
+        }
+
+        if ! bin="$(find_bin)"; then
+          echo "No PostgreSQL 14–16 on this image — installing PostgreSQL 16 from apt.postgresql.org."
+          . /etc/os-release
+          # Binaries only: the suite starts its own clusters in temp
+          # directories, so the package must not create and start one.
+          sudo mkdir -p /etc/postgresql-common/createcluster.d
+          echo "create_main_cluster = false" | sudo tee /etc/postgresql-common/createcluster.d/no-main-cluster.conf >/dev/null
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends postgresql-16
+          if ! bin="$(find_bin)"; then
+            echo "::error::PostgreSQL 16 could not be installed on this runner — the database gate cannot run. See supabase/README.md"
+            exit 1
+          fi
+        fi
+
+        echo "PostgreSQL binaries: $bin"
+        "$bin/initdb" --version
+        "$bin/psql" --version
+        {
+          echo "### PostgreSQL"
+          echo ""
+          echo '```'
+          echo "runner: $(. /etc/os-release && echo "$PRETTY_NAME")"
+          "$bin/initdb" --version
+          "$bin/psql" --version
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"

@@ -1736,6 +1736,27 @@ Reload, fehlgeschlagenes Speichern ohne Rückstände, Aufräumen, Einstieg über
 **Einmalig in Supabase:** `0016_trading_setups.sql` im SQL Editor ausführen
 (legt auch den Bucket an).
 
+### v1.29 — Screenshot vom iPhone
+
+Die Screenshot-Zone hat zwei Buttons, die auf jedem Gerät funktionieren:
+**„Einfügen"** liest einen kopierten Screenshot direkt aus der Zwischenablage
+(`navigator.clipboard.read()`, aufgerufen synchron im Tipp — Safari zeigt dann
+seine eigene „Einfügen"-Blase, das ist die Berechtigung), **„Fotos auswählen"**
+öffnet wie bisher Fotomediathek bzw. Dateien. „Einfügen" steht auch neben
+„Ersetzen" und „Entfernen". Geht es nicht — kein Clipboard-API, kein HTTPS,
+Berechtigung verweigert, kein Bild in der Zwischenablage —, sagt ein Satz
+warum und verweist auf „Fotos auswählen".
+
+Drag & drop aus der Fotos-App nutzt die bestehenden Handler; Safari auf iOS
+kündigt einen Drag teils als `image/png`, `public.png` oder gar nicht an
+(`transferMayCarryFiles`). Keine Touch-Nachbildung.
+
+HEIC, HEIF und TIFF werden im Browser zu PNG umgewandelt (bei über 10 MB zu
+JPEG), wenn er sie dekodieren kann — Safari kann es; sonst eine klare Meldung.
+PNG/JPG/WebP werden unverändert gespeichert. Doppelte Events derselben Datei
+und ein doppeltes Tippen auf „Einfügen" ergeben genau einen Screenshot.
+Code: `src/lib/screenshotInput.js`, Regeln in `src/lib/trading.js`.
+
 ## 🎨 Design system
 
 The binding product-design standard (visual, UX, interaction, motion,
