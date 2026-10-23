@@ -978,7 +978,13 @@ async function run() {
     text = txt(window)
     console.log(`\n=== Search (Zahnarzt) ===\n  ${text.slice(0, 170)}`)
     if (!text.includes('Zahnarzt')) errors.push('[Search] result "Zahnarzt" not rendered')
-    if (!click(window, (el) => el.textContent.includes('Zahnarzt')))
+    // The hit row INSIDE the search overlay. The seed puts "Zahnarzt" on the
+    // 23rd of every month (mDay(22)), so on that day it is also a block in the
+    // day view behind the overlay — and a page-wide "first element containing
+    // Zahnarzt" clicked that block instead of the search result, failing this
+    // section on the 23rd and passing on every other day.
+    const searchPanel = window.document.querySelector('input[placeholder="Termine durchsuchen"]')?.closest('header')?.parentElement
+    if (!click(window, (el) => searchPanel?.contains(el) && el.textContent.includes('Zahnarzt')))
       errors.push('[Search] result row not clickable')
     await wait(150)
     window.__restoreConsole?.()
