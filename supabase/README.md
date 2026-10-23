@@ -145,8 +145,11 @@ Fehler:
 | läuft als `root` ohne unprivilegiertes Konto | übersprungen, Exit 0 | **Exit 1** |
 | Cluster startet nicht, Migration, Replay, RLS-Assertion, Upgrade-Probe oder E2E-Suite scheitert | Exit 1 | Exit 1 |
 
-Der Runner bringt PostgreSQL 16 mit (Server deaktiviert — die Suite braucht ihn
-nicht, sie startet ihren eigenen). Der Workflow-Schritt gibt vorher
+Beide Workflows laufen auf `ubuntu-24.04` (festgelegt — `ubuntu-latest` ist seit
+Oktober 2026 Ubuntu 26.04 ohne PostgreSQL 14–16). Das Image bringt PostgreSQL 16
+mit (Server deaktiviert — die Suite braucht ihn nicht, sie startet ihren
+eigenen). `.github/actions/setup-postgres` findet die Binaries, installiert
+PostgreSQL 16 aus apt.postgresql.org, falls ein Image keines mitbringt, und gibt
 `initdb --version` und `psql --version` aus, damit jeder Lauf selbst
 dokumentiert, gegen welche echte Datenbank er gelaufen ist.
 

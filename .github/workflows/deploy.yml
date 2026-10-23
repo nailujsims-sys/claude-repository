@@ -42,7 +42,9 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
+    # Pinned for the same reason as database-tests.yml: `ubuntu-latest` moved
+    # to Ubuntu 26.04, which ships no PostgreSQL 14–16.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -80,31 +82,18 @@ jobs:
       # contributor's laptop, and exactly the kind of green that must not exist
       # in a deployment. With it, a missing or unsupported PostgreSQL fails the
       # run instead of quietly passing it.
+      #
+      # The binaries come from the image (PostgreSQL 16, server disabled — the
+      # suite never uses the system cluster, it builds its own); the action
+      # installs PostgreSQL 16 when an image has none, and prints the versions
+      # so the run itself documents which database the tests ran against.
+      - name: PostgreSQL
+        uses: ./.github/actions/setup-postgres
+
       - name: Database / RLS tests
         env:
           RLS_TEST_REQUIRED: "1"
-        run: |
-          set -euo pipefail
-          # The Ubuntu runner image ships PostgreSQL 16 with the SERVER
-          # DISABLED, which is all this suite needs: it never uses the system
-          # cluster, it builds its own. Under Debian packaging the server
-          # binaries are not on PATH, so the directory is resolved — and
-          # printed — here, in the same preference order the harness uses. That
-          # way the run itself documents which database the tests ran against.
-          bin=""
-          for dir in /usr/lib/postgresql/16/bin \
-                     /usr/lib/postgresql/15/bin \
-                     /usr/lib/postgresql/14/bin; do
-            if [ -x "$dir/initdb" ]; then bin="$dir"; break; fi
-          done
-          if [ -z "$bin" ]; then
-            echo "::error::No supported PostgreSQL (16, 15 or 14) on this runner — the database gate cannot run. See supabase/README.md"
-            exit 1
-          fi
-          echo "PostgreSQL binaries: $bin"
-          "$bin/initdb" --version
-          "$bin/psql" --version
-          npm run test:rls
+        run: npm run test:rls
 
       # Fail before the build rather than after the deploy: an app without a
       # database is not a degraded app, it is a different one.
